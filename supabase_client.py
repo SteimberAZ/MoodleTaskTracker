@@ -17,7 +17,10 @@ def _load_env_file():
                 if not line or line.startswith("#") or "=" not in line:
                     continue
                 k, v = line.split("=", 1)
-                os.environ.setdefault(k.strip(), v.strip())
+                val = v.strip()
+                if (val.startswith('"') and val.endswith('"')) or (val.startswith("'") and val.endswith("'")):
+                    val = val[1:-1]
+                os.environ.setdefault(k.strip(), val)
     except Exception:
         pass
 
