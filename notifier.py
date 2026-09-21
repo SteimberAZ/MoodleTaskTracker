@@ -62,9 +62,10 @@ def send_whatsapp_alert(
 ):
     """Envía la alerta al microservicio local de WhatsApp si está activo de forma asíncrona."""
     def _do_post():
+        # 1. Intentar con el microservicio en puerto 3000
         try:
             import requests
-            requests.post(
+            res = requests.post(
                 "http://localhost:3000/api/send-alert",
                 json={
                     "title": title,
@@ -74,6 +75,39 @@ def send_whatsapp_alert(
                     "milestone": milestone,
                     "is_urgent": is_urgent,
                 },
+                timeout=2,
+            )
+            if res.status_code == 200:
+                return
+        except Exception:
+            pass
+
+        # 2. Respaldo para VPS con bot existente en puerto 3847
+        try:
+            import requests
+            header = "🔔 *¡NUEVA TAREA EN MOODLE!*"
+            if milestone == "8h":
+                header = "🚨 *¡URGENTE! FALTAN MENOS DE 8 HORAS PARA ENTREGAR*"
+            elif milestone == "1d":
+                header = "⚠️ *RECORDATORIO: ¡FALTA 1 DÍA PARA ENTREGAR!*"
+            elif milestone == "2d":
+                header = "⏳ *RECORDATORIO: FALTAN 2 DÍAS PARA ENTREGAR*"
+            elif milestone == "3d":
+                header = "📅 *RECORDATORIO: FALTAN 3 DÍAS PARA ENTREGAR*"
+
+            msg_text = (
+                f"{header}\n\n"
+                f"📝 *Tarea:* {title}\n"
+                f"📚 *Materia:* {course or 'General'}\n"
+                f"⏱️ *Límite:* {due_date or 'Sin fecha'}\n"
+            )
+            if task_url:
+                msg_text += f"\n🔗 *Abrir en Moodle:*\n{task_url}"
+
+            to_number = os.environ.get("WHATSAPP_TO", "593998155197")
+            requests.post(
+                "http://localhost:3847/send",
+                json={"to": to_number, "message": msg_text},
                 timeout=2,
             )
         except Exception:
