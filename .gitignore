@@ -1,0 +1,24 @@
+__pycache__/
+*.py[cod]
+*$py.class
+
+build/
+dist/
+*.spec
+
+# Base de datos local y cookies privadas
+moodle_tasks.db
+*.db
+.env
+.env.*
+
+# WhatsApp Session y dependencias
+whatsapp_bot/node_modules/
+whatsapp_bot/auth_session/
+
+venv/
+env/
+.env/
+
+.vscode/
+.idea/

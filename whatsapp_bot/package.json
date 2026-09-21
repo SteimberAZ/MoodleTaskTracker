@@ -1,0 +1,16 @@
+{
+  "name": "moodle-whatsapp-bot",
+  "version": "1.0.0",
+  "description": "Mini landing con QR de WhatsApp para enviar alertas de Moodle a tu propio numero",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.8",
+    "express": "^4.19.2",
+    "pino": "^9.0.0",
+    "qrcode": "^1.5.3"
+  }
+}
