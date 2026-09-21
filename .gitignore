@@ -11,6 +11,7 @@ moodle_tasks.db
 *.db
 .env
 .env.*
+!.env.example
 
 # WhatsApp Session y dependencias
 whatsapp_bot/node_modules/

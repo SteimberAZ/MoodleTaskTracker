@@ -3,6 +3,7 @@ import os
 import sqlite3
 import time
 from typing import Dict, List, Optional, Tuple
+from supabase_client import SupabaseClient
 
 
 class Storage:
@@ -12,6 +13,7 @@ class Storage:
             db_path = os.path.join(base_dir, "moodle_tasks.db")
         self.db_path = db_path
         self._init_db()
+        self.supabase = SupabaseClient()
 
     @contextlib.contextmanager
     def _get_conn(self):
@@ -87,6 +89,8 @@ class Storage:
                 (key, str(value)),
             )
             conn.commit()
+        if self.supabase.is_configured:
+            self.supabase.upsert_setting(key, value)
 
     def save_tasks(self, tasks: List[Dict]) -> Tuple[List[Dict], List[Dict]]:
         """
@@ -148,6 +152,9 @@ class Storage:
 
             conn.commit()
 
+        if self.supabase.is_configured and tasks:
+            self.supabase.upsert_tasks(tasks)
+
         return new_tasks, updated_tasks
 
     def get_all_tasks(self, order_by_due: bool = True) -> List[Dict]:
@@ -187,3 +194,5 @@ class Storage:
                 (task_id, milestone, now),
             )
             conn.commit()
+        if self.supabase.is_configured:
+            self.supabase.upsert_milestone(task_id, milestone, now)
