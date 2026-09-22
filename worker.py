@@ -1,6 +1,12 @@
 import os
+import sys
 import time
 from datetime import datetime
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, SCRIPT_DIR)
+
 from moodle_client import MoodleClient
 from notifier import TaskNotificationManager, send_system_alert
 from storage import Storage
