@@ -130,10 +130,12 @@ def send_whatsapp_alert(
             header = "Recordatorio: Faltan 3 dias"
 
         msg_lines = [
-            f"Tarea: {title}",
-            f"Materia: {course or 'General'}",
-            f"Limite: {due_date or 'Sin fecha'}",
+            f"📚 Materia: {course or 'General'}",
+            f"📝 Tarea: {title}",
+            f"📅 Límite: {due_date or 'Sin fecha'}",
         ]
+        if task_url:
+            msg_lines.append(f"🔗 {task_url}")
         body = "\n".join(msg_lines)
 
         headers = {
@@ -142,8 +144,6 @@ def send_whatsapp_alert(
             "Tags": tags,
             "Content-Type": "text/plain; charset=utf-8",
         }
-        if task_url:
-            headers["Click"] = task_url
 
         try:
             import requests
