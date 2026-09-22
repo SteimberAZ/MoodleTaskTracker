@@ -116,8 +116,21 @@ app.post('/api/test-message', async (req, res) => {
       '¡Conexión establecida con éxito!\n\n' +
       'A partir de ahora recibirás en este chat personal las alertas automáticas de tus nuevas tareas y entregas universitarias.';
 
-    await sock.sendMessage(targetJid, { text: testText });
-    res.json({ success: true, message: 'Mensaje enviado exitosamente a tu chat personal.' });
+    const sent = await sock.sendMessage(targetJid, { text: testText });
+    try {
+      if (sent?.key) {
+        await sock.chatModify(
+          {
+            markRead: false,
+            lastMessages: [{ key: sent.key, messageTimestamp: sent.messageTimestamp }],
+          },
+          targetJid
+        );
+      }
+    } catch (e) {
+      console.log('[WhatsApp Mark Unread Note]:', e.message);
+    }
+    res.json({ success: true, message: 'Mensaje enviado exitosamente a tu chat personal (marcado como no leído).' });
   } catch (err) {
     console.error('[Send Test Error]:', err);
     res.status(500).json({ success: false, error: err.message });
@@ -159,7 +172,20 @@ app.post('/api/send-alert', async (req, res) => {
       alertText += `\n🔗 *Abrir en Moodle:*\n${task_url}`;
     }
 
-    await sock.sendMessage(targetJid, { text: alertText });
+    const sent = await sock.sendMessage(targetJid, { text: alertText });
+    try {
+      if (sent?.key) {
+        await sock.chatModify(
+          {
+            markRead: false,
+            lastMessages: [{ key: sent.key, messageTimestamp: sent.messageTimestamp }],
+          },
+          targetJid
+        );
+      }
+    } catch (e) {
+      console.log('[WhatsApp Mark Unread Note]:', e.message);
+    }
     console.log(`[WhatsApp Alert - ${milestone || 'new'}] Alerta enviada a +${userPhone}: ${title}`);
     res.json({ success: true });
   } catch (err) {
