@@ -67,37 +67,39 @@ def send_whatsapp_alert(
             return
 
         priority = "default"
-        tags = "books,calendar"
-        header = "🔔 Nueva tarea en Moodle UTM"
+        priority = "default"
+        tags = "mortarboard,books"
+        header = "Nueva tarea en Moodle UTM"
 
         if milestone == "8h":
             priority = "urgent"
             tags = "rotating_light,warning,books"
-            header = "🚨 ¡URGENTE! Faltan menos de 8 horas"
+            header = "URGENTE: Faltan menos de 8 horas"
         elif milestone == "1d":
             priority = "high"
             tags = "warning,books"
-            header = "⚠️ Recordatorio: ¡Falta 1 día!"
+            header = "Recordatorio: Falta 1 dia"
         elif milestone == "2d":
             priority = "default"
             tags = "hourglass,books"
-            header = "⏳ Recordatorio: Faltan 2 días"
+            header = "Recordatorio: Faltan 2 dias"
         elif milestone == "3d":
             priority = "default"
             tags = "calendar,books"
-            header = "📅 Recordatorio: Faltan 3 días"
+            header = "Recordatorio: Faltan 3 dias"
 
         msg_lines = [
-            f"📝 {title}",
-            f"📚 {course or 'General'}",
-            f"⏱️ Límite: {due_date or 'Sin fecha'}",
+            f"Tarea: {title}",
+            f"Materia: {course or 'General'}",
+            f"Limite: {due_date or 'Sin fecha'}",
         ]
         body = "\n".join(msg_lines)
 
         headers = {
-            "Title": header.encode("utf-8"),
+            "Title": header,
             "Priority": priority,
             "Tags": tags,
+            "Content-Type": "text/plain; charset=utf-8",
         }
         if task_url:
             headers["Click"] = task_url
