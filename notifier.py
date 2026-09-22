@@ -52,6 +52,47 @@ def send_windows_notification(title: str, message: str, app_name: str = "Moodle 
         pass
 
 
+def send_system_alert(
+    title: str,
+    message: str,
+    priority: str = "urgent",
+    tags: str = "warning,rotating_light",
+    click_url: str = "",
+):
+    """Envía una alerta de sistema o estado a ntfy (ej. sesión caducada, fallas de red)."""
+    def _do_post():
+        topic = os.environ.get("NTFY_TOPIC", "utm-tareas-randy-az")
+        if not topic:
+            return
+
+        headers = {
+            "Title": title,
+            "Priority": priority,
+            "Tags": tags,
+            "Content-Type": "text/plain; charset=utf-8",
+        }
+        if click_url:
+            headers["Click"] = click_url
+
+        try:
+            import requests
+            res = requests.post(
+                f"https://ntfy.sh/{topic}",
+                data=message.encode("utf-8"),
+                headers=headers,
+                timeout=10,
+            )
+            if res.status_code == 200:
+                print(f"[Notifier] Alerta de sistema enviada a ntfy.sh/{topic}")
+            else:
+                print(f"[Notifier] Error ntfy ({res.status_code}): {res.text}")
+        except Exception as e:
+            print(f"[Notifier] Error enviando alerta a ntfy: {e}")
+
+    import threading
+    threading.Thread(target=_do_post, daemon=True).start()
+
+
 def send_whatsapp_alert(
     title: str,
     course: str,
