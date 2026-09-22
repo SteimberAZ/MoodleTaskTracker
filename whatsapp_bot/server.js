@@ -88,6 +88,20 @@ function getSelfJid() {
   return `${cleanNumber}@s.whatsapp.net`;
 }
 
+// Función para obtener el destino de las alertas (Grupo o Personal)
+function getTargetJid(overrideJid) {
+  if (overrideJid) return overrideJid;
+  if (process.env.WHATSAPP_TARGET_JID) return process.env.WHATSAPP_TARGET_JID;
+  const configPath = path.join(__dirname, 'target_chat.json');
+  if (fs.existsSync(configPath)) {
+    try {
+      const data = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      if (data.targetJid) return data.targetJid;
+    } catch (e) {}
+  }
+  return getSelfJid();
+}
+
 // --- Endpoints de la API ---
 
 // 1. Estado de la conexión y QR
@@ -96,19 +110,53 @@ app.get('/api/status', (req, res) => {
     status: connectionStatus,
     userPhone: userPhone ? `+${userPhone}` : null,
     qrCode: currentQrCode,
+    targetJid: getTargetJid(),
   });
 });
 
-// 2. Enviar mensaje de prueba al propio número
+// Listar grupos disponibles
+app.get('/api/groups', async (req, res) => {
+  if (connectionStatus !== 'connected' || !sock) {
+    return res.status(503).json({ error: 'WhatsApp no está conectado.' });
+  }
+  try {
+    const groups = await sock.groupFetchAllParticipating();
+    const list = Object.values(groups).map((g) => ({
+      id: g.id,
+      subject: g.subject,
+      creation: g.creation,
+      participantsCount: g.participants?.length || 0,
+    }));
+    list.sort((a, b) => (b.creation || 0) - (a.creation || 0));
+    res.json(list);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Configurar grupo destinatario
+app.post('/api/set-target-group', async (req, res) => {
+  const { targetJid } = req.body || {};
+  if (!targetJid) return res.status(400).json({ error: 'Falta targetJid' });
+  try {
+    const configPath = path.join(__dirname, 'target_chat.json');
+    fs.writeFileSync(configPath, JSON.stringify({ targetJid }, null, 2));
+    res.json({ success: true, targetJid });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 2. Enviar mensaje de prueba
 app.post('/api/test-message', async (req, res) => {
   if (connectionStatus !== 'connected' || !sock) {
     return res.status(400).json({ success: false, error: 'WhatsApp aún no está conectado. Escanea el QR primero.' });
   }
 
   try {
-    const targetJid = getSelfJid();
+    const targetJid = getTargetJid(req.body?.target_jid);
     if (!targetJid) {
-      return res.status(400).json({ success: false, error: 'No se pudo identificar tu número.' });
+      return res.status(400).json({ success: false, error: 'No se pudo identificar el destinatario.' });
     }
 
     const testText =
@@ -146,9 +194,9 @@ app.post('/api/send-alert', async (req, res) => {
   const { title, course, due_date, task_url, milestone } = req.body;
 
   try {
-    const targetJid = getSelfJid();
+    const targetJid = getTargetJid(req.body?.target_jid);
     if (!targetJid) {
-      return res.status(400).json({ success: false, error: 'No se pudo identificar tu número.' });
+      return res.status(400).json({ success: false, error: 'No se pudo identificar el destinatario.' });
     }
 
     let header = '🔔 *¡NUEVA TAREA PUBLICADA EN MOODLE!*';

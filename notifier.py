@@ -63,18 +63,23 @@ def send_whatsapp_alert(
     """Envía la alerta exclusivamente al microservicio propio de WhatsApp (Note to Self)."""
     def _do_post():
         bot_url = os.environ.get("WHATSAPP_BOT_URL", "http://127.0.0.1:3850/api/send-alert")
+        target_jid = os.environ.get("WHATSAPP_TARGET_JID", "")
         try:
             import requests
+            payload = {
+                "title": title,
+                "course": course,
+                "due_date": due_date,
+                "task_url": task_url,
+                "milestone": milestone,
+                "is_urgent": is_urgent,
+            }
+            if target_jid:
+                payload["target_jid"] = target_jid
+
             res = requests.post(
                 bot_url,
-                json={
-                    "title": title,
-                    "course": course,
-                    "due_date": due_date,
-                    "task_url": task_url,
-                    "milestone": milestone,
-                    "is_urgent": is_urgent,
-                },
+                json=payload,
                 timeout=10,
             )
             if res.status_code == 200:
