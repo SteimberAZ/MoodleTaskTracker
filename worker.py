@@ -4,6 +4,7 @@ from datetime import datetime
 from moodle_client import MoodleClient
 from notifier import TaskNotificationManager, send_system_alert
 from storage import Storage
+from class_schedule import check_and_notify_upcoming_classes
 
 
 def _read_env_cookie():
@@ -26,7 +27,7 @@ def _read_env_cookie():
 
 
 def run_worker():
-    """Ejecutor en segundo plano sin interfaz gráfica con Keep-Alive y alerta de sesión."""
+    """Ejecutor en segundo plano con Keep-Alive, alerta de sesión y recordatorio de clases 30m."""
     storage = Storage()
 
     base_url = os.environ.get("MOODLE_URL") or storage.get_setting("moodle_url", "https://evirtual.utm.edu.ec")
@@ -48,21 +49,29 @@ def run_worker():
     tasks_check_seconds = tasks_check_mins * 60
 
     print("=" * 60)
-    print("  🚀 MOODLE TRACKER - HEADLESS WORKER CON KEEP-ALIVE")
+    print("  🚀 MOODLE TRACKER - HEADLESS WORKER (TAREAS + CLASES UTM)")
     print(f"  🌐 URL: {base_url}")
     print(f"  ☁️ Supabase Cloud: {'Conectado' if storage.supabase.is_configured else 'Desactivado'}")
     print(f"  💓 Keep-Alive: cada {keep_alive_seconds // 60} minutos")
     print(f"  📋 Revisión de tareas: cada {tasks_check_mins} minutos")
+    print("  🎓 Alertas de clases: 30 minutos antes de cada materia")
     print("=" * 60)
 
     last_tasks_check = 0.0
+    last_keep_alive = 0.0
     session_expired_notified = False
 
     while True:
         now_ts = time.time()
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        # Recargar cookie fresca desde .env si fue modificada en disco
+        # 1. Monitoreo del horario de clases universitarias
+        try:
+            check_and_notify_upcoming_classes(storage)
+        except Exception as err:
+            print(f"[{now_str}] [!] Error en recordatorio de clases: {err}")
+
+        # 2. Recargar cookie fresca desde .env si fue modificada en disco
         current_cookie = _read_env_cookie() or storage.get_setting("moodle_session", "")
         if current_cookie and current_cookie != session_cookie:
             print(f"[{now_str}] 🔄 Se detectó actualización de cookie en .env.")
@@ -71,14 +80,16 @@ def run_worker():
 
         client = MoodleClient(base_url, session_cookie)
         should_check_tasks = (now_ts - last_tasks_check) >= tasks_check_seconds
+        should_keep_alive = (now_ts - last_keep_alive) >= keep_alive_seconds
 
         if should_check_tasks:
             print(f"\n[{now_str}] 📋 Verificando calendario de Moodle y actualizando tareas...")
+            last_tasks_check = time.time()
+            last_keep_alive = time.time()
             try:
                 success, tasks, msg = client.fetch_upcoming_tasks()
 
                 if success:
-                    last_tasks_check = time.time()
                     new_tasks, _ = storage.save_tasks(tasks)
                     print(f"[{now_str}] {msg}")
                     print(f"[{now_str}] Tareas nuevas detectadas: {len(new_tasks)}")
@@ -112,8 +123,9 @@ def run_worker():
             except Exception as err:
                 print(f"[{now_str}] [!] Excepción en tareas: {err}")
 
-        else:
-            # Petición liviana de Keep-Alive
+        elif should_keep_alive:
+            # Petición liviana de Keep-Alive cada 5 minutos
+            last_keep_alive = time.time()
             try:
                 is_alive, msg = client.test_connection()
                 if is_alive:
@@ -142,8 +154,8 @@ def run_worker():
             except Exception as err:
                 print(f"[{now_str}] [!] Error en Keep-Alive: {err}")
 
-        # Dormir el intervalo de keep-alive (5 minutos)
-        time.sleep(keep_alive_seconds)
+        # Tick cada 60 segundos para evaluar con precisión el horario de clases
+        time.sleep(60)
 
 
 if __name__ == "__main__":
