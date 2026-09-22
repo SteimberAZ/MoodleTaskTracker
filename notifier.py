@@ -104,7 +104,7 @@ def send_whatsapp_alert(
             if task_url:
                 msg_text += f"\n🔗 *Abrir en Moodle:*\n{task_url}"
 
-            to_number = os.environ.get("WHATSAPP_TO", "593998155197")
+            to_number = os.environ.get("WHATSAPP_TO", "593969737596")
             resp = requests.post(
                 "http://localhost:3847/send",
                 json={"to": to_number, "message": msg_text},
