@@ -60,13 +60,13 @@ def send_whatsapp_alert(
     milestone: str = "new",
     is_urgent: bool = False,
 ):
-    """Envía la alerta al microservicio local de WhatsApp si está activo de forma asíncrona."""
+    """Envía la alerta exclusivamente al microservicio propio de WhatsApp (Note to Self)."""
     def _do_post():
-        # 1. Intentar con el microservicio en puerto 3000
+        bot_url = os.environ.get("WHATSAPP_BOT_URL", "http://127.0.0.1:3850/api/send-alert")
         try:
             import requests
             res = requests.post(
-                "http://localhost:3000/api/send-alert",
+                bot_url,
                 json={
                     "title": title,
                     "course": course,
@@ -75,47 +75,14 @@ def send_whatsapp_alert(
                     "milestone": milestone,
                     "is_urgent": is_urgent,
                 },
-                timeout=2,
-            )
-            if res.status_code == 200:
-                return
-        except Exception:
-            pass
-
-        # 2. Respaldo para VPS con bot existente en puerto 3847
-        try:
-            import requests
-            header = "🔔 *¡NUEVA TAREA EN MOODLE!*"
-            if milestone == "8h":
-                header = "🚨 *¡URGENTE! FALTAN MENOS DE 8 HORAS PARA ENTREGAR*"
-            elif milestone == "1d":
-                header = "⚠️ *RECORDATORIO: ¡FALTA 1 DÍA PARA ENTREGAR!*"
-            elif milestone == "2d":
-                header = "⏳ *RECORDATORIO: FALTAN 2 DÍAS PARA ENTREGAR*"
-            elif milestone == "3d":
-                header = "📅 *RECORDATORIO: FALTAN 3 DÍAS PARA ENTREGAR*"
-
-            msg_text = (
-                f"{header}\n\n"
-                f"📝 *Tarea:* {title}\n"
-                f"📚 *Materia:* {course or 'General'}\n"
-                f"⏱️ *Límite:* {due_date or 'Sin fecha'}\n"
-            )
-            if task_url:
-                msg_text += f"\n🔗 *Abrir en Moodle:*\n{task_url}"
-
-            to_number = os.environ.get("WHATSAPP_TO", "593969737596")
-            resp = requests.post(
-                "http://localhost:3847/send",
-                json={"to": to_number, "message": msg_text},
                 timeout=10,
             )
-            if resp.status_code == 200:
-                print(f"[Notifier] Alerta WhatsApp enviada ({milestone}) a {to_number}")
+            if res.status_code == 200:
+                print(f"[Notifier] Alerta WhatsApp enviada a tu chat personal ({milestone}) vía bot propio.")
             else:
-                print(f"[Notifier] Error WhatsApp ({resp.status_code}): {resp.text}")
-        except Exception as ex:
-            print(f"[Notifier] Excepción al enviar WhatsApp: {ex}")
+                print(f"[Notifier] Bot propio respondió ({res.status_code}): {res.text}")
+        except Exception as e:
+            print(f"[Notifier] No se pudo conectar al bot propio en {bot_url}: {e}")
 
     import threading
     threading.Thread(target=_do_post, daemon=True).start()

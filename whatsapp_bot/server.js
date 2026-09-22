@@ -14,7 +14,8 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3850;
+const HOST = process.env.HOST || '127.0.0.1';
 const AUTH_DIR = path.join(__dirname, 'auth_session');
 
 app.use(express.json());
@@ -49,8 +50,11 @@ async function startWhatsApp() {
           margin: 2,
           color: { dark: '#000000', light: '#ffffff' },
         });
+        const terminalQr = await QRCode.toString(qr, { type: 'terminal', small: true });
+        console.log('\n--- ESCANEA ESTE QR CON TU WHATSAPP ---');
+        console.log(terminalQr);
+        console.log('----------------------------------------\n');
         connectionStatus = 'waiting_qr';
-        console.log('[WhatsApp] Nuevo código QR generado. Listo para escanear en http://localhost:3000');
       } catch (err) {
         console.error('[WhatsApp QR Error]:', err);
       }
@@ -191,10 +195,10 @@ app.post('/api/logout', async (req, res) => {
 });
 
 // Iniciar servidor y socket de WhatsApp
-app.listen(PORT, () => {
+app.listen(PORT, HOST, () => {
   console.log(`\n======================================================`);
   console.log(`  🚀 Mini Landing de WhatsApp lista en:`);
-  console.log(`  👉 http://localhost:${PORT}`);
+  console.log(`  👉 http://${HOST}:${PORT}`);
   console.log(`======================================================\n`);
   startWhatsApp();
 });
