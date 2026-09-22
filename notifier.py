@@ -60,34 +60,62 @@ def send_whatsapp_alert(
     milestone: str = "new",
     is_urgent: bool = False,
 ):
-    """Envía la alerta exclusivamente al microservicio propio de WhatsApp (Note to Self)."""
+    """Envía la alerta directamente a la app móvil ntfy con sonido, prioridad y enlace directo."""
     def _do_post():
-        bot_url = os.environ.get("WHATSAPP_BOT_URL", "http://127.0.0.1:3850/api/send-alert")
-        target_jid = os.environ.get("WHATSAPP_TARGET_JID", "")
+        topic = os.environ.get("NTFY_TOPIC", "utm-tareas-randy-az")
+        if not topic:
+            return
+
+        priority = "default"
+        tags = "books,calendar"
+        header = "🔔 Nueva tarea en Moodle UTM"
+
+        if milestone == "8h":
+            priority = "urgent"
+            tags = "rotating_light,warning,books"
+            header = "🚨 ¡URGENTE! Faltan menos de 8 horas"
+        elif milestone == "1d":
+            priority = "high"
+            tags = "warning,books"
+            header = "⚠️ Recordatorio: ¡Falta 1 día!"
+        elif milestone == "2d":
+            priority = "default"
+            tags = "hourglass,books"
+            header = "⏳ Recordatorio: Faltan 2 días"
+        elif milestone == "3d":
+            priority = "default"
+            tags = "calendar,books"
+            header = "📅 Recordatorio: Faltan 3 días"
+
+        msg_lines = [
+            f"📝 {title}",
+            f"📚 {course or 'General'}",
+            f"⏱️ Límite: {due_date or 'Sin fecha'}",
+        ]
+        body = "\n".join(msg_lines)
+
+        headers = {
+            "Title": header.encode("utf-8"),
+            "Priority": priority,
+            "Tags": tags,
+        }
+        if task_url:
+            headers["Click"] = task_url
+
         try:
             import requests
-            payload = {
-                "title": title,
-                "course": course,
-                "due_date": due_date,
-                "task_url": task_url,
-                "milestone": milestone,
-                "is_urgent": is_urgent,
-            }
-            if target_jid:
-                payload["target_jid"] = target_jid
-
             res = requests.post(
-                bot_url,
-                json=payload,
+                f"https://ntfy.sh/{topic}",
+                data=body.encode("utf-8"),
+                headers=headers,
                 timeout=10,
             )
             if res.status_code == 200:
-                print(f"[Notifier] Alerta WhatsApp enviada a tu chat personal ({milestone}) vía bot propio.")
+                print(f"[Notifier] Notificación Push enviada ({milestone}) a ntfy.sh/{topic}")
             else:
-                print(f"[Notifier] Bot propio respondió ({res.status_code}): {res.text}")
+                print(f"[Notifier] Error ntfy ({res.status_code}): {res.text}")
         except Exception as e:
-            print(f"[Notifier] No se pudo conectar al bot propio en {bot_url}: {e}")
+            print(f"[Notifier] Error enviando a ntfy: {e}")
 
     import threading
     threading.Thread(target=_do_post, daemon=True).start()
