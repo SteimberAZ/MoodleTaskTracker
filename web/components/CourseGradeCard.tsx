@@ -49,6 +49,8 @@ export default function CourseGradeCard({ standing }: { standing: CourseStanding
           <p className="status-ok">¡Aprobado!</p>
         ) : status === 'no_grades' ? (
           <p>Aún no tienes notas en esta materia.</p>
+        ) : needed === 0 ? (
+          <p>Aún hay actividades sin calificar: todavía no se puede confirmar si apruebas.</p>
         ) : (
           <p>
             {`Te faltan `}

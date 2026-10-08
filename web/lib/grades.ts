@@ -266,7 +266,10 @@ export function computeCourseStanding(rows: GradeItemRow[]): CourseStanding {
 
   const earned = round2(computation.earned);
   const needed = round2(Math.max(0, PASS_MARK - earned));
-  const passed = earned >= PASS_MARK;
+  const pendingItems = leaves.length - gradedLeaves.length;
+  // An estimate is Moodle's course total, which is renormalized over the graded items; it cannot confirm a pass
+  // while any stored activity is still ungraded.
+  const passed = earned >= PASS_MARK && (computation.method !== 'estimate' || pendingItems === 0);
   const projected = computation.method === 'weights' || computation.method === 'points';
   const spent = computation.spent === null ? null : round2(computation.spent);
   const available = computation.available === null ? null : round2(computation.available);
@@ -311,7 +314,7 @@ export function computeCourseStanding(rows: GradeItemRow[]): CourseStanding {
     neededShare,
     status,
     graded,
-    pendingItems: leaves.length - graded.length,
+    pendingItems,
     fetchedAt: latestFetch(rows),
   };
 }

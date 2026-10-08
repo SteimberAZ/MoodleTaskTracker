@@ -205,6 +205,37 @@ describe('computeCourseStanding', () => {
     expect(computeCourseStanding(rows)).toMatchObject({ method: 'none', status: 'unknown' });
   });
 
+  it('does not mark an estimate as passed while activities are still pending (renormalized course total)', () => {
+    // Moodle renormalizes the course total over the graded items: 9/10 graded, the rest open, total shown 90/100.
+    const rows = [
+      row({ course_id: 21, item_id: 1, item_type: 'course', item_instance: 31, category_id: null, grade_raw: 90, grade_max: 100 }),
+      row({ course_id: 21, item_id: 2, item_type: 'mod', weight_raw: 1, grade_raw: 9, grade_max: 10, graded_at: 5 }),
+      row({ course_id: 21, item_id: 3, item_type: 'mod', weight_raw: 0, grade_max: 10 }),
+      row({ course_id: 21, item_id: 4, item_type: 'mod', weight_raw: 0, grade_max: 10 }),
+    ];
+    const s = computeCourseStanding(rows);
+    expect(s).toMatchObject({
+      method: 'estimate',
+      estimate: true,
+      earned: 90,
+      needed: 0,
+      passed: false,
+      status: 'unknown',
+      pendingItems: 2,
+    });
+    expect(summarizeStandings([s])).toMatchObject({ passed: 0, noData: 1 });
+  });
+
+  it('allows an estimate to pass once nothing is pending', () => {
+    const rows = [
+      row({ course_id: 22, item_id: 1, item_type: 'course', item_instance: 31, category_id: null, grade_raw: 90, grade_max: 100 }),
+      // Weights add up to 0.7 and the maxima to 20, so neither the weights nor the points method applies.
+      row({ course_id: 22, item_id: 2, item_type: 'mod', weight_raw: 0.5, grade_raw: 9, grade_max: 10, graded_at: 5 }),
+      row({ course_id: 22, item_id: 3, item_type: 'mod', weight_raw: 0.2, grade_raw: 9, grade_max: 10, graded_at: 6 }),
+    ];
+    expect(computeCourseStanding(rows)).toMatchObject({ method: 'estimate', passed: true, status: 'passed', pendingItems: 0 });
+  });
+
   it('does not use the weights when a leaf points at an unknown category', () => {
     const rows = A.map((r) => (r.item_id === 502 ? { ...r, category_id: 99 } : r));
     expect(computeCourseStanding(rows).method).not.toBe('weights');

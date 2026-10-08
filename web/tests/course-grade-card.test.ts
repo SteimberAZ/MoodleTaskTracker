@@ -49,6 +49,13 @@ const estimate = [
   row({ course_id: 14, item_id: 901, item_type: 'mod', grade_max: 10, grade_raw: 8 }),
   row({ course_id: 14, item_id: 902, item_type: 'mod', grade_max: 10 }),
 ];
+// Course total renormalized over the graded items (9/10 graded, rest open): the estimate reads 90/100.
+const renormalized = [
+  row({ course_id: 21, item_id: 1, item_type: 'course', item_instance: 31, category_id: null, grade_raw: 90, grade_max: 100 }),
+  row({ course_id: 21, item_id: 2, item_type: 'mod', weight_raw: 1, grade_raw: 9, grade_max: 10, graded_at: 5 }),
+  row({ course_id: 21, item_id: 3, item_type: 'mod', weight_raw: 0, grade_max: 10 }),
+  row({ course_id: 21, item_id: 4, item_type: 'mod', weight_raw: 0, grade_max: 10 }),
+];
 const empty = [
   row({ course_id: 15, item_id: 1000, item_type: 'course', item_instance: 31, category_id: null }),
   row({ course_id: 15, item_id: 1001, item_type: 'mod', weight_raw: 0.4, grade_max: 40 }),
@@ -97,6 +104,20 @@ describe('CourseGradeCard', () => {
     expect(html).toContain('Estimado con el total del curso');
     expect(html).not.toContain('grade-item-points');
     expect(html).not.toContain('Puntos aún por calificar');
+  });
+
+  it('does not show an estimate with pending activities as passed', () => {
+    const { standing, html } = render(renormalized);
+    expect(standing.status).toBe('unknown');
+    expect(html).toContain('90</strong>');
+    expect(html).toContain('Estimado');
+    expect(html).toContain('Estimado con el total del curso');
+    expect(html).not.toContain('¡Aprobado!');
+    expect(html).not.toContain('Aprobada');
+    expect(html).not.toContain('is-passed');
+    expect(html).not.toContain('Te faltan');
+    expect(html).toContain('todavía no se puede confirmar si apruebas');
+    expect(html).toContain('2 actividades sin calificar');
   });
 
   it('tells a course without grades that there is nothing to show yet', () => {
