@@ -133,6 +133,7 @@ La clave pública impresa va a Vercel como `NEXT_PUBLIC_VAPID_PUBLIC_KEY`. Guard
 - En **Admin** creas códigos de invitación de un solo uso, con vencimiento opcional. Cada invitado entra con su usuario de la UTM y su código.
 - En **Notificaciones** cada usuario activa los avisos nativos en su celular o computadora. En iPhone (iOS 16.4 o superior) primero hay que añadir la web a la pantalla de inicio desde Safari.
 - En **Mi cuenta** sigue el tema de ntfy como canal opcional, con un interruptor para apagarlo y evitar avisos duplicados.
+- En **Recordatorios → Horario de clases** cada usuario sube el PDF "Horario de clases" del SGA. La web lo lee, muestra una vista previa y guarda solo las clases (el PDF, el nombre y la cédula no se guardan). Luego elige avisos 30 min, 1 hora o 3 horas antes de cada clase, con materia, paralelo, docente, aula y piso.
 - La contraseña de la UTM nunca se guarda: solo se guarda el token de la API de Moodle de cada usuario.
 
 ### Desarrollo local

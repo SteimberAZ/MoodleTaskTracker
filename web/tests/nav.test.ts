@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { REMINDERS_PATH, TASKS_PATH, buildNavItems, isNavActive } from '@/lib/nav';
+import { REMINDERS_PATH, SCHEDULE_PATH, TASKS_PATH, buildNavItems, isNavActive } from '@/lib/nav';
 
 const hrefs = (isAdmin: boolean) => buildNavItems(isAdmin, '/').map((i) => i.href);
 const labels = (isAdmin: boolean) => buildNavItems(isAdmin, '/').map((i) => i.label);
@@ -51,6 +51,13 @@ describe('isNavActive', () => {
     expect(isNavActive(REMINDERS_PATH, '/reminders/42/edit')).toBe(true);
     expect(isNavActive(REMINDERS_PATH, '/recordatorios')).toBe(true);
     expect(isNavActive(TASKS_PATH, '/reminders/new')).toBe(false);
+  });
+
+  it('keeps Recordatorios active on the class schedule page (no sixth tab)', () => {
+    expect(isNavActive(REMINDERS_PATH, SCHEDULE_PATH)).toBe(true);
+    expect(isNavActive(REMINDERS_PATH, '/horariox')).toBe(false);
+    expect(buildNavItems(true, SCHEDULE_PATH).filter((i) => i.current).map((i) => i.href)).toEqual(['/recordatorios']);
+    expect(buildNavItems(true, '/')).toHaveLength(5);
   });
 
   it('only matches whole path segments', () => {

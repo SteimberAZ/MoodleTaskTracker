@@ -1,6 +1,10 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   poweredByHeader: false,
+  experimental: {
+    // The schedule import posts a PDF (max 2 MB, checked by the action) through a server action.
+    serverActions: { bodySizeLimit: '3mb' },
+  },
   async headers() {
     return [
       {

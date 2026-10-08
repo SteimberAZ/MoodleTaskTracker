@@ -1,0 +1,87 @@
+import { requireUser } from '@/lib/auth';
+import { SAMPLE_CLASS, guayaquilWeekday, pickSampleClass, titleCase } from '@/lib/class-schedule';
+import { getClassReminderMinutes, getClassSchedule } from '@/lib/class-schedule-store';
+import { dateToGuayaquilInput } from '@/lib/time';
+import ClassReminderSetting from '@/components/ClassReminderSetting';
+import ConfirmButton from '@/components/ConfirmButton';
+import RemindersTabs from '@/components/RemindersTabs';
+import ScheduleDays from '@/components/ScheduleDays';
+import ScheduleImport from '@/components/ScheduleImport';
+import { deleteSchedule } from './actions';
+
+export const dynamic = 'force-dynamic';
+
+/** "2027-01-31" -> "31/01/2027". */
+const formatDate = (iso: string): string => iso.split('-').reverse().join('/');
+
+export default async function SchedulePage() {
+  const user = await requireUser();
+  const [schedule, lead] = await Promise.all([getClassSchedule(user.id), getClassReminderMinutes(user.id)]);
+  const now = new Date();
+  const classes = schedule?.classes ?? [];
+  const sample = pickSampleClass(classes, now);
+  const today = dateToGuayaquilInput(now).slice(0, 10);
+  const ended = !!schedule?.periodEnd && schedule.periodEnd < today;
+
+  return (
+    <>
+      <RemindersTabs current="schedule" />
+
+      <section aria-labelledby="schedule-title" className="section">
+        <header className="page-head">
+          <h1 id="schedule-title">Horario de clases</h1>
+          {schedule?.periodLabel && <p className="muted">{titleCase(schedule.periodLabel)}</p>}
+        </header>
+
+        {schedule === null && (
+          <p className="card muted empty">El horario de clases aún no está disponible. Inténtalo de nuevo más tarde.</p>
+        )}
+
+        {schedule && classes.length === 0 && (
+          <div className="card item">
+            <h2 className="card-title">Importa tu horario</h2>
+            <p className="muted">
+              En el SGA abre «Horario de clases», imprime o descarga la página como PDF y súbela aquí. Verás una vista previa antes de
+              guardar.
+            </p>
+            <ScheduleImport hasSchedule={false} />
+          </div>
+        )}
+
+        {schedule && classes.length > 0 && (
+          <div className="stack">
+            {ended && schedule.periodEnd && (
+              <p className="warning" role="status">
+                Este horario terminó el {formatDate(schedule.periodEnd)}. Importa el del nuevo período para seguir recibiendo avisos.
+              </p>
+            )}
+            <ScheduleDays items={classes.map((cls, index) => ({ cls, index }))} today={guayaquilWeekday(now)} />
+            <ScheduleImport
+              key="has-schedule"
+              hasSchedule
+              extraActions={
+                <ConfirmButton
+                  action={deleteSchedule}
+                  label="Borrar horario"
+                  message="¿Borrar tu horario de clases? Dejarás de recibir avisos de clases hasta que lo importes de nuevo."
+                  danger
+                />
+              }
+            />
+          </div>
+        )}
+      </section>
+
+      <section className="card item" aria-labelledby="class-reminder-title">
+        <h2 id="class-reminder-title" className="card-title">Avisos de clases</h2>
+        <ClassReminderSetting
+          available={lead.available}
+          minutes={lead.minutes}
+          sample={sample ?? SAMPLE_CLASS}
+          sampleIsReal={!!sample}
+        />
+      </section>
+      <p className="muted small">Horas en Ecuador (UTC-5).</p>
+    </>
+  );
+}

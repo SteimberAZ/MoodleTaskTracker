@@ -716,6 +716,68 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 2px
 .switch-label { flex: 1 1 120px; min-width: 0; font-size: 14px; font-weight: 700; }
 .switch-row .field-error { flex-basis: 100%; }
 
+/* ============================== Class schedule (/horario) ============================== */
+/* Segmented control: the Recordatorios / Horario tabs and the lead-time picker share the same pills. */
+.segmented-tabs, .segmented-row {
+  display: grid;
+  grid-auto-columns: minmax(0, 1fr);
+  grid-auto-flow: column;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 100px;
+}
+.segmented-tabs { margin-bottom: 18px; max-width: 480px; }
+.segment {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 100px;
+  background: transparent;
+  color: var(--text);
+  font: 700 13px/1.1 var(--font);
+  text-align: center;
+  cursor: pointer;
+}
+.segment[aria-current='page'], .segment[aria-pressed='true'] { background: var(--btn-bg); color: var(--btn-text); }
+.segment:disabled { opacity: 0.6; cursor: wait; }
+@media (hover: hover) {
+  .segment:not([aria-current='page']):not([aria-pressed='true']):not(:disabled):hover { background: var(--border); }
+}
+.segmented { display: grid; gap: 8px; min-width: 0; margin: 0; padding: 0; border: 0; }
+.segmented legend { padding: 0; margin-bottom: 8px; font-size: 14px; font-weight: 700; }
+@media (max-width: 380px) { .segmented-row { grid-auto-flow: row; grid-auto-columns: auto; grid-template-columns: repeat(2, minmax(0, 1fr)); border-radius: 24px; } }
+
+.schedule-days { display: grid; gap: 18px; }
+.schedule-day-title { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; font-size: 17px; }
+.schedule-day.is-today .schedule-day-title { color: var(--clay); }
+.class-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.class-item {
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr);
+  gap: 12px;
+  padding: 12px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.schedule-day.is-today .class-item { border-color: var(--clay); }
+.class-time { display: grid; align-content: start; margin: 0; font-weight: 800; font-variant-numeric: tabular-nums; line-height: 1.3; }
+.class-time-end { color: var(--muted); font-weight: 600; }
+.class-body { display: grid; gap: 2px; min-width: 0; }
+.class-subject { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin: 0; font-weight: 700; line-height: 1.3; }
+.class-meta { margin: 0; color: var(--muted); font-size: 13.5px; line-height: 1.4; }
+.class-check { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; margin-top: 4px; font-size: 13px; font-weight: 700; cursor: pointer; }
+.class-check input { width: 22px; height: 22px; min-height: 0; padding: 0; accent-color: var(--clay); }
+
+/* Preview of the notification the worker will send. */
+.notif-preview { display: grid; gap: 4px; margin-top: 6px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 14px; background: var(--bg); }
+.notif-title { margin: 0; font-weight: 800; line-height: 1.3; overflow-wrap: anywhere; }
+.notif-body { margin: 0; white-space: pre-line; font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
+
 /* ============================== Login: clay hero with the 80px grid overlay ============================== */
 body:has(.form.narrow) { background: var(--clay); }
 body:has(.form.narrow)::before {

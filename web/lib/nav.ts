@@ -2,6 +2,8 @@
 
 export const TASKS_PATH = '/';
 export const REMINDERS_PATH = '/recordatorios';
+/** The class schedule lives inside Recordatorios (a segment at the top of both pages), so the tab bar stays at five items. */
+export const SCHEDULE_PATH = '/horario';
 
 export type NavIconName = 'tasks' | 'reminders' | 'bell' | 'user' | 'shield';
 
@@ -23,7 +25,9 @@ function within(pathname: string, base: string): boolean {
 /** Whether the tab pointing at `href` is the current route. Detail and form pages keep their section active. */
 export function isNavActive(href: string, pathname: string): boolean {
   if (href === TASKS_PATH) return pathname === TASKS_PATH || within(pathname, '/tareas');
-  if (href === REMINDERS_PATH) return within(pathname, REMINDERS_PATH) || within(pathname, '/reminders');
+  if (href === REMINDERS_PATH) {
+    return within(pathname, REMINDERS_PATH) || within(pathname, '/reminders') || within(pathname, SCHEDULE_PATH);
+  }
   return within(pathname, href);
 }
 

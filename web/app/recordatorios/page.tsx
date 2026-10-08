@@ -6,6 +6,7 @@ import { listTasksByIds, type MoodleTask } from '@/lib/tasks';
 import { pageCount, parsePage, remindersHref } from '@/lib/pagination';
 import Pagination from '@/components/Pagination';
 import ReminderCard from '@/components/ReminderCard';
+import RemindersTabs from '@/components/RemindersTabs';
 
 export const dynamic = 'force-dynamic';
 
@@ -29,6 +30,7 @@ export default async function RemindersPage({ searchParams }: { searchParams: Se
 
   return (
     <>
+      <RemindersTabs current="reminders" />
       <section aria-labelledby="reminders-title" className="section">
         <div className="section-head">
           <h1 id="reminders-title">Recordatorios</h1>
@@ -53,6 +55,13 @@ export default async function RemindersPage({ searchParams }: { searchParams: Se
           ))}
         </ul>
         <Pagination page={page} pages={pages} label="Paginación de recordatorios" hrefFor={remindersHref} />
+      </section>
+      <section className="card item section" aria-labelledby="schedule-link-title">
+        <h2 id="schedule-link-title" className="card-title">Horario de clases</h2>
+        <p className="muted">Importa el PDF de tu horario del SGA y recibe un aviso antes de cada clase.</p>
+        <div className="actions">
+          <Link href="/horario" className="btn">Importar horario de clases</Link>
+        </div>
       </section>
       <p className="muted small">Horas en Ecuador (UTC-5).</p>
     </>
