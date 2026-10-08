@@ -131,6 +131,19 @@ def test_a_full_remirror_runs_once_a_day(tmp_path):
     assert len(mirror.task_batches) == 2
 
 
+def test_a_task_that_returns_unchanged_after_an_absence_is_resent(tmp_path):
+    # While absent it may have been flagged missing_since remotely; re-sending it clears the flag.
+    mirror = FakeMirror()
+    s = _storage(tmp_path, mirror)
+    s.save_tasks([_task("t1"), _task("t2")])
+    s.save_tasks([_task("t1")])  # t2 not returned this round
+    assert [len(b) for b in mirror.task_batches] == [2]
+    s.save_tasks([_task("t1"), _task("t2")])
+    assert [[t["id"] for t in b] for b in mirror.task_batches] == [["t1", "t2"], ["t2"]]
+    s.save_tasks([_task("t1"), _task("t2")])
+    assert len(mirror.task_batches) == 2
+
+
 def test_unchanged_details_keep_their_first_timestamp(tmp_path):
     mirror = FakeMirror()
     s = _storage(tmp_path, mirror)

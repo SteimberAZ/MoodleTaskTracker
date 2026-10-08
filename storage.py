@@ -296,6 +296,7 @@ class Storage:
                     if sig != existing["mirror_sig"]:
                         changed_ids.add(str(task_id))
 
+            self._forget_absent_signatures(conn, tasks)
             conn.commit()
 
         self._forget_remote_milestones(rearmed)
@@ -307,6 +308,28 @@ class Storage:
             self._mirror_tasks(rows, mirror_async, full_owners, now)
 
         return new_tasks, updated_tasks
+
+    @staticmethod
+    def _forget_absent_signatures(conn, tasks: List[Dict]):
+        """Clear the mirror fingerprint of an owner's stored tasks that this fetch did not return.
+
+        Such a task may be flagged ``missing_since`` remotely; if Moodle returns it again, it must be
+        re-sent (clearing that flag) even though its values did not change.
+        """
+        present: Dict[str, Set[str]] = collections.defaultdict(set)
+        for t in tasks:
+            if _owner(t):
+                present[_owner(t)].add(str(t["id"]))
+        for owner, ids in present.items():
+            stale = [
+                (row["id"],)
+                for row in conn.execute(
+                    "SELECT id FROM tasks WHERE user_id = ? AND mirror_sig IS NOT NULL", (owner,)
+                )
+                if str(row["id"]) not in ids
+            ]
+            if stale:
+                conn.executemany("UPDATE tasks SET mirror_sig = NULL WHERE id = ?", stale)
 
     @staticmethod
     def _rearm_milestones(conn, task_id: str, old_due, new_due, now: int) -> List[str]:
