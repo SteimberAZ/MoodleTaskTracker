@@ -78,3 +78,35 @@ Haz doble clic en **`MoodleTracker.exe`**.
   python build_exe.py
   ```
 El script instalará las dependencias necesarias, incluirá el icono de alta resolución y generará `MoodleTracker.exe` directamente en la raíz.
+
+---
+
+## ✅ Detección de Tareas Entregadas
+
+En cada sincronización, el worker abre la página de cada tarea pendiente (`/mod/assign/view.php?id=…`) y lee el estado de la entrega. Si la tarea aparece como **"Enviado para calificar"**, queda marcada como `submitted` y no vuelve a generar recordatorios.
+
+## ⏰ Recordatorios Personalizados (Web en Vercel)
+
+La carpeta `web/` contiene una app Next.js protegida con contraseña. Desde ahí se crean recordatorios con una frecuencia (cada N minutos, horas o días) y una fecha de fin. La web solo guarda los datos en Supabase; el worker del VPS los lee y envía las notificaciones por ntfy.
+
+### 1. Supabase
+Ejecuta en el SQL Editor la sección `custom_reminders` del archivo `supabase_schema.sql`. La tabla tiene RLS activado y no tiene políticas, así que solo la `service_role` key puede acceder a ella.
+
+### 2. VPS (worker.py)
+Agrega esta variable al `.env` del VPS y reinicia el worker:
+```
+SUPABASE_SERVICE_ROLE_KEY=<service_role key de Supabase>
+```
+Si no está configurada, el worker usa la key anterior, que no tiene acceso a la tabla, y los recordatorios no se envían.
+
+### 3. Vercel
+- **Root Directory:** `web`
+- **Environment Variables:** `APP_PASSWORD`, `SESSION_SECRET` (un texto aleatorio largo, por ejemplo `openssl rand -hex 32`), `SUPABASE_URL` y `SUPABASE_SERVICE_ROLE_KEY`. No uses el prefijo `NEXT_PUBLIC_` en ninguna.
+
+### Desarrollo local
+```
+cd web
+cp .env.example .env.local   # completa los valores
+npm install
+npm run dev
+```
