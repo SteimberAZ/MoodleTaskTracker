@@ -15,7 +15,6 @@ from moodle_api import (
     MoodleTokenInvalid,
     event_to_task,
     parse_assign_submission_status,
-    resolve_credentials,
 )
 from storage import Storage
 
@@ -191,20 +190,9 @@ class FakeSupabase:
         return True
 
 
-def test_token_from_supabase_row_wins_over_env():
-    sb = FakeSupabase({"token": " abc ", "moodle_url": "https://row.example"})
-    c = resolve_credentials(sb, env={"MOODLE_TOKEN": "env-token"})
-    assert (c.token, c.base_url, c.source) == ("abc", "https://row.example", "supabase")
-
-
-@pytest.mark.parametrize("sb", [FakeSupabase(None), FakeSupabase({"token": ""}), FakeSupabase(fail=True), None])
-def test_token_falls_back_to_env(sb):
-    c = resolve_credentials(sb, env={"MOODLE_TOKEN": "env-token", "MOODLE_URL": "https://env.example"})
-    assert (c.token, c.base_url, c.source) == ("env-token", "https://env.example", "env")
-
-
-def test_no_token_anywhere_returns_none():
-    assert resolve_credentials(FakeSupabase(None), env={}) is None
+def test_the_legacy_env_token_resolver_is_gone():
+    # The single-user MOODLE_TOKEN / moodle_credentials path was removed with the legacy worker mode.
+    assert not hasattr(moodle_api, "resolve_credentials")
 
 
 # ---- sync + migration guard ------------------------------------------------------------------

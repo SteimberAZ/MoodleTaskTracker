@@ -10,7 +10,6 @@ consecutive network failures instead of hammering an unreachable site.
 """
 import hashlib
 import html
-import os
 import re
 import time
 from datetime import datetime, timedelta, timezone
@@ -429,20 +428,3 @@ class Credentials:
         """Non-reversible short id of the token (safe to store and log)."""
         return hashlib.sha256(self.token.encode("utf-8")).hexdigest()[:12]
 
-
-def resolve_credentials(supabase: Any = None, env: Optional[Dict[str, str]] = None) -> Optional[Credentials]:
-    """Token from Supabase ``moodle_credentials`` (id=1), falling back to env ``MOODLE_TOKEN``."""
-    env = os.environ if env is None else env
-    default_url = (env.get("MOODLE_URL") or DEFAULT_MOODLE_URL).strip()
-    row = None
-    if supabase is not None and getattr(supabase, "is_configured", False):
-        try:
-            row = supabase.fetch_credentials()
-        except Exception as e:
-            print(f"[MoodleApi] could not read moodle_credentials: {e}")
-    if row and str(row.get("token") or "").strip():
-        return Credentials(str(row["token"]).strip(), str(row.get("moodle_url") or default_url), "supabase")
-    token = (env.get("MOODLE_TOKEN") or "").strip()
-    if token:
-        return Credentials(token, default_url, "env")
-    return None
