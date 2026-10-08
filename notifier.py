@@ -258,6 +258,18 @@ title, course, due_date, milestone)
     threading.Thread(target=_do_post, daemon=True).start()
 
 
+def _retry_key(task_id: str, milestone: str) -> str:
+    """Bounded-retry key of one task milestone (they share the push tag ``task-<id>``)."""
+    return f"task-{task_id}:{milestone}"
+
+
+def _bound_user_id(deliver) -> str:
+    """User id of a deliverer bound with ``functools.partial(deliver_to_user, user)`` ("" otherwise)."""
+    args = getattr(deliver, "args", None) or ()
+    user = args[0] if args else None
+    return str(user.get("id") or "") if isinstance(user, dict) else ""
+
+
 class TaskNotificationManager:
     """Gestiona el análisis de tareas y el disparo de recordatorios según los 5 hitos configurados."""
 
@@ -277,7 +289,11 @@ class TaskNotificationManager:
         ``deliver``: per-user delivery (Web Push + optional ntfy), already bound to its user, called as
         ``deliver(title=, body=, url=, tag=, priority=, ntfy_tags=, ntfy_link=) -> bool``. When given it
         replaces the ntfy-only ``topic`` path, and a milestone is recorded only if it reports success, so
-        a total delivery failure is retried on the next sync.
+        a total delivery failure is retried on the next sync, until delivery.is_exhausted reports that
+        the bounded retries of that milestone are used up (it is then recorded anyway; the history keeps
+        its "failed" rows). Every milestone asks the device to alert again (``renotify``) because they
+        share the task tag, and the 3d/2d/1d/8h alerts expire on the push service when the task is due.
+        The 'new' alert is not sent for a task that is already overdue.
 
         Evalúa y envía los recordatorios para los 5 hitos:
         1. 'new': Tarea recién descubierta
@@ -287,18 +303,30 @@ class TaskNotificationManager:
         5. '8h': Faltan 8 horas (<= 8 horas)
         """
         import time
+
+        import delivery  # imported here: delivery imports this module
+        from webpush_sender import TTL_TASK
+
         now = int(time.time())
+        bound_user = _bound_user_id(deliver)
 
         def _toast(**kwargs):
             if desktop:
                 send_windows_notification(**kwargs)
 
-        def _push(task_id: str, **kwargs) -> bool:
+        def _ttl(milestone: str, due) -> int:
+            """Push TTL: a countdown alert is worthless once the task is due ('new' keeps TTL_TASK)."""
+            if milestone == "new" or not due:
+                return TTL_TASK
+            return max(60, min(int(due) - now, TTL_TASK))
+
+        def _push(task_id: str, due=None, **kwargs) -> bool:
             """Send one alert; False only when a per-user deliverer reported that nothing got through."""
             if deliver is None:
                 send_whatsapp_alert(topic=topic, **kwargs)  # fire-and-forget on a thread: assume sent
                 return True
-            msg = milestone_message(kwargs["title"], kwargs["course"], kwargs["due_date"], kwargs["milestone"])
+            milestone = kwargs["milestone"]
+            msg = milestone_message(kwargs["title"], kwargs["course"], kwargs["due_date"], milestone)
             return bool(
                 deliver(
                     title=msg["header"],
@@ -309,8 +337,29 @@ class TaskNotificationManager:
                     ntfy_tags=msg["tags"],
                     ntfy_link=kwargs.get("task_url", ""),
                     kind="task",
+                    renotify=True,
+                    ttl=_ttl(milestone, due),
+                    retry_key=_retry_key(task_id, milestone),
                 )
             )
+
+        def _settle(t: Dict, task_id: str, milestone: str, delivered: bool) -> None:
+            """Record the milestone when it was delivered, or when its bounded retries are exhausted."""
+            if delivered:
+                storage.record_milestone(task_id, milestone)
+                return
+            user_id = str(t.get("user_id") or bound_user or "")
+            key = _retry_key(task_id, milestone)
+            if deliver is not None and user_id and delivery.is_exhausted(user_id, "task", key):
+                print(f"[Notifier] task {task_id[:12]} '{milestone}' alert not delivered after every retry; giving up.")
+                storage.record_milestone(task_id, milestone)
+                delivery.forget(user_id, "task", key)
+
+        def _pre_record(task_id: str, *milestones: str) -> None:
+            """Settle the larger milestones without re-recording (and re-mirroring) them every round."""
+            for m in milestones:
+                if not storage.has_notified_milestone(task_id, m):
+                    storage.record_milestone(task_id, m)
 
         # 1. Hito 'new' para tareas recién detectadas
         if new_tasks:
@@ -321,20 +370,23 @@ class TaskNotificationManager:
                     if not storage.has_notified_milestone(task_id, "new"):
                         storage.record_milestone(task_id, "new")
                     continue
+                new_due = t.get("due_timestamp") or 0
+                if new_due and new_due <= now:
+                    continue  # already overdue: announcing it as new would be noise
                 if not storage.has_notified_milestone(task_id, "new"):
                     _toast(
                         title="🔔 ¡Nueva tarea agregada en Moodle!",
                         message=f"{t.get('title', 'Sin título')}\n📚 {t.get('course', 'Materia')}\n📅 {t.get('due_date_str', 'Sin fecha')}",
                     )
-                    if _push(
+                    ok = _push(
                         task_id,
                         title=t.get("title", ""),
                         course=t.get("course", ""),
                         due_date=t.get("due_date_str", ""),
                         task_url=t.get("task_url", ""),
                         milestone="new",
-                    ):
-                        storage.record_milestone(task_id, "new")
+                    )
+                    _settle(t, task_id, "new", ok)
 
         # 2. Hitos por tiempo restante (8h, 1d, 2d, 3d)
         for t in tasks:
@@ -355,20 +407,19 @@ class TaskNotificationManager:
                         title="🚨 ¡URGENTE Moodle! (Menos de 8 horas)",
                         message=f"¡Faltan menos de 8 horas para entregar!\n{t.get('title', '')}\n📚 {t.get('course', '')}\n📅 {t.get('due_date_str', '')}",
                     )
-                    if _push(
+                    ok = _push(
                         task_id,
+                        due=due,
                         title=t.get("title", ""),
                         course=t.get("course", ""),
                         due_date=t.get("due_date_str", ""),
                         task_url=t.get("task_url", ""),
                         milestone="8h",
                         is_urgent=True,
-                    ):
-                        storage.record_milestone(task_id, "8h")
+                    )
+                    _settle(t, task_id, "8h", ok)
                 # Prevenir disparos retroactivos de hitos mayores
-                storage.record_milestone(task_id, "1d")
-                storage.record_milestone(task_id, "2d")
-                storage.record_milestone(task_id, "3d")
+                _pre_record(task_id, "1d", "2d", "3d")
 
             # Hito 1 día (<= 24 * 3600 segundos = 86400s)
             elif remaining <= 24 * 3600:
@@ -377,18 +428,18 @@ class TaskNotificationManager:
                         title="⚠️ Recordatorio Moodle (¡Falta 1 día!)",
                         message=f"¡Atención! Falta 1 día para entregar:\n{t.get('title', '')}\n📚 {t.get('course', '')}\n📅 {t.get('due_date_str', '')}",
                     )
-                    if _push(
+                    ok = _push(
                         task_id,
+                        due=due,
                         title=t.get("title", ""),
                         course=t.get("course", ""),
                         due_date=t.get("due_date_str", ""),
                         task_url=t.get("task_url", ""),
                         milestone="1d",
                         is_urgent=True,
-                    ):
-                        storage.record_milestone(task_id, "1d")
-                storage.record_milestone(task_id, "2d")
-                storage.record_milestone(task_id, "3d")
+                    )
+                    _settle(t, task_id, "1d", ok)
+                _pre_record(task_id, "2d", "3d")
 
             # Hito 2 días (<= 48 * 3600 segundos = 172800s)
             elif remaining <= 48 * 3600:
@@ -397,16 +448,17 @@ class TaskNotificationManager:
                         title="⏳ Recordatorio Moodle (Faltan 2 días)",
                         message=f"Quedan 2 días para entregar:\n{t.get('title', '')}\n📚 {t.get('course', '')}\n📅 {t.get('due_date_str', '')}",
                     )
-                    if _push(
+                    ok = _push(
                         task_id,
+                        due=due,
                         title=t.get("title", ""),
                         course=t.get("course", ""),
                         due_date=t.get("due_date_str", ""),
                         task_url=t.get("task_url", ""),
                         milestone="2d",
-                    ):
-                        storage.record_milestone(task_id, "2d")
-                storage.record_milestone(task_id, "3d")
+                    )
+                    _settle(t, task_id, "2d", ok)
+                _pre_record(task_id, "3d")
 
             # Hito 3 días (<= 72 * 3600 segundos = 259200s)
             elif remaining <= 72 * 3600:
@@ -415,15 +467,16 @@ class TaskNotificationManager:
                         title="📅 Recordatorio Moodle (Faltan 3 días)",
                         message=f"Quedan 3 días para entregar:\n{t.get('title', '')}\n📚 {t.get('course', '')}\n📅 {t.get('due_date_str', '')}",
                     )
-                    if _push(
+                    ok = _push(
                         task_id,
+                        due=due,
                         title=t.get("title", ""),
                         course=t.get("course", ""),
                         due_date=t.get("due_date_str", ""),
                         task_url=t.get("task_url", ""),
                         milestone="3d",
-                    ):
-                        storage.record_milestone(task_id, "3d")
+                    )
+                    _settle(t, task_id, "3d", ok)
 
     @staticmethod
     def notify_new_tasks(new_tasks: List[Dict], storage=None):

@@ -392,3 +392,89 @@ def test_without_ntfy_topic_the_legacy_path_sends_nothing(monkeypatch, capsys):
     assert posted == []
     assert capsys.readouterr().out.count("NTFY_TOPIC is not set") == 1
     assert not hasattr(notifier, "DEFAULT_NTFY_TOPIC")
+
+
+# ---- task milestones (notifier) ----------------------------------------------------------------------
+
+
+class MilestoneStorage:
+    def __init__(self):
+        self.recorded, self.writes = set(), []
+
+    def has_notified_milestone(self, task_id, milestone):
+        return (task_id, milestone) in self.recorded
+
+    def record_milestone(self, task_id, milestone, mirror=True):
+        self.writes.append((task_id, milestone))
+        self.recorded.add((task_id, milestone))
+
+
+def _task(hours_left, **extra):
+    import time
+
+    t = {"id": "t1", "user_id": UID, "title": "Tarea", "course": "Curso", "due_date_str": "hoy",
+         "due_timestamp": int(time.time() + hours_left * 3600), "status": "pending"}
+    t.update(extra)
+    return t
+
+
+def _process(tasks, storage, deliver, new=None):
+    notifier.TaskNotificationManager.process_milestones(tasks, storage, new_tasks=new, desktop=False, deliver=deliver)
+
+
+def test_every_milestone_asks_to_renotify_with_its_own_retry_key():
+    calls = []
+    t = _task(5)
+    _process([t], MilestoneStorage(), lambda **k: calls.append(k) or True, new=[t])
+    assert [c["renotify"] for c in calls] == [True, True]
+    assert [c["retry_key"] for c in calls] == ["task-t1:new", "task-t1:8h"]
+
+
+def test_countdown_ttls_never_outlive_the_due_date():
+    from webpush_sender import TTL_TASK
+
+    calls = []
+    t = _task(2)
+    _process([t], MilestoneStorage(), lambda **k: calls.append(k) or True, new=[t])
+    new, eight = calls
+    assert new["ttl"] == TTL_TASK
+    assert 60 <= eight["ttl"] <= 2 * 3600
+    calls.clear()
+    _process([_task(0.001)], MilestoneStorage(), lambda **k: calls.append(k) or True)
+    assert calls[0]["ttl"] == 60  # clamped to the minimum
+
+
+def test_an_overdue_task_is_not_announced_as_new():
+    calls = []
+    t = _task(-2)
+    storage = MilestoneStorage()
+    _process([t], storage, lambda **k: calls.append(k) or True, new=[t])
+    assert calls == [] and storage.writes == []
+
+
+def test_larger_milestones_are_not_rerecorded_every_round():
+    storage = MilestoneStorage()
+    t = _task(5)
+    for _ in range(3):
+        _process([t], storage, lambda **k: True)
+    assert sorted(storage.writes) == sorted([("t1", "8h"), ("t1", "1d"), ("t1", "2d"), ("t1", "3d")])
+
+
+def test_an_exhausted_milestone_is_recorded_so_it_stops_retrying(clock):
+    from functools import partial
+
+    storage = MilestoneStorage()
+    sender = Sender(ALL_FAIL)
+    deliver = partial(deliver_to_user, _user(ntfy=False), supabase=SubsDb(1), sender=sender)
+    t = _task(5)
+    t.pop("user_id")  # the user id is taken from the bound deliverer
+    for _ in range(300):
+        _process([t], storage, deliver)
+        if ("t1", "8h") in storage.recorded:
+            break
+        clock.minutes(1)
+    assert ("t1", "8h") in storage.recorded
+    assert len(sender.sent) == MAX_ATTEMPTS
+    assert not delivery._ATTEMPTS  # given up and forgotten
+    _process([t], storage, deliver)
+    assert len(sender.sent) == MAX_ATTEMPTS  # never retried again
