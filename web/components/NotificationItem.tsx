@@ -3,6 +3,7 @@ import {
   bodyIsLong,
   channelBadges,
   kindLabel,
+  notificationDomId,
   notificationTimeLabel,
   relativeLabel,
   safeNotificationHref,
@@ -25,8 +26,11 @@ function KindIcon({ kind }: { kind: string }) {
   }
 }
 
-/** One compact history entry: kind icon, title, body, time and per-channel outcome. Links to its page when the stored path is safe. */
-export default function NotificationItem({ row, now }: { row: NotificationLogRow; now: Date }) {
+/**
+ * One compact history entry: kind icon, title, body, time and per-channel outcome. Links to its page when the stored path is safe.
+ * `focused` marks the entry the user opened from a notification (`?n=`); every entry has the DOM id `n-<uuid>`.
+ */
+export default function NotificationItem({ row, now, focused = false }: { row: NotificationLogRow; now: Date; focused?: boolean }) {
   const href = safeNotificationHref(row.url);
   const failed = row.status === 'failed';
   const long = bodyIsLong(row.body);
@@ -37,7 +41,8 @@ export default function NotificationItem({ row, now }: { row: NotificationLogRow
   const title = row.title || 'Aviso';
 
   return (
-    <li className={`card hist-item${failed ? ' is-failed' : ''}`}>
+    <li id={notificationDomId(row.id)} className={`card hist-item${failed ? ' is-failed' : ''}${focused ? ' is-focused' : ''}`}
+        aria-current={focused ? 'true' : undefined}>
       <span className="hist-icon" aria-hidden="true">
         <KindIcon kind={row.kind} />
       </span>

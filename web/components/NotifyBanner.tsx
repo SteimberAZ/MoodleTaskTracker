@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { shouldShowPushBanner } from '@/lib/push';
+import { ACTIVATE_NOTIFICATIONS_HREF } from '@/lib/push-setup';
 import { CloseIcon } from './Icons';
 import { usePushDevice } from './usePushDevice';
 
@@ -32,7 +33,7 @@ export default function NotifyBanner({ vapidPublicKey }: { vapidPublicKey?: stri
         <strong>Activa las notificaciones en este dispositivo</strong>
         <span>Recibe avisos de tus tareas aunque la app esté cerrada.</span>
       </div>
-      <Link href="/notificaciones" className="btn primary">Activar</Link>
+      <Link href={ACTIVATE_NOTIFICATIONS_HREF} className="btn primary">Activar</Link>
       <button
         type="button"
         className="icon-btn"

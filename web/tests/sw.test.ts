@@ -118,6 +118,39 @@ describe('sw.js push', () => {
   });
 });
 
+describe('sw.js links to a history entry', () => {
+  const ENTRY = '/notificaciones?n=7b1f6c1e-3a52-4a52-9d0e-0c5f3a9a1b11';
+
+  it('keeps the query string of /notificaciones?n=<uuid> intact in the notification data', async () => {
+    const sw = loadWorker();
+    await sw.dispatch(
+      'push',
+      pushEvent({ title: 'Entrega mañana', body: 'b', url: ENTRY, target: '/tareas/abc123', tag: 'task-abc123' }),
+    );
+    expect((sw.shown[0].options.data as { url: string }).url).toBe(`${ORIGIN}${ENTRY}`);
+  });
+
+  it('opens that exact url, query included, when the notification is tapped', async () => {
+    const focus = vi.fn(async () => undefined);
+    const navigate = vi.fn(async () => undefined);
+    const sw = loadWorker([{ url: `${ORIGIN}/cuenta`, focus, navigate }]);
+    await sw.dispatch('push', pushEvent({ title: 't', body: 'b', url: ENTRY }));
+    const data = sw.shown[0].options.data as { url: string };
+    await sw.dispatch('notificationclick', { notification: { close: vi.fn(), data } });
+    expect(navigate).toHaveBeenCalledWith(`${ORIGIN}${ENTRY}`);
+
+    const cold = loadWorker();
+    await cold.dispatch('notificationclick', { notification: { close: vi.fn(), data } });
+    expect(cold.self.clients.openWindow).toHaveBeenCalledWith(`${ORIGIN}${ENTRY}`);
+  });
+
+  it('still refuses a foreign origin even when it carries the same query', async () => {
+    const sw = loadWorker();
+    await sw.dispatch('push', pushEvent({ title: 't', body: 'b', url: `https://evil.example${ENTRY}` }));
+    expect((sw.shown[0].options.data as { url: string }).url).toBe(`${ORIGIN}/`);
+  });
+});
+
 describe('sw.js notificationclick', () => {
   const click = (url?: string) => {
     const close = vi.fn();

@@ -1,33 +1,61 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { disablePush, enablePush, requestTestPush, runInstallPrompt } from '@/lib/push-client';
-import { CheckIcon, ShareIcon } from './Icons';
+import { PUSH_SETUP_ID, isSetupLocked, isSetupOpen, pushStatusPill } from '@/lib/push-setup';
+import { BellIcon, CheckIcon, ChevronRightIcon, ShareIcon } from './Icons';
 import { usePushDevice } from './usePushDevice';
 
 type Busy = 'enable' | 'test' | 'disable' | 'install' | null;
 type Notice = { tone: 'ok' | 'error'; text: string };
 
-/** Device-aware setup of Web Push: what to show depends on the platform, permission and subscription of this device. */
-export default function PushSetup({ vapidPublicKey }: { vapidPublicKey?: string }) {
+const BODY_ID = 'push-setup-body';
+
+interface Props {
+  vapidPublicKey?: string;
+  /** Arrived through an "activate" link (`?activar=1`): start expanded and scroll to the card. */
+  activar?: boolean;
+  /** Arrived from a tapped notification (`?n=<id>`): start collapsed so the highlighted entry is the focus. */
+  focusedNotification?: boolean;
+}
+
+/**
+ * Collapsible, device-aware setup of Web Push. The header row (bell, title, status pill, chevron) is always
+ * there with a stable height; the body depends on the platform, permission and subscription of this device.
+ * It starts collapsed when this device is already subscribed and expanded when it needs action (see isSetupOpen).
+ */
+export default function PushSetup({ vapidPublicKey, activar = false, focusedNotification = false }: Props) {
   const { snapshot, installable, refresh } = usePushDevice(vapidPublicKey);
   const [busy, setBusy] = useState<Busy>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
+  const [override, setOverride] = useState<boolean | null>(null);
+  const root = useRef<HTMLElement>(null);
 
-  if (!snapshot) {
-    return (
-      <p className="muted" role="status" aria-busy="true">
-        Comprobando este dispositivo…
-      </p>
-    );
-  }
-  const { state, platform, standalone } = snapshot;
+  // Entry points: `?activar=1` (server) or `#activar` (client only) open the card and bring it into view.
+  useEffect(() => {
+    const byHash = window.location.hash === `#${PUSH_SETUP_ID}`;
+    if (byHash) setOverride(true);
+    if (activar || byHash) {
+      const reduced = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+      root.current?.scrollIntoView({ block: 'start', behavior: reduced ? 'auto' : 'smooth' });
+    }
+  }, [activar]);
+
+  const state = snapshot?.state ?? null;
+  const platform = snapshot?.platform;
+  const standalone = snapshot?.standalone ?? false;
+  const pending = busy !== null;
+  const error = notice?.tone === 'error';
+  const open = isSetupOpen({ state, activar, focusedNotification, pending, error, override });
+  const locked = isSetupLocked({ pending, error });
+  const pill = pushStatusPill(state);
 
   const GENERIC_ERROR: Notice = { tone: 'error', text: 'Algo salió mal. Inténtalo de nuevo.' };
 
   async function onEnable() {
     if (busy) return;
     setBusy('enable');
+    setOverride(true); // progress and result stay visible inside the card
     setNotice(null);
     try {
       // enablePush calls Notification.requestPermission() before awaiting anything (iOS needs the click's gesture).
@@ -48,6 +76,7 @@ export default function PushSetup({ vapidPublicKey }: { vapidPublicKey?: string 
   async function onTest() {
     if (busy) return;
     setBusy('test');
+    setOverride(true);
     setNotice(null);
     try {
       const result = await requestTestPush();
@@ -62,6 +91,7 @@ export default function PushSetup({ vapidPublicKey }: { vapidPublicKey?: string 
   async function onDisable() {
     if (busy) return;
     setBusy('disable');
+    setOverride(true);
     setNotice(null);
     try {
       const result = await disablePush();
@@ -81,6 +111,7 @@ export default function PushSetup({ vapidPublicKey }: { vapidPublicKey?: string 
   async function onInstall() {
     if (busy) return;
     setBusy('install');
+    setOverride(true);
     try {
       await runInstallPrompt();
       await refresh();
@@ -108,19 +139,23 @@ export default function PushSetup({ vapidPublicKey }: { vapidPublicKey?: string 
     </div>
   );
 
-  if (state === 'unconfigured') {
-    return (
-      <section className="card push-card">
-        <h2 className="card-title">No disponible por ahora</h2>
-        <p className="muted">Las notificaciones todavía no están configuradas. Inténtalo más tarde.</p>
-      </section>
-    );
-  }
+  let body: ReactNode = (
+    <p className="muted" role="status" aria-busy="true">
+      Comprobando este dispositivo…
+    </p>
+  );
 
-  if (state === 'needs-install') {
-    return (
-      <section className="card push-card" aria-labelledby="install-title">
-        <h2 id="install-title" className="card-title">Primero agrega la app a tu pantalla de inicio</h2>
+  if (state === 'unconfigured') {
+    body = (
+      <>
+        <h3 className="card-title">No disponible por ahora</h3>
+        <p className="muted">Las notificaciones todavía no están configuradas. Inténtalo más tarde.</p>
+      </>
+    );
+  } else if (state === 'needs-install') {
+    body = (
+      <>
+        <h3 className="card-title">Primero agrega la app a tu pantalla de inicio</h3>
         <p>En iPhone y iPad las notificaciones solo funcionan desde la app instalada.</p>
         <ol className="how-to">
           <li>
@@ -134,27 +169,23 @@ export default function PushSetup({ vapidPublicKey }: { vapidPublicKey?: string 
           </li>
         </ol>
         <p className="muted small">Requiere iOS 16.4 o superior.</p>
-      </section>
+      </>
     );
-  }
-
-  if (state === 'unsupported') {
-    return (
-      <section className="card push-card">
-        <h2 className="card-title">Este dispositivo no admite notificaciones</h2>
+  } else if (state === 'unsupported') {
+    body = (
+      <>
+        <h3 className="card-title">Este dispositivo no admite notificaciones</h3>
         <p className="muted">
           {platform === 'ios'
             ? 'Necesitas iOS 16.4 o superior para recibir notificaciones desde la app instalada. Actualiza tu iPhone o iPad e inténtalo de nuevo.'
             : 'Tu navegador no admite notificaciones push. Prueba con una versión reciente de Chrome, Edge, Firefox o Safari.'}
         </p>
-      </section>
+      </>
     );
-  }
-
-  if (state === 'denied') {
-    return (
-      <section className="card push-card" aria-labelledby="denied-title">
-        <h2 id="denied-title" className="card-title">Las notificaciones están bloqueadas</h2>
+  } else if (state === 'denied') {
+    body = (
+      <>
+        <h3 className="card-title">Las notificaciones están bloqueadas</h3>
         <p>Para activarlas tienes que permitirlas en los ajustes de tu dispositivo:</p>
         <ul className="how-to">
           {platform === 'ios' && (
@@ -180,17 +211,15 @@ export default function PushSetup({ vapidPublicKey }: { vapidPublicKey?: string 
             Comprobar de nuevo
           </button>
         </div>
-      </section>
+      </>
     );
-  }
-
-  if (state === 'subscribed') {
-    return (
-      <section className="card push-card" aria-labelledby="active-title">
-        <h2 id="active-title" className="card-title">
+  } else if (state === 'subscribed') {
+    body = (
+      <>
+        <h3 className="card-title">
           <span className="ok-mark" aria-hidden="true"><CheckIcon /></span>
           Activas en este dispositivo
-        </h2>
+        </h3>
         <p className="muted">Recibirás aquí los avisos de tus tareas y recordatorios. Actívalas también en tus otros dispositivos.</p>
         <div className="actions">
           <button type="button" className="btn primary" onClick={onTest} disabled={busy !== null}>
@@ -201,7 +230,6 @@ export default function PushSetup({ vapidPublicKey }: { vapidPublicKey?: string 
           </button>
           {installButton}
         </div>
-        {noticeBox}
 
         {(platform === 'android' || platform === 'ios') && (
           <details className="help-box">
@@ -224,24 +252,48 @@ export default function PushSetup({ vapidPublicKey }: { vapidPublicKey?: string 
             )}
           </details>
         )}
-      </section>
+      </>
+    );
+  } else if (state === 'default') {
+    body = (
+      <>
+        <h3 className="card-title">Recibe avisos en este dispositivo</h3>
+        <p className="muted">
+          Te avisaremos de tus tareas y recordatorios aunque la app esté cerrada. Tu navegador te pedirá permiso.
+        </p>
+        <div className="actions">
+          <button type="button" className="btn primary big" onClick={onEnable} disabled={busy !== null}>
+            {busy === 'enable' ? 'Activando…' : 'Activar notificaciones'}
+          </button>
+          {installButton}
+        </div>
+      </>
     );
   }
 
-  // state === 'default'
   return (
-    <section className="card push-card" aria-labelledby="enable-title">
-      <h2 id="enable-title" className="card-title">Recibe avisos en este dispositivo</h2>
-      <p className="muted">
-        Te avisaremos de tus tareas y recordatorios aunque la app esté cerrada. Tu navegador te pedirá permiso.
-      </p>
-      <div className="actions">
-        <button type="button" className="btn primary big" onClick={onEnable} disabled={busy !== null}>
-          {busy === 'enable' ? 'Activando…' : 'Activar notificaciones'}
+    <section ref={root} id={PUSH_SETUP_ID} className="card push-card push-collapsible" aria-labelledby="push-setup-title">
+      <h2 id="push-setup-title" className="push-head">
+        <button
+          type="button"
+          className="push-toggle"
+          aria-expanded={open}
+          aria-controls={BODY_ID}
+          aria-disabled={locked || undefined}
+          onClick={() => {
+            if (!locked) setOverride(!open);
+          }}
+        >
+          <span className="push-toggle-icon" aria-hidden="true"><BellIcon /></span>
+          <span className="push-toggle-title">Notificaciones en este dispositivo</span>
+          <span className={`badge ${pill.tone}`}>{pill.text}</span>
+          <span className="push-chevron" aria-hidden="true"><ChevronRightIcon /></span>
         </button>
-        {installButton}
+      </h2>
+      <div id={BODY_ID} className="push-body" hidden={!open}>
+        {body}
+        {noticeBox}
       </div>
-      {noticeBox}
     </section>
   );
 }

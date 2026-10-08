@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   BODY_PREVIEW_CHARS,
+  HISTORY_COLUMNS,
   HISTORY_FILTERS,
   bodyIsLong,
   channelBadges,
@@ -9,9 +10,13 @@ import {
   groupByDay,
   historyKindParts,
   historyPageQuery,
+  notificationDomId,
+  notificationRowQuery,
+  notificationTargetHref,
   notificationTimeLabel,
   notificationsHref,
   parseHistoryFilter,
+  parseNotificationParam,
   relativeLabel,
   safeNotificationHref,
 } from '@/lib/notification-log';
@@ -243,5 +248,58 @@ describe('bodyIsLong', () => {
     expect(bodyIsLong('x'.repeat(BODY_PREVIEW_CHARS + 1))).toBe(true);
     expect(bodyIsLong('a\nb\nc')).toBe(true);
     expect(bodyIsLong('a\nb')).toBe(false);
+  });
+});
+
+describe('parseNotificationParam (?n=)', () => {
+  const ID = '7b1f6c1e-3a52-4a52-9d0e-0c5f3a9a1b11';
+
+  it('accepts a uuid, lowercased, and the first of repeated values', () => {
+    expect(parseNotificationParam(ID)).toBe(ID);
+    expect(parseNotificationParam(ID.toUpperCase())).toBe(ID);
+    expect(parseNotificationParam([ID, 'x'])).toBe(ID);
+  });
+
+  it('ignores anything that is not a uuid, so it never reaches a query', () => {
+    for (const bad of [undefined, null, '', 'abc', '1', `${ID}&user_id=neq.1`, `${ID} `, `eq.${ID}`, ID.slice(1), '*']) {
+      expect(parseNotificationParam(bad)).toBeNull();
+    }
+    expect(parseNotificationParam(['nope', ID])).toBeNull();
+  });
+});
+
+describe('notificationRowQuery', () => {
+  const ID = '7b1f6c1e-3a52-4a52-9d0e-0c5f3a9a1b11';
+
+  it('reads one row scoped to the session user', () => {
+    expect(notificationRowQuery(USER, ID)).toBe(`?user_id=eq.${USER}&id=eq.${ID}&${HISTORY_COLUMNS}&limit=1`);
+  });
+
+  it('refuses ids and users that are not uuids', () => {
+    expect(() => notificationRowQuery(USER, `${ID}&user_id=neq.1`)).toThrow();
+    expect(() => notificationRowQuery(USER, 'abc')).toThrow();
+    expect(() => notificationRowQuery('x&user_id=neq.1', ID)).toThrow();
+  });
+});
+
+describe('notificationTargetHref', () => {
+  it('offers a safe same-origin page', () => {
+    expect(notificationTargetHref('/tareas/abc')).toBe('/tareas/abc');
+    expect(notificationTargetHref('/horario')).toBe('/horario');
+  });
+
+  it('offers nothing for Avisos itself, absolute or unsafe urls', () => {
+    expect(notificationTargetHref('/notificaciones')).toBeNull();
+    expect(notificationTargetHref('/notificaciones?hk=clases#historial')).toBeNull();
+    expect(notificationTargetHref('https://evil.example/')).toBeNull();
+    expect(notificationTargetHref('//evil.example')).toBeNull();
+    expect(notificationTargetHref('javascript:alert(1)')).toBeNull();
+    expect(notificationTargetHref(null)).toBeNull();
+  });
+});
+
+describe('notificationDomId', () => {
+  it('prefixes the row id', () => {
+    expect(notificationDomId('abc')).toBe('n-abc');
   });
 });

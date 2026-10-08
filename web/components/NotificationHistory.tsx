@@ -5,8 +5,10 @@ import {
   notificationsHref,
   type HistoryFilter,
 } from '@/lib/notification-log';
+import type { NotificationLogRow } from '@/lib/notification-log';
 import type { HistoryPage } from '@/lib/notification-history';
 import ClearHistoryButton from './ClearHistoryButton';
+import FocusedNotification from './FocusedNotification';
 import HistoryFilters from './HistoryFilters';
 import NotificationItem from './NotificationItem';
 import Pagination from './Pagination';
@@ -16,10 +18,15 @@ interface Props {
   /** `null` when the history could not be read. */
   result: HistoryPage | null;
   now: Date;
+  /**
+   * The notification opened from a tap (`?n=<id>`): `row` is null when it no longer exists, `undefined` when it
+   * could not be read (nothing is shown then). Null when the page was not opened from a notification.
+   */
+  focus?: { id: string; row: NotificationLogRow | null | undefined } | null;
 }
 
-/** "Historial de avisos": filter chips, notifications grouped by day, pagination and "Borrar historial". */
-export default function NotificationHistory({ filter, result, now }: Props) {
+/** "Historial de avisos": the opened notification on top, filter chips, entries grouped by day, pagination and "Borrar historial". */
+export default function NotificationHistory({ filter, result, now, focus = null }: Props) {
   const groups = result ? groupByDay(result.rows, now) : [];
   const page = result?.page ?? 1;
   const pages = pageCount(result?.total ?? 0, HISTORY_PAGE_SIZE);
@@ -30,6 +37,8 @@ export default function NotificationHistory({ filter, result, now }: Props) {
         <h2 id="historial-title">Historial de avisos</h2>
         {result?.available && result.total > 0 && <ClearHistoryButton />}
       </div>
+
+      {focus && focus.row !== undefined && <FocusedNotification id={focus.id} row={focus.row} now={now} />}
 
       {!result && <p className="alert" role="alert">No se pudo cargar el historial.</p>}
 
@@ -52,7 +61,7 @@ export default function NotificationHistory({ filter, result, now }: Props) {
               <h3 className="hist-day-title">{group.label}</h3>
               <ul className="hist-list">
                 {group.items.map((row) => (
-                  <NotificationItem key={row.id} row={row} now={now} />
+                  <NotificationItem key={row.id} row={row} now={now} focused={row.id === focus?.id} />
                 ))}
               </ul>
             </div>

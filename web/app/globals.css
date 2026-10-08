@@ -679,6 +679,33 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 2px
 .help-box summary { display: flex; align-items: center; min-height: 44px; cursor: pointer; font-weight: 700; }
 .help-box ul { margin: 0 0 12px; padding-left: 20px; display: grid; gap: 6px; }
 
+/* Collapsible setup card: the header row keeps its height whether the body is open or not. */
+.push-collapsible { gap: 0; scroll-margin-top: calc(var(--header-h) + 12px); }
+.push-head { margin: 0; font-size: inherit; }
+.push-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 44px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.push-toggle[aria-disabled='true'] { cursor: default; }
+.push-toggle:focus-visible { outline: 3px solid var(--focus); outline-offset: 4px; border-radius: 8px; }
+.push-toggle-icon { display: grid; place-items: center; flex-shrink: 0; }
+.push-toggle-title { flex: 1 1 auto; min-width: 0; font: 700 16px/1.3 var(--font); }
+.push-toggle .badge { flex-shrink: 0; white-space: nowrap; }
+.push-chevron { display: grid; place-items: center; flex-shrink: 0; transition: transform 0.15s; }
+.push-toggle[aria-expanded='true'] .push-chevron { transform: rotate(90deg); }
+.push-body { display: grid; gap: 14px; margin-top: 14px; }
+.push-body[hidden] { display: none; }
+
 /* ============================== Notification history (/notificaciones) ============================== */
 .sr-only {
   position: absolute;
@@ -753,6 +780,20 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 2px
 .hist-item:has(.hist-more[open]) .hist-body { display: none; }
 .hist-meta { display: flex; flex-wrap: wrap; gap: 0 6px; margin: 0; color: var(--muted); font-size: 12.5px; line-height: 1.5; }
 .hist-badges { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px; }
+
+/* The notification opened from a tap (?n=): a highlighted card on top, and its entry in the list. */
+.hist-focus, .hist-focus-missing { scroll-margin-top: calc(var(--header-h) + 12px); margin-top: 12px; max-width: 760px; }
+.hist-focus { display: grid; gap: 8px; border: 3px solid var(--line); background: var(--lime); color: #000; }
+.hist-focus.is-failed { border-style: dashed; border-color: var(--danger); }
+.hist-focus:focus-visible, .hist-focus-missing:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
+.hist-focus-label { margin: 0; font: 700 12px/1.3 var(--font); letter-spacing: 0.06em; text-transform: uppercase; }
+.hist-focus-title { margin: 0; font: 700 18px/1.3 var(--font); letter-spacing: 0; overflow-wrap: anywhere; }
+.hist-focus-body { margin: 0; line-height: 1.5; overflow-wrap: anywhere; white-space: pre-line; }
+.hist-focus .hist-meta { color: #000; }
+.hist-focus .badge { background: #fff; border-color: #000; color: #000; }
+.hist-focus .actions { margin-top: 4px; }
+.hist-focus .btn.primary { background: #000; border-color: #000; color: var(--paper); }
+.hist-item.is-focused { border-width: 3px; border-color: var(--line); }
 
 /* Switch (account page: "Recibir también en la app ntfy"). */
 .switch-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 0; }

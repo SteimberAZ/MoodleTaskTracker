@@ -1,6 +1,6 @@
 import { GUAYAQUIL_OFFSET_MINUTES, formatGuayaquilShort } from './time';
 import { pageRange } from './pagination';
-import { scopedQuery } from './queries';
+import { isUuid, ownedRowQuery, scopedQuery } from './queries';
 
 /**
  * Pure helpers for the notification history ("Historial de avisos") on /notificaciones:
@@ -100,6 +100,27 @@ export function notificationsHref(params: HistoryParams, anchor?: 'historial'): 
   return `${NOTIFICATIONS_PATH}${qs ? `?${qs}` : ''}${anchor ? `#${anchor}` : ''}`;
 }
 
+// ---------------------------------------------------------------- opened from a notification (?n=)
+
+/**
+ * Tapping a push opens `/notificaciones?n=<history row id>`. Only a well-formed uuid is accepted (the
+ * first value when repeated); anything else is ignored so it can never reach a query.
+ */
+export function parseNotificationParam(raw: string | string[] | undefined | null): string | null {
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  return typeof value === 'string' && isUuid(value) ? value.toLowerCase() : null;
+}
+
+/** One history row of the session user by id: `?user_id=eq.<me>&id=eq.<uuid>&select=...&limit=1`. Another user's row never matches. */
+export function notificationRowQuery(userId: string, id: string): string {
+  return ownedRowQuery(userId, id, HISTORY_COLUMNS, 'limit=1');
+}
+
+/** DOM id of a history entry; the opened notification is scrolled to and highlighted through it. */
+export function notificationDomId(id: string): string {
+  return `n-${id}`;
+}
+
 // ---------------------------------------------------------------- links
 
 /**
@@ -117,6 +138,13 @@ export function safeNotificationHref(url: string | null | undefined): string | n
     return null;
   }
   return url;
+}
+
+/** Where the "Abrir" button of an opened notification goes: its safe same-origin page, never Avisos itself (nothing to open). */
+export function notificationTargetHref(url: string | null | undefined): string | null {
+  const href = safeNotificationHref(url);
+  if (!href) return null;
+  return href.split(/[?#]/)[0] === NOTIFICATIONS_PATH ? null : href;
 }
 
 // ---------------------------------------------------------------- kinds

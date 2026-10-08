@@ -6,6 +6,7 @@ import {
   HISTORY_TABLE,
   clearHistoryQuery,
   historyPageQuery,
+  notificationRowQuery,
   type HistoryFilter,
   type NotificationLogRow,
 } from './notification-log';
@@ -48,6 +49,19 @@ export async function listHistoryPage(userId: string, filter: HistoryFilter, pag
   const again = await readPage(userId, filter, served);
   if (again.missing) return { rows: [], total: 0, page: 1, available: false };
   return { rows: again.rows, total: again.total, page: served, available: true };
+}
+
+/** The session user's history row `id` (the notification they tapped), or null when it is gone, not theirs, or the table is missing. */
+export async function getHistoryEntry(userId: string, id: string): Promise<NotificationLogRow | null> {
+  const res = await dbFetch(`${HISTORY_TABLE}${notificationRowQuery(userId, id)}`);
+  if (res.status === TABLE_MISSING) return null;
+  if (!res.ok) {
+    console.error('Supabase request failed', res.status);
+    throw new Error('No se pudo cargar el aviso.');
+  }
+  const text = await res.text();
+  const rows = (text ? JSON.parse(text) : []) as NotificationLogRow[];
+  return Array.isArray(rows) && rows[0] ? rows[0] : null;
 }
 
 /** Deletes every history row of the session user. A missing table is not an error: there is nothing to clear. */
