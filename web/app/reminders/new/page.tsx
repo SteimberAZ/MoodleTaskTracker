@@ -1,5 +1,6 @@
+import type { Metadata } from 'next';
 import Link from 'next/link';
-import { requireUser } from '@/lib/auth';
+import { withUser } from '@/lib/auth';
 import { resolvePreselect } from '@/lib/reminder-preselect';
 import { dateToGuayaquilInput } from '@/lib/time';
 import { MAX_TITLE } from '@/lib/validate';
@@ -11,16 +12,21 @@ import { REMINDERS_PATH } from '@/lib/nav';
 
 export const dynamic = 'force-dynamic';
 
+export const metadata: Metadata = { title: 'Nuevo recordatorio' };
+
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
 
 export default async function NewReminderPage({ searchParams }: { searchParams: SearchParams }) {
-  const user = await requireUser();
   const { task: taskParam } = await searchParams;
   const now = new Date();
 
-  const tasks: MoodleTask[] = await listPendingTasks(user.id).catch(() => []);
   // `?task=<id>` only counts when the task belongs to the session user (checked server-side).
-  const preselected = await resolvePreselect(taskParam, (id) => getOwnedTask(user.id, id));
+  const [, [tasks, preselected]] = await withUser((userId) =>
+    Promise.all([
+      listPendingTasks(userId).catch((): MoodleTask[] => []),
+      resolvePreselect(taskParam, (id) => getOwnedTask(userId, id)),
+    ]),
+  );
   if (preselected && !tasks.some((t) => t.id === preselected.id)) tasks.push(preselected);
 
   // A future deadline is a sensible end for the reminder; past ones are left blank.

@@ -1,7 +1,9 @@
+import type { Metadata } from 'next';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
-import { requireUser } from '@/lib/auth';
-import { getTaskDetail, getTaskMilestones } from '@/lib/tasks';
+import { withUser } from '@/lib/auth';
+import { getSessionUserId } from '@/lib/session';
+import { getTaskDetail } from '@/lib/tasks';
 import { homeHref, parsePage } from '@/lib/pagination';
 import { normalizeDescription, normalizeTeachers, safeHttpUrl } from '@/lib/task-detail';
 import { moduleLabel } from '@/lib/task-module';
@@ -16,6 +18,17 @@ export const dynamic = 'force-dynamic';
 
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
 
+/** Tab title: the task title through the request-cached read the page reuses. Never throws. */
+export async function generateMetadata({ params }: { params: Promise<{ id: string }> }): Promise<Metadata> {
+  try {
+    const [{ id }, userId] = await Promise.all([params, getSessionUserId()]);
+    const task = userId ? await getTaskDetail(userId, id) : null;
+    return { title: task?.title || 'Tarea' };
+  } catch {
+    return { title: 'Tarea' };
+  }
+}
+
 export default async function TaskDetailPage({
   params,
   searchParams,
@@ -23,15 +36,12 @@ export default async function TaskDetailPage({
   params: Promise<{ id: string }>;
   searchParams: SearchParams;
 }) {
-  const user = await requireUser();
-  const { id } = await params;
-  const query = await searchParams;
-  // Owner-scoped read: a task of another user is indistinguishable from a missing one.
-  const task = await getTaskDetail(user.id, id);
+  const [{ id }, query] = await Promise.all([params, searchParams]);
+  // Owner-scoped read (milestones embedded): a task of another user is indistinguishable from a missing one.
+  const [, task] = await withUser((userId) => getTaskDetail(userId, id));
   if (!task) notFound();
 
-  // Only after the owner-scoped read above: the milestones table has no owner column.
-  const sent = await getTaskMilestones(task);
+  const sent = task.milestones;
   const nowSeconds = Math.floor(Date.now() / 1000);
   const muted = task.is_dismissed === 1;
   const submitted = task.status === 'submitted';
@@ -45,7 +55,7 @@ export default async function TaskDetailPage({
   );
 
   return (
-    <article className="detail">
+    <article className="detail" data-status-id="task-status">
       <Link href={back} className="back-link">
         <ChevronLeftIcon />
         <span>Volver a mis tareas</span>
@@ -110,10 +120,13 @@ export default async function TaskDetailPage({
         muted={muted}
       />
 
+      {/* Always mounted: mute results are announced here (text set by MuteButton). */}
+      <p id="task-status" role="status" className="sr-only" />
       <div className="detail-actions">
         {moodleUrl && (
           <a href={moodleUrl} target="_blank" rel="noopener noreferrer" className="btn primary">
             <span>Abrir en Moodle</span>
+            <span className="sr-only"> (se abre en otra pestaña)</span>
             <ExternalIcon />
           </a>
         )}

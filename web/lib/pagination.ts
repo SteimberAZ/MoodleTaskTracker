@@ -3,6 +3,9 @@ import { REMINDERS_PATH } from './nav';
 /** Pure pagination helpers shared by the task and reminder lists. */
 export const PAGE_SIZE = 8;
 
+/** The home task list shows more rows per page: it is the main screen and groups them by day. */
+export const TASK_PAGE_SIZE = 15;
+
 /** Largest page number we accept from a query string (guards against absurd offsets). */
 const MAX_PAGE = 10_000;
 
