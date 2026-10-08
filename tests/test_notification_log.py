@@ -24,17 +24,17 @@ from webpush_sender import PushResult
 T0 = datetime(2026, 10, 6, 12, 0, 0, tzinfo=timezone.utc)
 UID = "11111111-aaaa-bbbb-cccc-000000000001"
 USER = {"id": UID, "moodle_url": "https://m.example", "token": "tok", "ntfy_topic": "utm-aaaaaaaaaaaa",
-        "ntfy_enabled": True, "last_error": None}
+        "ntfy_enabled": True, "ntfy_confirmed_at": "2026-01-01T00:00:00Z", "last_error": None}
 COLUMNS = {"id", "user_id", "kind", "title", "body", "url", "tag", "status", "push_ok", "push_total",
-           "ntfy_attempted", "ntfy_ok", "created_at"}
+           "ntfy_attempted", "ntfy_ok", "push_state", "created_at"}
 
 
 @pytest.fixture(autouse=True)
 def _fresh_log_state(monkeypatch):
     monkeypatch.delenv("WEB_APP_URL", raising=False)
-    delivery._last_logged.clear()
+    delivery.reset_delivery_state()
     yield
-    delivery._last_logged.clear()
+    delivery.reset_delivery_state()
 
 
 # ---- fakes -------------------------------------------------------------------------------------------
@@ -123,7 +123,7 @@ def test_a_delivery_records_one_row_with_the_channel_outcome():
     assert db.rows == [{
         "id": db.rows[0]["id"], "user_id": UID, "kind": "task", "title": "Titulo", "body": "Cuerpo", "url": "/tareas/t1",
         "tag": "task-t1", "status": "sent", "push_ok": 2, "push_total": 3, "ntfy_attempted": True,
-        "ntfy_ok": True, "created_at": "2026-10-06T12:00:00+00:00"}]
+        "ntfy_ok": True, "push_state": "partial", "created_at": "2026-10-06T12:00:00+00:00"}]
 
 
 @pytest.mark.parametrize("subs, results, ntfy_on, ntfy_ok, expected", [
@@ -213,7 +213,7 @@ def test_imported_class_reminders_are_recorded_as_class():
     assert process_class_reminders(FakeStorage(), ClassDb(), _deliverer(log), now=now) == 1
     log.flush()
     (row,) = db.rows
-    assert (row["kind"], row["url"], row["tag"]) == ("class", "/horario", "class-c1-2026-10-06")
+    assert (row["kind"], row["url"]) == ("class", "/horario") and row["tag"].startswith("class-2-0700-")
 
 
 def test_the_built_in_schedule_delivered_to_an_admin_is_recorded_as_class():
@@ -287,7 +287,8 @@ def test_push_tests_are_recorded_as_test_one_row_per_device():
 def test_a_send_without_a_user_id_or_a_kind_is_not_recorded():
     log, db = _log()
     deliver = _deliverer(log)
-    assert deliver({"ntfy_topic": "utm-x"}, "T", "B", kind="task") is True  # legacy env-topic style: no user id
+    legacy = {"ntfy_topic": "utm-x", "ntfy_enabled": True, "ntfy_confirmed_at": "2026-01-01T00:00:00Z"}
+    assert deliver(legacy, "T", "B", kind="task") is True  # legacy env-topic style: no user id
     assert deliver(USER, "T", "B") is True  # no kind chosen by the caller
     assert deliver_to_user(USER, "T", "B", kind="task", sender=None, supabase=None, ntfy=_ntfy()) is True  # no history
     assert log.pending == 0
@@ -509,8 +510,9 @@ def test_a_history_that_raises_does_not_change_the_delivery_result(capsys):
     for _ in range(2):
         assert deliver_to_user(USER, "T", "B", kind="task", history=Boom(), sender=None, supabase=None,
                                ntfy=_ntfy()) is True
-        assert deliver_to_user(USER, "T", "B", kind="task", history=Boom(), sender=None, supabase=None,
-                               ntfy=_ntfy(False)) is False
+        assert deliver_to_user(USER, "T", "B", tag="t-fail", kind="task", history=Boom(), sender=None,
+                               supabase=None, ntfy=_ntfy(False)) is False
+        delivery.forget(UID, "task", "t-fail")  # the failure above waits for its backoff; retry it now
     assert capsys.readouterr().out.count("could not record the notification history") == 1
 
 

@@ -20,7 +20,8 @@ from webpush_sender import TTL_CLASS, TTL_REMINDER, TTL_TASK, TTL_TEST, PushResu
 BASE = "https://m.example"
 URL_1 = f"{BASE}/mod/assign/view.php?id=11"
 UA = {"id": "11111111-aaaa-bbbb-cccc-000000000001", "moodle_url": BASE, "token": "tok-a",
-      "ntfy_topic": "utm-aaaaaaaaaaaa", "ntfy_enabled": True, "last_error": None}
+      "ntfy_topic": "utm-aaaaaaaaaaaa", "ntfy_enabled": True, "ntfy_confirmed_at": "2026-01-01T00:00:00Z",
+      "last_error": None}
 UB = {"id": "22222222-aaaa-bbbb-cccc-000000000002", "moodle_url": BASE, "token": "tok-b",
       "ntfy_topic": "utm-bbbbbbbbbbbb", "ntfy_enabled": True, "last_error": None}
 
@@ -28,9 +29,9 @@ UB = {"id": "22222222-aaaa-bbbb-cccc-000000000002", "moodle_url": BASE, "token":
 @pytest.fixture(autouse=True)
 def _fresh_log_state(monkeypatch):
     monkeypatch.delenv("WEB_APP_URL", raising=False)
-    delivery._last_logged.clear()
+    delivery.reset_delivery_state()
     yield
-    delivery._last_logged.clear()
+    delivery.reset_delivery_state()
 
 
 # ---- fakes -------------------------------------------------------------------------------------------
@@ -154,9 +155,9 @@ def test_ntfy_only_goes_out_when_the_user_has_it_enabled():
     assert _deliver(user=dict(UA, ntfy_enabled=False), sender=off, db=db, ntfy=ntfy) is True
     assert ntfy.calls == [] and len(off.sent) == 1  # push still goes out
 
-    legacy_row = {k: v for k, v in UA.items() if k != "ntfy_enabled"}  # column not migrated yet
+    legacy_row = {k: v for k, v in UA.items() if k != "ntfy_enabled"}  # column not migrated yet: ntfy is off
     assert _deliver(user=legacy_row, sender=FakeSender(), db=db, ntfy=ntfy) is True
-    assert len(ntfy.calls) == 1
+    assert ntfy.calls == []
 
 
 def test_a_user_without_a_topic_is_never_routed_to_the_owners_topic(monkeypatch):
@@ -226,7 +227,8 @@ def test_a_crashing_channel_never_stops_the_others():
 def test_a_user_without_an_id_gets_no_push_attempts():
     db = FakeDb()
     sender, ntfy = FakeSender(), Ntfy()
-    assert _deliver(user={"ntfy_topic": "utm-x"}, sender=sender, db=db, ntfy=ntfy) is True
+    user = {"ntfy_topic": "utm-x", "ntfy_enabled": True, "ntfy_confirmed_at": "2026-01-01T00:00:00Z"}
+    assert _deliver(user=user, sender=sender, db=db, ntfy=ntfy) is True
     assert db.reads == [] and sender.sent == []
 
 
@@ -278,14 +280,16 @@ def test_a_crashing_send_still_clears_the_flag_and_the_rest_continue():
     assert [u[0] for u in db.updates] == ["s-a", "s-b"]
 
 
-def test_test_requests_are_ignored_without_a_working_sender_or_database():
+def test_test_requests_are_ignored_without_a_database_and_answered_without_a_sender():
     db = FakeDb(tests=[_test_row("a")])
-    assert process_push_tests(db, FakeSender(enabled=False)) == 0
-    assert process_push_tests(db, None) == 0
+    assert process_push_tests(db, FakeSender(enabled=False), answered=set()) == 0
+    assert process_push_tests(db, None, answered=set()) == 0
     unconfigured = FakeDb(tests=[_test_row("a")])
     unconfigured.is_configured = False
     assert process_push_tests(unconfigured, FakeSender()) == 0
-    assert db.reads == [] and unconfigured.reads == [] and db.updates == []
+    assert unconfigured.reads == []
+    # Without a sender the request is still read and its flag cleared (nothing is sent).
+    assert db.reads == ["tests", "tests"] and [u[0] for u in db.updates] == ["s-a", "s-a"]
 
 
 def test_the_clear_only_matches_the_request_that_was_read():
@@ -578,11 +582,11 @@ def test_reminders_are_delivered_to_the_owner_user_row():
     assert client.updates[0][0] == "r1"
 
 
-def test_a_missing_ntfy_enabled_column_means_on():
+def test_a_missing_ntfy_enabled_column_means_off():
     seen = []
     process_due_reminders(FakeReminders([_reminder()]),
                           deliver=lambda owner, *a: seen.append(owner["ntfy_enabled"]) or True, now=NOW)
-    assert seen == [True]
+    assert seen == [False]
 
 
 def test_an_undelivered_reminder_stays_untouched_for_the_next_tick():

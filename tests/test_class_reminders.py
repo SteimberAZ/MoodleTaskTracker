@@ -22,6 +22,23 @@ U2 = "22222222-aaaa-bbbb-cccc-000000000002"
 
 # A Tuesday (ISO weekday 2) in Ecuador.
 TUESDAY = datetime(2026, 10, 6, 0, 0, tzinfo=EC)
+SUBJECT = "DESARROLLO DE APLICACIONES WEB"
+
+
+def key(day="2026-10-06", start="07:00", user=U1, weekday=2):
+    """Dedupe key of the default test class (class_reminders.class_key)."""
+    return f"class:{user}:{weekday}:{start}:{class_reminders._subject_hash(SUBJECT)}:{day}"
+
+
+def tag(day="2026-10-06", start="0700", weekday=2):
+    return f"class-{weekday}-{start}-{class_reminders._subject_hash(SUBJECT)}-{day}"
+
+
+@pytest.fixture(autouse=True)
+def _fresh_windows():
+    class_reminders.reset_state()
+    yield
+    class_reminders.reset_state()
 
 
 def at(hour, minute=0, second=0, day=TUESDAY):
@@ -141,7 +158,7 @@ def test_the_delivery_call_shape():
     db = FakeDb([_user()], [_class(cid="c9")])
     _, _, deliver = _run(db, at(6, 45))
     c = deliver.calls[0]
-    assert (c["user"], c["url"], c["tag"], c["priority"]) == (U1, "/horario", "class-c9-2026-10-06", "high")
+    assert (c["user"], c["url"], c["tag"], c["priority"]) == (U1, "/horario", tag(), "high")
     assert c["ntfy_tags"] == "alarm_clock,mortarboard,books"
 
 
@@ -178,7 +195,7 @@ def test_a_utc_clock_reading_the_next_day_still_matches_the_local_class():
     db = FakeDb([_user()], [_class(start="21:30:00", end="22:30:00")])
     now = datetime(2026, 10, 7, 2, 10, tzinfo=timezone.utc)
     sent, storage, _ = _run(db, now)
-    assert sent == 1 and ("class:c1:2026-10-06", "sent") in storage.recorded
+    assert sent == 1 and (key(start="21:30"), "sent") in storage.recorded
 
 
 # ---- period end ------------------------------------------------------------------------------------
@@ -207,12 +224,12 @@ def test_a_class_is_notified_once_per_date_and_again_next_week():
     assert process_class_reminders(storage, db, deliver, now=at(6, 40)) == 1
     assert process_class_reminders(storage, db, deliver, now=at(6, 41)) == 0
     assert len(deliver.calls) == 1
-    assert storage.recorded == {("class:c1:2026-10-06", "sent")}
+    assert storage.recorded == {(key(), "sent")}
     assert storage.mirror_flags == [False]  # class keys are local only (no moodle_tasks row to mirror)
 
     next_week = TUESDAY + timedelta(days=7)
     assert process_class_reminders(storage, db, deliver, now=at(6, 40, day=next_week)) == 1
-    assert ("class:c1:2026-10-13", "sent") in storage.recorded
+    assert (key("2026-10-13"), "sent") in storage.recorded
 
 
 def test_a_total_delivery_failure_is_not_recorded_and_retried():
@@ -223,7 +240,7 @@ def test_a_total_delivery_failure_is_not_recorded_and_retried():
 
     deliver.result = True
     assert process_class_reminders(storage, db, deliver, now=at(6, 41)) == 1
-    assert storage.recorded == {("class:c1:2026-10-06", "sent")}
+    assert storage.recorded == {(key(), "sent")}
 
 
 def test_a_crashing_deliverer_or_bad_row_does_not_stop_the_other_classes():
@@ -233,14 +250,14 @@ def test_a_crashing_deliverer_or_bad_row_does_not_stop_the_other_classes():
 
     def deliver(user, title, body, **kw):
         calls.append(kw["tag"])
-        if "c2" in kw["tag"]:
+        if "0710" in kw["tag"]:  # class c2
             raise RuntimeError("boom")
         return True
 
     storage = FakeStorage()
     assert process_class_reminders(storage, db, deliver, now=at(6, 55)) == 1
-    assert calls == ["class-c2-2026-10-06", "class-c3-2026-10-06"]
-    assert storage.recorded == {("class:c3:2026-10-06", "sent")}
+    assert calls == [tag(start="0710"), tag(start="0720")]
+    assert storage.recorded == {(key(start="07:20"), "sent")}
 
 
 def test_an_unreachable_database_is_logged_once_and_never_raises(capsys):
