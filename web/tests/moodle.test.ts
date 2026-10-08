@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   connectToMoodle,
-  isDisconnected,
   moodleErrorMessage,
   parseSiteInfo,
   parseTokenResponse,
@@ -93,14 +92,5 @@ describe('connectToMoodle', () => {
     const r = await connectToMoodle('https://m.example.com', 'ana', 'pw-secret', fetchMock as unknown as typeof fetch);
     expect(r.ok).toBe(false);
     expect(JSON.stringify(r)).not.toContain('pw-secret');
-  });
-});
-
-describe('isDisconnected', () => {
-  const base = { connected_at: '2026-10-07T10:00:00Z', last_error: 'invalidtoken' };
-  it('is true only when the error is newer than the connection', () => {
-    expect(isDisconnected({ ...base, last_error_at: '2026-10-07T11:00:00Z' })).toBe(true);
-    expect(isDisconnected({ ...base, last_error_at: '2026-10-07T09:00:00Z' })).toBe(false);
-    expect(isDisconnected({ connected_at: base.connected_at, last_error: null, last_error_at: null })).toBe(false);
   });
 });

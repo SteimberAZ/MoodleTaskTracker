@@ -1,5 +1,5 @@
 import { notFound } from 'next/navigation';
-import { requireSession } from '@/lib/auth';
+import { requireUser } from '@/lib/auth';
 import { getReminder } from '@/lib/reminders';
 import { splitInterval } from '@/lib/schedule';
 import { dateToGuayaquilInput } from '@/lib/time';
@@ -10,16 +10,16 @@ import ReminderForm from '@/components/ReminderForm';
 export const dynamic = 'force-dynamic';
 
 export default async function EditReminderPage({ params }: { params: Promise<{ id: string }> }) {
-  await requireSession();
+  const user = await requireUser();
   const { id } = await params;
-  const reminder = await getReminder(id);
+  const reminder = await getReminder(user.id, id);
   if (!reminder) notFound();
   const { amount, unit } = splitInterval(reminder.interval_minutes);
 
-  const tasks: MoodleTask[] = await listPendingTasks().catch(() => []);
+  const tasks: MoodleTask[] = await listPendingTasks(user.id).catch(() => []);
   // Keep the linked task selectable even when it is no longer pending.
   if (reminder.task_id && !tasks.some((t) => t.id === reminder.task_id)) {
-    tasks.push(...(await listTasksByIds([reminder.task_id]).catch(() => [])));
+    tasks.push(...(await listTasksByIds(user.id, [reminder.task_id]).catch(() => [])));
   }
 
   return (

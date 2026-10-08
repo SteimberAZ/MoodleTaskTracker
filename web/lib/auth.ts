@@ -1,37 +1,29 @@
 import 'server-only';
-import { cookies } from 'next/headers';
-import { redirect } from 'next/navigation';
-import { SESSION_COOKIE, SESSION_MAX_AGE_SECONDS, signSession, verifySession } from './session-token';
+import { notFound, redirect } from 'next/navigation';
+import { getSessionUserId } from './session';
+import { getUserById, type SessionUser } from './users';
 
-export function requireEnv(name: string): string {
-  const value = process.env[name];
-  if (!value) throw new Error(`Missing required environment variable ${name}`);
-  return value;
+/**
+ * The signed cookie says who the session was issued to; the database says whether that
+ * person may still use the app (row exists and is active).
+ */
+export async function getCurrentUser(): Promise<SessionUser | null> {
+  const userId = await getSessionUserId();
+  if (!userId) return null;
+  const user = await getUserById(userId);
+  return user && user.active ? user : null;
 }
 
-export async function hasValidSession(): Promise<boolean> {
-  const store = await cookies();
-  return verifySession(process.env.SESSION_SECRET, store.get(SESSION_COOKIE)?.value);
+/** For pages and server actions: redirects to /login when there is no usable session. */
+export async function requireUser(): Promise<SessionUser> {
+  const user = await getCurrentUser();
+  if (!user) redirect('/login');
+  return user;
 }
 
-/** Defense in depth: every server action and data access re-checks the session. */
-export async function requireSession(): Promise<void> {
-  if (!(await hasValidSession())) redirect('/login');
-}
-
-export async function startSession(): Promise<void> {
-  const token = await signSession(requireEnv('SESSION_SECRET'));
-  const store = await cookies();
-  store.set(SESSION_COOKIE, token, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'lax',
-    path: '/',
-    maxAge: SESSION_MAX_AGE_SECONDS,
-  });
-}
-
-export async function endSession(): Promise<void> {
-  const store = await cookies();
-  store.delete(SESSION_COOKIE);
+/** Server actions are public endpoints: admin ones must call this themselves. */
+export async function requireAdmin(): Promise<SessionUser> {
+  const user = await requireUser();
+  if (!user.is_admin) notFound();
+  return user;
 }

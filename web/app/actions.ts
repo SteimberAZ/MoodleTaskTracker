@@ -2,42 +2,22 @@
 
 import { redirect } from 'next/navigation';
 import { revalidatePath } from 'next/cache';
-import { endSession, requireSession, startSession } from '@/lib/auth';
-import { safeEqual } from '@/lib/session-token';
+import { requireUser } from '@/lib/auth';
+import { endSession } from '@/lib/session';
 import {
   createReminder,
   deleteReminder as removeReminder,
   getReminder,
   updateReminder,
 } from '@/lib/reminders';
+import { getOwnedTask } from '@/lib/tasks';
 import { computeNextFire } from '@/lib/schedule';
-import { deleteCredentials, saveCredentials } from '@/lib/credentials';
-import { MAX_PASSWORD, MAX_USERNAME, connectToMoodle, resolveMoodleUrl } from '@/lib/moodle';
 import { validateReminderForm, type FieldErrors, type ReminderFormInput } from '@/lib/validate';
-
-export interface LoginState {
-  error?: string;
-}
 
 export interface FormState {
   error?: string;
   errors?: FieldErrors;
   values?: ReminderFormInput;
-}
-
-export async function login(_prev: LoginState, formData: FormData): Promise<LoginState> {
-  const expected = process.env.APP_PASSWORD;
-  if (!expected || !process.env.SESSION_SECRET) {
-    return { error: 'El servidor no está configurado (APP_PASSWORD / SESSION_SECRET).' };
-  }
-  const given = String(formData.get('password') ?? '');
-  if (!(await safeEqual(given, expected))) {
-    // Small delay slows down online guessing without any shared state.
-    await new Promise((resolve) => setTimeout(resolve, 600));
-    return { error: 'Contraseña incorrecta.' };
-  }
-  await startSession();
-  redirect('/');
 }
 
 export async function logout(): Promise<void> {
@@ -58,21 +38,32 @@ function readForm(formData: FormData): ReminderFormInput {
   };
 }
 
-/** Creates (id === null) or updates a reminder. Bound to the form with `.bind(null, id)`. */
+/**
+ * Creates (id === null) or updates a reminder. Bound to the form with `.bind(null, id)`.
+ * The owner always comes from the session, never from the form.
+ */
 export async function saveReminder(
   id: string | null,
   _prev: FormState,
   formData: FormData,
 ): Promise<FormState> {
-  await requireSession();
+  const user = await requireUser();
   const values = readForm(formData);
   const result = validateReminderForm(values);
   if (!result.ok) return { errors: result.errors, values };
   const v = result.value;
 
   try {
+    const existing = id === null ? null : await getReminder(user.id, id);
+    if (id !== null && !existing) return { error: 'El recordatorio ya no existe.', values };
+
+    // A linked task must belong to this user (keeping an unchanged link is always allowed).
+    if (v.taskId && v.taskId !== existing?.task_id && !(await getOwnedTask(user.id, v.taskId))) {
+      return { errors: { taskId: 'La tarea seleccionada no es válida.' }, values };
+    }
+
     if (id === null) {
-      await createReminder({
+      await createReminder(user.id, {
         title: v.title,
         message: v.message,
         interval_minutes: v.intervalMinutes,
@@ -82,16 +73,14 @@ export async function saveReminder(
         active: true,
         task_id: v.taskId,
       });
-    } else {
-      const existing = await getReminder(id);
-      if (!existing) return { error: 'El recordatorio ya no existe.', values };
+    } else if (existing) {
       const next = computeNextFire({
         startsAt: v.startsAt,
         endsAt: v.endsAt,
         intervalMinutes: v.intervalMinutes,
         now: new Date(),
       });
-      await updateReminder(id, {
+      await updateReminder(user.id, id, {
         title: v.title,
         message: v.message,
         interval_minutes: v.intervalMinutes,
@@ -110,11 +99,11 @@ export async function saveReminder(
 }
 
 export async function toggleReminder(id: string): Promise<void> {
-  await requireSession();
-  const existing = await getReminder(id);
+  const user = await requireUser();
+  const existing = await getReminder(user.id, id);
   if (!existing) return;
   if (existing.active) {
-    await updateReminder(id, { active: false });
+    await updateReminder(user.id, id, { active: false });
   } else {
     const next = computeNextFire({
       startsAt: new Date(existing.starts_at),
@@ -122,57 +111,13 @@ export async function toggleReminder(id: string): Promise<void> {
       intervalMinutes: existing.interval_minutes,
       now: new Date(),
     });
-    await updateReminder(id, { active: next.active, next_fire_at: next.nextFireAt.toISOString() });
+    await updateReminder(user.id, id, { active: next.active, next_fire_at: next.nextFireAt.toISOString() });
   }
   revalidatePath('/');
 }
 
 export async function deleteReminder(id: string): Promise<void> {
-  await requireSession();
-  await removeReminder(id);
+  const user = await requireUser();
+  await removeReminder(user.id, id);
   revalidatePath('/');
-}
-
-export interface MoodleConnectState {
-  error?: string;
-  connected?: boolean;
-}
-
-/**
- * Exchanges the Moodle password for a mobile token on the server. The password is read,
- * used once and dropped: it is never stored, logged or returned in the form state.
- */
-export async function connectMoodle(_prev: MoodleConnectState, formData: FormData): Promise<MoodleConnectState> {
-  await requireSession();
-  const username = String(formData.get('username') ?? '').trim();
-  const password = String(formData.get('password') ?? '');
-  if (!username || !password) return { error: 'Ingresa tu usuario y contraseña de Moodle.' };
-  if (username.length > MAX_USERNAME || password.length > MAX_PASSWORD) {
-    return { error: 'Usuario o contraseña demasiado largos.' };
-  }
-  const moodleUrl = resolveMoodleUrl(process.env.MOODLE_URL);
-  if (!moodleUrl) return { error: 'MOODLE_URL no es válida: debe ser una URL https.' };
-
-  const result = await connectToMoodle(moodleUrl, username, password);
-  if (!result.ok) return { error: result.message };
-
-  try {
-    await saveCredentials({
-      moodle_url: moodleUrl,
-      username,
-      token: result.value.token,
-      site_userid: result.value.siteUserId,
-      fullname: result.value.fullname,
-    });
-  } catch {
-    return { error: 'Moodle aceptó las credenciales, pero no se pudo guardar la conexión.' };
-  }
-  revalidatePath('/moodle');
-  return { connected: true };
-}
-
-export async function disconnectMoodle(): Promise<void> {
-  await requireSession();
-  await deleteCredentials();
-  revalidatePath('/moodle');
 }

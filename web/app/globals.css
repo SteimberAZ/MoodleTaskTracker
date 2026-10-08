@@ -133,3 +133,8 @@ input:focus, textarea:focus, select:focus, .btn:focus-visible { outline: 2px sol
   border-radius: 8px;
   color: var(--danger);
 }
+
+/* Multi-user additions (append-only). */
+.site-nav { margin-bottom: 8px; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; overflow-wrap: anywhere; }
+.form details summary { cursor: pointer; font-weight: 600; margin-bottom: 8px; }

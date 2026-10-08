@@ -3,35 +3,57 @@ import { SESSION_MAX_AGE_SECONDS, safeEqual, signSession, verifySession } from '
 
 const SECRET = 'test-secret-value';
 const NOW = 1_800_000_000_000;
+const USER = '3f2c8a52-8d5e-4a0b-9f0e-6f3a1c2b4d5e';
+const OTHER_USER = '11111111-2222-3333-4444-555555555555';
 
-describe('session token', () => {
-  it('verifies a freshly signed token', async () => {
-    const token = await signSession(SECRET, NOW);
-    expect(await verifySession(SECRET, token, NOW + 1000)).toBe(true);
+describe('session token v2', () => {
+  it('round-trips the user id of a freshly signed token', async () => {
+    const token = await signSession(SECRET, USER, NOW);
+    expect(token.startsWith(`v2.${USER}.`)).toBe(true);
+    expect(await verifySession(SECRET, token, NOW + 1000)).toBe(USER);
   });
 
   it('rejects a token signed with another secret', async () => {
-    const token = await signSession('other-secret', NOW);
-    expect(await verifySession(SECRET, token, NOW)).toBe(false);
+    const token = await signSession('other-secret', USER, NOW);
+    expect(await verifySession(SECRET, token, NOW)).toBeNull();
   });
 
   it('rejects a tampered expiry', async () => {
-    const [v, exp, sig] = (await signSession(SECRET, NOW)).split('.');
-    const forged = `${v}.${Number(exp) + 99999}.${sig}`;
-    expect(await verifySession(SECRET, forged, NOW)).toBe(false);
+    const [v, id, exp, sig] = (await signSession(SECRET, USER, NOW)).split('.');
+    const forged = `${v}.${id}.${Number(exp) + 99999}.${sig}`;
+    expect(await verifySession(SECRET, forged, NOW)).toBeNull();
+  });
+
+  it('rejects a swapped user id (privilege escalation attempt)', async () => {
+    const [v, , exp, sig] = (await signSession(SECRET, USER, NOW)).split('.');
+    expect(await verifySession(SECRET, `${v}.${OTHER_USER}.${exp}.${sig}`, NOW)).toBeNull();
+  });
+
+  it('rejects a tampered signature', async () => {
+    const token = await signSession(SECRET, USER, NOW);
+    const flipped = token.slice(0, -1) + (token.endsWith('0') ? '1' : '0');
+    expect(await verifySession(SECRET, flipped, NOW)).toBeNull();
   });
 
   it('rejects expired tokens', async () => {
-    const token = await signSession(SECRET, NOW);
-    expect(await verifySession(SECRET, token, NOW + (SESSION_MAX_AGE_SECONDS + 1) * 1000)).toBe(false);
+    const token = await signSession(SECRET, USER, NOW);
+    expect(await verifySession(SECRET, token, NOW + (SESSION_MAX_AGE_SECONDS + 1) * 1000)).toBeNull();
   });
 
-  it('rejects missing secret, missing token and garbage', async () => {
-    const token = await signSession(SECRET, NOW);
-    expect(await verifySession(undefined, token, NOW)).toBe(false);
-    expect(await verifySession(SECRET, undefined, NOW)).toBe(false);
-    expect(await verifySession(SECRET, 'garbage', NOW)).toBe(false);
-    expect(await verifySession(SECRET, 'v1.abc.def', NOW)).toBe(false);
+  it('rejects missing secret, missing token, garbage and the legacy v1 format', async () => {
+    const token = await signSession(SECRET, USER, NOW);
+    const future = Math.floor(NOW / 1000) + 1000;
+    expect(await verifySession(undefined, token, NOW)).toBeNull();
+    expect(await verifySession(SECRET, undefined, NOW)).toBeNull();
+    expect(await verifySession(SECRET, 'garbage', NOW)).toBeNull();
+    expect(await verifySession(SECRET, 'v1.abc.def', NOW)).toBeNull();
+    expect(await verifySession(SECRET, `v1.${future}.abcdef`, NOW)).toBeNull();
+    expect(await verifySession(SECRET, `v2.not-a-uuid.${future}.abcdef`, NOW)).toBeNull();
+  });
+
+  it('refuses to sign for an empty secret or a non-UUID user id', async () => {
+    await expect(signSession('', USER, NOW)).rejects.toThrow();
+    await expect(signSession(SECRET, 'a.b', NOW)).rejects.toThrow();
   });
 });
 

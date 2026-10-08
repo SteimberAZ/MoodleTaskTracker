@@ -117,19 +117,3 @@ export async function connectToMoodle(
     return { ok: false, message: GENERIC_MOODLE_ERROR };
   }
 }
-
-export interface CredentialStatus {
-  moodle_url: string;
-  username: string;
-  fullname: string | null;
-  site_userid: number | null;
-  connected_at: string;
-  last_error: string | null;
-  last_error_at: string | null;
-}
-
-/** True when the worker recorded an error after the last successful connection. */
-export function isDisconnected(c: Pick<CredentialStatus, 'connected_at' | 'last_error' | 'last_error_at'>): boolean {
-  if (!c.last_error || !c.last_error_at) return false;
-  return new Date(c.last_error_at).getTime() > new Date(c.connected_at).getTime();
-}

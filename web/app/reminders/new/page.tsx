@@ -1,4 +1,4 @@
-import { requireSession } from '@/lib/auth';
+import { requireUser } from '@/lib/auth';
 import { dateToGuayaquilInput } from '@/lib/time';
 import { listPendingTasks } from '@/lib/tasks';
 import { saveReminder } from '@/app/actions';
@@ -7,8 +7,8 @@ import ReminderForm from '@/components/ReminderForm';
 export const dynamic = 'force-dynamic';
 
 export default async function NewReminderPage() {
-  await requireSession();
-  const tasks = await listPendingTasks().catch(() => []);
+  const user = await requireUser();
+  const tasks = await listPendingTasks(user.id).catch(() => []);
   return (
     <>
       <h1>Nuevo recordatorio</h1>

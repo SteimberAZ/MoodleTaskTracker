@@ -1,24 +1,25 @@
 import Link from 'next/link';
-import { logout, toggleReminder, deleteReminder } from './actions';
-import { requireSession } from '@/lib/auth';
+import { toggleReminder, deleteReminder } from './actions';
+import { requireUser } from '@/lib/auth';
 import { listReminders, type Reminder } from '@/lib/reminders';
 import { formatInterval, reminderStatus, type ReminderStatus } from '@/lib/schedule';
 import { formatGuayaquil } from '@/lib/time';
 import { listPendingTasks, listTasksByIds, type MoodleTask } from '@/lib/tasks';
 import { timeLeft } from '@/lib/task-time';
 import DeleteButton from '@/components/DeleteButton';
+import Nav from '@/components/Nav';
 
 export const dynamic = 'force-dynamic';
 
 const ORDER: Record<ReminderStatus, number> = { activo: 0, pausado: 1, finalizado: 2 };
 
 export default async function HomePage() {
-  await requireSession();
+  const user = await requireUser();
   const now = new Date();
   let reminders: Reminder[] = [];
   let loadError = false;
   try {
-    reminders = await listReminders();
+    reminders = await listReminders(user.id);
   } catch {
     loadError = true;
   }
@@ -27,7 +28,7 @@ export default async function HomePage() {
   let tasks: MoodleTask[] = [];
   let tasksError = false;
   try {
-    tasks = await listPendingTasks(nowSeconds);
+    tasks = await listPendingTasks(user.id, nowSeconds);
   } catch {
     tasksError = true;
   }
@@ -35,7 +36,7 @@ export default async function HomePage() {
   // Linked tasks may no longer be pending, so resolve them by id.
   const linkedIds = reminders.map((r) => r.task_id).filter((id): id is string => !!id);
   const linked = new Map<string, MoodleTask>(
-    (await listTasksByIds(linkedIds).catch(() => [])).map((t) => [t.id, t]),
+    (await listTasksByIds(user.id, linkedIds).catch(() => [])).map((t) => [t.id, t]),
   );
 
   const rows = reminders
@@ -44,16 +45,17 @@ export default async function HomePage() {
 
   return (
     <>
+      <Nav isAdmin={user.is_admin} />
       <header className="topbar">
         <h1>Recordatorios</h1>
         <div className="actions">
           <Link href="/reminders/new" className="btn primary">Nuevo</Link>
-          <Link href="/moodle" className="btn">Conectar Moodle</Link>
-          <form action={logout}>
-            <button type="submit" className="btn">Salir</button>
-          </form>
         </div>
       </header>
+
+      {user.last_error && (
+        <p className="alert" role="alert">Moodle desconectado: vuelve a iniciar sesión para reconectar</p>
+      )}
 
       <section aria-labelledby="tasks-title" className="tasks">
         <h2 id="tasks-title" className="section-title">Tareas de Moodle pendientes</h2>

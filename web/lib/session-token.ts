@@ -32,23 +32,30 @@ export async function safeEqual(a: string, b: string): Promise<boolean> {
   return diff === 0;
 }
 
-/** Token format: `v1.<expiresAtSeconds>.<hmacHex>`. */
-export async function signSession(secret: string, nowMs: number = Date.now()): Promise<string> {
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Token format: `v2.<userId>.<expiresAtSeconds>.<hmacHex>` (the user id is a UUID, so it has no dots). */
+export async function signSession(secret: string, userId: string, nowMs: number = Date.now()): Promise<string> {
   if (!secret) throw new Error('SESSION_SECRET is not configured');
+  if (!UUID.test(userId)) throw new Error('Invalid user id for session');
   const exp = Math.floor(nowMs / 1000) + SESSION_MAX_AGE_SECONDS;
-  const payload = `v1.${exp}`;
+  const payload = `v2.${userId}.${exp}`;
   return `${payload}.${await hmacHex(secret, payload)}`;
 }
 
+/**
+ * Verifies signature and expiry only (no database access, so it can run in middleware).
+ * Returns the user id the token was issued for, or null when the token is invalid.
+ */
 export async function verifySession(
   secret: string | undefined,
   token: string | undefined,
   nowMs: number = Date.now(),
-): Promise<boolean> {
-  if (!secret || !token) return false;
+): Promise<string | null> {
+  if (!secret || !token) return null;
   const parts = token.split('.');
-  if (parts.length !== 3 || parts[0] !== 'v1' || !/^\d+$/.test(parts[1])) return false;
-  if (Number(parts[1]) * 1000 <= nowMs) return false;
-  const expected = await hmacHex(secret, `${parts[0]}.${parts[1]}`);
-  return safeEqual(expected, parts[2]);
+  if (parts.length !== 4 || parts[0] !== 'v2' || !UUID.test(parts[1]) || !/^\d+$/.test(parts[2])) return null;
+  if (Number(parts[2]) * 1000 <= nowMs) return null;
+  const expected = await hmacHex(secret, `${parts[0]}.${parts[1]}.${parts[2]}`);
+  return (await safeEqual(expected, parts[3])) ? parts[1] : null;
 }
