@@ -37,6 +37,14 @@ def mask_topic(topic: str) -> str:
     return f"{topic[:8]}…" if len(topic) > 8 else "…"
 
 
+def _log_safe(text, topic: str, limit: int = 200) -> str:
+    """``text`` with the topic masked: a requests error repeats the full URL, i.e. the topic."""
+    value = str(text or "")
+    if topic:
+        value = value.replace(topic, mask_topic(topic))
+    return value[:limit]
+
+
 def send_windows_notification(title: str, message: str, app_name: str = "Moodle Tracker"):
     """Envía una notificación de escritorio nativa en Windows mediante Toast Notification."""
     # 1. PowerShell Windows Runtime Toast (Nativo de Windows 10/11, máxima estabilidad)
@@ -124,9 +132,9 @@ def send_system_alert(
             if res.status_code == 200:
                 print(f"[Notifier] Alerta de sistema enviada a {ntfy_base_url()}/{mask_topic(topic)}")
             else:
-                print(f"[Notifier] Error ntfy ({res.status_code}): {res.text}")
+                print(f"[Notifier] Error ntfy ({res.status_code}): {_log_safe(res.text, topic)}")
         except Exception as e:
-            print(f"[Notifier] Error enviando alerta a ntfy: {e}")
+            print(f"[Notifier] Error enviando alerta a ntfy: {type(e).__name__}: {_log_safe(e, topic)}")
 
     import threading
     threading.Thread(target=_do_post, daemon=True).start()
@@ -168,9 +176,9 @@ def post_ntfy(
         if res.status_code == 200:
             print(f"[Notifier] Push enviado a {ntfy_base_url()}/{mask_topic(topic)}")
             return True
-        print(f"[Notifier] Error ntfy ({res.status_code}): {res.text}")
+        print(f"[Notifier] Error ntfy ({res.status_code}): {_log_safe(res.text, topic)}")
     except Exception as e:
-        print(f"[Notifier] Error enviando a ntfy: {e}")
+        print(f"[Notifier] Error enviando a ntfy: {type(e).__name__}: {_log_safe(e, topic)}")
     return False
 
 
@@ -249,9 +257,9 @@ def send_whatsapp_alert(
             if res.status_code == 200:
                 print(f"[Notifier] Notificación Push enviada ({milestone}) a {ntfy_base_url()}/{mask_topic(topic)}")
             else:
-                print(f"[Notifier] Error ntfy ({res.status_code}): {res.text}")
+                print(f"[Notifier] Error ntfy ({res.status_code}): {_log_safe(res.text, topic)}")
         except Exception as e:
-            print(f"[Notifier] Error enviando a ntfy: {e}")
+            print(f"[Notifier] Error enviando a ntfy: {type(e).__name__}: {_log_safe(e, topic)}")
 
     import threading
     threading.Thread(target=_do_post, daemon=True).start()

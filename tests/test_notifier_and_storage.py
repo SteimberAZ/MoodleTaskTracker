@@ -90,3 +90,37 @@ def test_pending_can_become_submitted(tmp_path):
     s.save_tasks([_task(status="pending")])
     s.save_tasks([_task(status="submitted")])
     assert s.get_all_tasks()[0]["status"] == "submitted"
+
+
+def test_ntfy_errors_never_log_the_full_topic(monkeypatch, capsys):
+    import requests
+
+    import notifier
+
+    topic = "utm-secret-topic-1234567890"
+
+    def down(url, **kwargs):
+        raise requests.ConnectionError(f"HTTPSConnectionPool(host='ntfy.sh', port=443): Max retries exceeded "
+                                       f"with url: /{topic}")
+
+    class Inline:
+        def __init__(self, target, daemon=None):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+    monkeypatch.setattr(requests, "post", down)
+    monkeypatch.setattr("threading.Thread", Inline)
+    assert notifier.post_ntfy("T", "B", topic=topic) is False
+    notifier.send_system_alert("T", "B", topic=topic)
+    notifier.send_whatsapp_alert("T", "C", "hoy", topic=topic)
+
+    class Refused:
+        status_code, text = 403, f"forbidden: /{topic}"
+
+    monkeypatch.setattr(requests, "post", lambda url, **kwargs: Refused())
+    notifier.post_ntfy("T", "B", topic=topic)
+    out = capsys.readouterr().out
+    assert out.count("ConnectionError") == 3 and "403" in out
+    assert topic not in out
