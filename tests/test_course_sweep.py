@@ -2,6 +2,7 @@ import pytest
 
 import moodle_api
 from moodle_api import (
+    SWEEP_STATUS_MAX_CHECKS,
     SWEEP_TTL_SECONDS,
     MoodleApiClient,
     assignment_to_task,
@@ -277,3 +278,42 @@ def test_clients_without_user_id_never_sweep():
     MoodleApiClient(BASE, "tok", http=http).fetch_tasks(now=NOW, delay=0)
     names = {data["wsfunction"] for _, data in http.calls}
     assert not names & {"core_enrol_get_users_courses", "mod_assign_get_assignments", "mod_quiz_get_quizzes_by_courses"}
+
+
+def _over_cap_client(n=SWEEP_STATUS_MAX_CHECKS + 5):
+    """A client whose sweep holds n dated assignments. The one with the latest due date is already
+    submitted, so the sweep reads it after the cap has been used up by the earlier ones."""
+    assigns = [
+        {"id": 100 + i, "cmid": 300 + i, "name": f"Tarea {i}", "duedate": NOW + (2 + i) * D,
+         "cutoffdate": 0, "nosubmissions": 0, "intro": ""}
+        for i in range(n)
+    ]
+    handed_in = {assigns[-1]["id"]}
+    status_reads = []
+
+    def submission(d):
+        status_reads.append(int(d["assignid"]))
+        status = "submitted" if int(d["assignid"]) in handed_in else "new"
+        return {"lastattempt": {"submission": {"status": status}}}
+
+    http = FakeHttp(responses(
+        core_calendar_get_action_events_by_timesort={"events": []},
+        mod_assign_get_assignments={"courses": [{"id": 10, "assignments": assigns}]},
+        mod_quiz_get_quizzes_by_courses={"quizzes": []},
+        mod_assign_get_submission_status=submission,
+    ))
+    return _client(http), status_reads, 300 + n - 1
+
+
+def test_sweep_status_reads_rotate_so_a_task_past_the_cap_is_checked():
+    client, status_reads, target = _over_cap_client()
+    found_in_round = None
+    for rnd in range(3):
+        status_reads.clear()
+        tasks = client.fetch_tasks(now=NOW + rnd * (SWEEP_TTL_SECONDS + 1), delay=0)
+        assert len(status_reads) <= SWEEP_STATUS_MAX_CHECKS
+        if next(t["status"] for t in tasks if t["course_module_id"] == target) == "submitted":
+            found_in_round = rnd + 1
+            break
+    # 25 tasks with 20 reads a round: the task past the cap must be read within two rounds
+    assert found_in_round is not None and found_in_round <= 2

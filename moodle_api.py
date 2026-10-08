@@ -64,9 +64,9 @@ TEACHERS_ERROR_TTL = 300  # failed lookups are retried after a short pause, not 
 SWEEP_TTL_SECONDS = 25 * 60
 SWEEP_STALE_MAX_SECONDS = 6 * 3600  # a failed sweep reuses the last good result up to this age
 SWEEP_MAX_COURSES = 30
-SWEEP_STATUS_MAX_CHECKS = 20  # submission/attempt reads per sweep
+SWEEP_STATUS_MAX_CHECKS = 20  # submission/attempt reads per sweep; the least recently read tasks go first
 SWEEP_COURSE_MAX_AGE_DAYS = 180  # courses without end date older than this (by startdate) are skipped
-# (base_url, user_id) -> {"at": float, "tasks": [task dicts], "complete": bool}
+# (base_url, user_id) -> {"at": float, "tasks": [task dicts], "complete": bool, "reads": {cmid: last read time}}
 _SWEEP_CACHE: Dict[tuple, Dict] = {}
 
 
@@ -359,8 +359,12 @@ class MoodleApiClient:
             return "submitted" if attempts else "pending"
         return None
 
-    def _fresh_sweep(self, now: float, known_cmids: set, delay: float) -> List[Dict]:
-        """Read the enrolled courses and their assignments and quizzes. May raise (the caller falls back)."""
+    def _fresh_sweep(self, now: float, known_cmids: set, delay: float, reads: Dict[int, float]) -> List[Dict]:
+        """Read the enrolled courses and their assignments and quizzes. May raise (the caller falls back).
+
+        ``reads`` maps a course module to the time its status was last attempted; it is updated in place
+        and lets the status budget rotate across rounds instead of always reaching the same tasks.
+        """
         uid = self._site_userid()
         payload = self.call("core_enrol_get_users_courses", userid=uid)
         courses = payload if isinstance(payload, list) else []
@@ -395,25 +399,33 @@ class MoodleApiClient:
             seen.add(task["course_module_id"])
             tasks.append(task)
 
+        # The budget is smaller than a big sweep: read the least recently attempted tasks first (never read
+        # counts as oldest), then the soonest due, so every task is reached within a few rounds.
         checked = 0
         network_errors = 0
-        for task in tasks:
+        for task in sorted(tasks, key=lambda t: (reads.get(t["course_module_id"], 0.0),
+                                                 t["due_timestamp"] or float("inf"))):
+            cmid = task["course_module_id"]
             if checked >= SWEEP_STATUS_MAX_CHECKS or network_errors >= STATUS_NETWORK_ERROR_LIMIT:
                 break
             if checked and delay:
                 time.sleep(delay)
             checked += 1
+            reads[cmid] = now
             try:
                 status = self._sweep_status(task)
             except MoodleApiError as e:
                 # Not fatal: an 'accessexception' here means this function is not allowed, not a bad token.
                 network_errors = network_errors + 1 if e.is_network else 0
-                print(f"[MoodleApi] sweep status failed for cmid {task['course_module_id']}: {e.code or 'error'}")
+                print(f"[MoodleApi] sweep status failed for cmid {cmid}: {e.code or 'error'}")
                 continue
             network_errors = 0
             if status:
                 task["status"] = status
                 task["status_source"] = "api"
+        live = {t["course_module_id"] for t in tasks}
+        for cmid in [c for c in reads if c not in live]:
+            del reads[cmid]  # activities that left the sweep
         self._attach_details(tasks)
         return tasks
 
@@ -427,9 +439,11 @@ class MoodleApiClient:
             tasks = entry["tasks"]
             self.last_sweep_complete = entry["complete"]
         else:
+            kept_reads = dict((entry or {}).get("reads") or {})
+            reads = dict(kept_reads)
             try:
-                tasks = self._fresh_sweep(now, set(int(c) for c in known_cmids if c), delay)
-                _SWEEP_CACHE[key] = {"at": now, "tasks": tasks, "complete": True}
+                tasks = self._fresh_sweep(now, set(int(c) for c in known_cmids if c), delay, reads)
+                _SWEEP_CACHE[key] = {"at": now, "tasks": tasks, "complete": True, "reads": reads}
                 self.last_sweep_complete = True
                 print(f"[MoodleApi] course sweep: {len(tasks)} activity(ies) outside the timeline")
             except Exception as e:  # noqa: BLE001 - a sweep failure must never break the sync
@@ -441,7 +455,7 @@ class MoodleApiClient:
                     tasks = entry["tasks"]
                 else:
                     tasks = []
-                _SWEEP_CACHE[key] = {"at": now, "tasks": tasks, "complete": False}
+                _SWEEP_CACHE[key] = {"at": now, "tasks": tasks, "complete": False, "reads": kept_reads}
         # Copies, so callers mutating the returned dicts never change the cache.
         return [dict(t, teachers=list(t.get("teachers") or [])) for t in tasks]
 
