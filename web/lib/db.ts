@@ -3,18 +3,30 @@ import { requireSessionUserId } from './session';
 import { resolveDbConfig } from './db-config';
 import { parseContentRange } from './pagination';
 
-function request(path: string, init: RequestInit): Promise<Response> {
+/** Upper bound for one PostgREST round trip, so a hung database never holds a page or action open. */
+export const DB_TIMEOUT_MS = 8000;
+export const DB_FAILURE = 'No se pudo comunicar con la base de datos.';
+
+async function request(path: string, init: RequestInit): Promise<Response> {
   const { baseUrl, apikey, bearer } = resolveDbConfig(process.env);
-  return fetch(`${baseUrl}/rest/v1/${path}`, {
-    ...init,
-    cache: 'no-store',
-    headers: {
-      apikey,
-      Authorization: `Bearer ${bearer}`,
-      'Content-Type': 'application/json',
-      ...init.headers,
-    },
-  });
+  try {
+    return await fetch(`${baseUrl}/rest/v1/${path}`, {
+      ...init,
+      cache: 'no-store',
+      signal: init.signal ?? AbortSignal.timeout(DB_TIMEOUT_MS),
+      headers: {
+        apikey,
+        Authorization: `Bearer ${bearer}`,
+        'Content-Type': 'application/json',
+        ...init.headers,
+      },
+    });
+  } catch (error) {
+    // Timeout (TimeoutError), abort (AbortError) or a network failure: log the error name only, since
+    // messages can carry the URL, and surface the same friendly error as a non-2xx answer.
+    console.error('Supabase request failed', error instanceof Error ? error.name : 'unknown');
+    throw new Error(DB_FAILURE);
+  }
 }
 
 /**
@@ -27,8 +39,8 @@ export async function dbFetch(path: string, init: RequestInit = {}): Promise<Res
 }
 
 /**
- * Database access without a session. Reserved for the login flow (`lib/login-store.ts`),
- * which runs before a session exists. Do not use anywhere else.
+ * Database access without a session. Reserved for the login flow (`lib/login-store.ts` and the login
+ * throttle RPCs in `app/login/actions.ts`), which runs before a session exists. Do not use anywhere else.
  */
 export function dbFetchAnonymous(path: string, init: RequestInit = {}): Promise<Response> {
   return request(path, init);
@@ -41,7 +53,7 @@ export function dbFetchAnonymous(path: string, init: RequestInit = {}): Promise<
  */
 export async function dbJsonCounted<T>(
   path: string,
-  failure = 'No se pudo comunicar con la base de datos.',
+  failure = DB_FAILURE,
 ): Promise<{ rows: T[]; total: number }> {
   const res = await dbFetch(path, { headers: { Prefer: 'count=exact' } });
   const total = parseContentRange(res.headers.get('content-range'));
@@ -59,7 +71,7 @@ export async function dbJsonCounted<T>(
 export async function dbJson<T>(
   path: string,
   init: RequestInit = {},
-  failure = 'No se pudo comunicar con la base de datos.',
+  failure = DB_FAILURE,
 ): Promise<T> {
   const res = await dbFetch(path, init);
   if (!res.ok) {

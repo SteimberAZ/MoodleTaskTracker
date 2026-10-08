@@ -1,6 +1,17 @@
 // Web Crypto only, so it runs in middleware (edge) and in Node route handlers/actions alike.
 export const SESSION_COOKIE = 'moddle_session';
 export const SESSION_MAX_AGE_SECONDS = 30 * 24 * 60 * 60;
+/** A session closer than this to its expiry is re-signed by the middleware (rolling session). */
+export const SESSION_RENEW_THRESHOLD_SECONDS = 7 * 24 * 60 * 60;
+
+/** Cookie attributes shared by the login (`startSession`) and the middleware renewal. */
+export const SESSION_COOKIE_OPTIONS = {
+  httpOnly: true,
+  secure: process.env.NODE_ENV === 'production',
+  sameSite: 'lax',
+  path: '/',
+  maxAge: SESSION_MAX_AGE_SECONDS,
+} as const;
 
 const encoder = new TextEncoder();
 
@@ -62,19 +73,40 @@ export async function signSession(secret: string, userId: string, nowMs: number 
   return `${payload}.${await hmacHex(secret, payload)}`;
 }
 
+export interface VerifiedSession {
+  userId: string;
+  /** Expiry in epoch seconds, as signed into the token. */
+  exp: number;
+}
+
 /**
  * Verifies signature and expiry only (no database access, so it can run in middleware).
- * Returns the user id the token was issued for, or null when the token is invalid.
+ * Returns the user id the token was issued for and its expiry, or null when the token is invalid.
  */
+export async function verifySessionWithExp(
+  secret: string | undefined,
+  token: string | undefined,
+  nowMs: number = Date.now(),
+): Promise<VerifiedSession | null> {
+  if (!secret || !token) return null;
+  const parts = token.split('.');
+  if (parts.length !== 4 || parts[0] !== 'v2' || !UUID.test(parts[1]) || !/^\d+$/.test(parts[2])) return null;
+  const exp = Number(parts[2]);
+  if (exp * 1000 <= nowMs) return null;
+  const expected = await hmacHex(secret, `${parts[0]}.${parts[1]}.${parts[2]}`);
+  return (await safeEqual(expected, parts[3])) ? { userId: parts[1], exp } : null;
+}
+
+/** Same check as `verifySessionWithExp`, returning only the user id. */
 export async function verifySession(
   secret: string | undefined,
   token: string | undefined,
   nowMs: number = Date.now(),
 ): Promise<string | null> {
-  if (!secret || !token) return null;
-  const parts = token.split('.');
-  if (parts.length !== 4 || parts[0] !== 'v2' || !UUID.test(parts[1]) || !/^\d+$/.test(parts[2])) return null;
-  if (Number(parts[2]) * 1000 <= nowMs) return null;
-  const expected = await hmacHex(secret, `${parts[0]}.${parts[1]}.${parts[2]}`);
-  return (await safeEqual(expected, parts[3])) ? parts[1] : null;
+  return (await verifySessionWithExp(secret, token, nowMs))?.userId ?? null;
+}
+
+/** True when a valid session expires within `SESSION_RENEW_THRESHOLD_SECONDS` and should be re-signed. */
+export function shouldRenewSession(expSeconds: number, nowMs: number = Date.now()): boolean {
+  return expSeconds * 1000 - nowMs < SESSION_RENEW_THRESHOLD_SECONDS * 1000;
 }

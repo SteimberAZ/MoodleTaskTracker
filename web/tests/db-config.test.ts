@@ -8,12 +8,10 @@ describe('resolveDbConfig', () => {
     ).toEqual({ baseUrl: 'https://db.example.com', apikey: 'anon', bearer: 'jwt' });
   });
 
-  it('falls back to the service role key for both headers', () => {
-    expect(resolveDbConfig({ SUPABASE_URL: 'https://db.example.com', SUPABASE_SERVICE_ROLE_KEY: 'svc' })).toEqual({
-      baseUrl: 'https://db.example.com',
-      apikey: 'svc',
-      bearer: 'svc',
-    });
+  it('never falls back to the service role key', () => {
+    expect(() => resolveDbConfig({ SUPABASE_URL: 'https://db.example.com', SUPABASE_SERVICE_ROLE_KEY: 'svc' })).toThrow(
+      /MOODLE_DB_JWT/,
+    );
   });
 
   it('throws when nothing usable is configured', () => {

@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { SESSION_MAX_AGE_SECONDS, resolveSessionSecret, safeEqual, signSession, verifySession } from '@/lib/session-token';
+import {
+  SESSION_COOKIE_OPTIONS,
+  SESSION_MAX_AGE_SECONDS,
+  SESSION_RENEW_THRESHOLD_SECONDS,
+  resolveSessionSecret,
+  safeEqual,
+  shouldRenewSession,
+  signSession,
+  verifySession,
+  verifySessionWithExp,
+} from '@/lib/session-token';
 
 const SECRET = 'test-secret-value';
 const NOW = 1_800_000_000_000;
@@ -54,6 +64,49 @@ describe('session token v2', () => {
   it('refuses to sign for an empty secret or a non-UUID user id', async () => {
     await expect(signSession('', USER, NOW)).rejects.toThrow();
     await expect(signSession(SECRET, 'a.b', NOW)).rejects.toThrow();
+  });
+});
+
+describe('verifySessionWithExp', () => {
+  it('returns the user id and the signed expiry', async () => {
+    const token = await signSession(SECRET, USER, NOW);
+    expect(await verifySessionWithExp(SECRET, token, NOW)).toEqual({
+      userId: USER,
+      exp: Math.floor(NOW / 1000) + SESSION_MAX_AGE_SECONDS,
+    });
+  });
+
+  it('returns null for an invalid or expired token', async () => {
+    const token = await signSession(SECRET, USER, NOW);
+    expect(await verifySessionWithExp('other-secret', token, NOW)).toBeNull();
+    expect(await verifySessionWithExp(SECRET, token, NOW + SESSION_MAX_AGE_SECONDS * 1000)).toBeNull();
+  });
+});
+
+describe('rolling session', () => {
+  const exp = Math.floor(NOW / 1000) + SESSION_MAX_AGE_SECONDS;
+
+  it('does not renew a session with more than the threshold left', () => {
+    expect(shouldRenewSession(exp, NOW)).toBe(false);
+    expect(shouldRenewSession(exp, (exp - SESSION_RENEW_THRESHOLD_SECONDS) * 1000)).toBe(false);
+  });
+
+  it('renews a session inside its last week', () => {
+    expect(SESSION_RENEW_THRESHOLD_SECONDS).toBe(7 * 24 * 60 * 60);
+    expect(shouldRenewSession(exp, (exp - SESSION_RENEW_THRESHOLD_SECONDS) * 1000 + 1)).toBe(true);
+    expect(shouldRenewSession(exp, (exp - 60) * 1000)).toBe(true);
+  });
+
+  it('re-signing yields a token valid for a full period again', async () => {
+    const later = (exp - 3600) * 1000;
+    const renewed = await signSession(SECRET, USER, later);
+    const verified = await verifySessionWithExp(SECRET, renewed, later);
+    expect(verified?.exp).toBe(Math.floor(later / 1000) + SESSION_MAX_AGE_SECONDS);
+    expect(shouldRenewSession(verified!.exp, later)).toBe(false);
+  });
+
+  it('shares one set of cookie options', () => {
+    expect(SESSION_COOKIE_OPTIONS).toMatchObject({ httpOnly: true, sameSite: 'lax', path: '/', maxAge: SESSION_MAX_AGE_SECONDS });
   });
 });
 
