@@ -89,19 +89,30 @@ En cada sincronización, el worker abre la página de cada tarea pendiente (`/mo
 
 La carpeta `web/` contiene una app Next.js protegida con contraseña. Desde ahí se crean recordatorios con una frecuencia (cada N minutos, horas o días) y una fecha de fin. La web solo guarda los datos en Supabase; el worker del VPS los lee y envía las notificaciones por ntfy.
 
-### 1. Supabase
-Ejecuta en el SQL Editor la sección `custom_reminders` del archivo `supabase_schema.sql`. La tabla tiene RLS activado y no tiene políticas, así que solo la `service_role` key puede acceder a ella.
+### 1. Base de datos (Supabase self-hosted compartido)
+Las tablas del proyecto usan el prefijo `moodle_` y viven en una base compartida. Para no usar la `service_role` key, el acceso pasa por un rol dedicado, `moodle_app`, que solo puede tocar las tablas `moodle_*`.
+
+1. Ejecuta `supabase_schema.sql` completo como administrador, en el SQL Editor de Studio o con `psql`. Es idempotente y no modifica objetos fuera de `moodle_*`.
+2. Genera el JWT del rol con el `JWT_SECRET` de la instancia:
+   ```
+   JWT_SECRET=<jwt secret de la instancia> python scripts/make_moodle_jwt.py --years 5
+   ```
 
 ### 2. VPS (worker.py)
-Agrega esta variable al `.env` del VPS y reinicia el worker:
+Variables del `.env`:
 ```
-SUPABASE_SERVICE_ROLE_KEY=<service_role key de Supabase>
+SUPABASE_URL=https://<dominio del supabase>
+SUPABASE_ANON_KEY=<anon key de la instancia>
+MOODLE_DB_JWT=<JWT generado en el paso anterior>
+NTFY_TOPIC=<tu topic>
+MOODLE_URL=https://evirtual.utm.edu.ec
 ```
-Si no está configurada, el worker usa la key anterior, que no tiene acceso a la tabla, y los recordatorios no se envían.
+El worker toma el token de Moodle de la tabla `moodle_credentials`, que se llena desde la web. `MOODLE_SESSION` (la cookie) queda solo como respaldo.
 
 ### 3. Vercel
-- **Root Directory:** `web`
-- **Environment Variables:** `APP_PASSWORD`, `SESSION_SECRET` (un texto aleatorio largo, por ejemplo `openssl rand -hex 32`), `SUPABASE_URL` y `SUPABASE_SERVICE_ROLE_KEY`. No uses el prefijo `NEXT_PUBLIC_` en ninguna.
+- **Framework Preset:** Next.js. **Root Directory:** `web`.
+- **Environment Variables:** `APP_PASSWORD`, `SESSION_SECRET` (por ejemplo `openssl rand -hex 32`), `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `MOODLE_DB_JWT` y, opcionalmente, `MOODLE_URL`. No uses el prefijo `NEXT_PUBLIC_` en ninguna.
+- Después del deploy, entra en **Conectar Moodle** con tu usuario y contraseña de la UTM. La contraseña no se guarda: solo se guarda el token de la API de Moodle.
 
 ### Desarrollo local
 ```
