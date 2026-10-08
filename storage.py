@@ -6,6 +6,10 @@ from typing import Dict, List, Optional, Tuple
 from supabase_client import SupabaseClient
 
 
+# Settings that must never be mirrored to Supabase.
+LOCAL_ONLY_SETTINGS = frozenset({"moodle_session"})
+
+
 class Storage:
     def __init__(self, db_path: Optional[str] = None):
         if db_path is None:
@@ -13,7 +17,7 @@ class Storage:
             db_path = os.path.join(base_dir, "moodle_tasks.db")
         self.db_path = db_path
         self._init_db()
-        self.supabase = SupabaseClient()
+        self.supabase = SupabaseClient.for_service_role()
 
     @contextlib.contextmanager
     def _get_conn(self):
@@ -89,7 +93,8 @@ class Storage:
                 (key, str(value)),
             )
             conn.commit()
-        if self.supabase.is_configured:
+        # The Moodle session cookie is a secret: it stays in the local database only.
+        if self.supabase.is_configured and key not in LOCAL_ONLY_SETTINGS:
             self.supabase.upsert_setting(key, value)
 
     def save_tasks(self, tasks: List[Dict]) -> Tuple[List[Dict], List[Dict]]:

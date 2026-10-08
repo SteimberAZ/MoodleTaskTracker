@@ -33,13 +33,19 @@ class SupabaseClient:
 
     def __init__(self, url: Optional[str] = None, key: Optional[str] = None):
         self.url = (url or os.environ.get("SUPABASE_URL", "")).rstrip("/")
-        self.key = key or os.environ.get("SUPABASE_KEY", "") or os.environ.get("SUPABASE_ANON_KEY", "")
+        # All moodle_* tables have RLS enabled with no policies, so only the service-role key
+        # works. SUPABASE_KEY is kept as a fallback (it may itself hold the service-role key).
+        self.key = (
+            key
+            or os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+            or os.environ.get("SUPABASE_KEY", "")
+            or os.environ.get("SUPABASE_ANON_KEY", "")
+        )
 
     @classmethod
     def for_service_role(cls) -> "SupabaseClient":
-        """Client using SUPABASE_SERVICE_ROLE_KEY, falling back to the regular key."""
-        key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip()
-        return cls(key=key or None)
+        """Client using SUPABASE_SERVICE_ROLE_KEY, falling back to SUPABASE_KEY."""
+        return cls()
 
     @property
     def is_configured(self) -> bool:
@@ -144,7 +150,7 @@ class SupabaseClient:
         if not self.is_configured:
             return []
         try:
-            endpoint = f"{self.url}/rest/v1/custom_reminders"
+            endpoint = f"{self.url}/rest/v1/moodle_custom_reminders"
             params = {
                 "select": "*",
                 "active": "eq.true",
@@ -164,7 +170,7 @@ class SupabaseClient:
         if not self.is_configured:
             return False
         try:
-            endpoint = f"{self.url}/rest/v1/custom_reminders"
+            endpoint = f"{self.url}/rest/v1/moodle_custom_reminders"
             headers = dict(self._headers())
             headers["Prefer"] = "return=minimal"
             r = requests.patch(

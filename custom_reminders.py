@@ -1,4 +1,4 @@
-"""Delivery of custom reminders stored in Supabase (table custom_reminders) via ntfy."""
+"""Delivery of custom reminders stored in Supabase (table moodle_custom_reminders) via ntfy."""
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Dict, Optional
