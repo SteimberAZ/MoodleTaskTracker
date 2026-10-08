@@ -239,6 +239,24 @@ def test_a_rejected_optional_user_column_is_dropped_and_remembered(monkeypatch, 
     assert capsys.readouterr().out.count("ntfy_confirmed_at does not exist yet") == 1
 
 
+def test_a_column_named_only_in_the_hint_is_not_switched_off(monkeypatch):
+    selects = []
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        selects.append(params["select"])
+        if "last_synced_at" in params["select"]:
+            return _Resp(400, text='{"code":"42703","message":"column moodle_users.last_synced_at does not exist",'
+                                   '"hint":"Perhaps you meant to reference the column \\"moodle_users.ntfy_confirmed_at\\"."}')
+        return _Resp(200, [{"id": "u1", "token": "t"}])
+
+    monkeypatch.setattr(supabase_client.requests, "get", fake_get)
+    c = _client()
+    assert [u["id"] for u in c.fetch_active_users()] == ["u1"]
+    assert c.last_synced_at_supported is False
+    assert c.ntfy_confirmed_at_supported is True
+    assert len(selects) == 2
+
+
 def test_set_user_synced_stamps_last_synced_at(monkeypatch):
     seen = {}
     monkeypatch.setattr(supabase_client.requests, "patch",

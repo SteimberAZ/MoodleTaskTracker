@@ -1,3 +1,4 @@
+import json
 import os
 import threading
 from datetime import datetime, timedelta, timezone
@@ -126,6 +127,22 @@ def _log_missing_jwt() -> None:
         )
 
 
+def _error_message(response) -> str:
+    """The ``message`` of a PostgREST/Postgres error body, else the raw text.
+
+    The Postgres ``hint`` ("Perhaps you meant to reference the column ...") can name a column that
+    DOES exist, so only the message is matched when the body is the usual JSON object.
+    """
+    text = str(getattr(response, "text", "") or "")
+    try:
+        body = json.loads(text)
+    except ValueError:
+        return text
+    if isinstance(body, dict) and isinstance(body.get("message"), str):
+        return body["message"]
+    return text
+
+
 class OptionalColumns:
     """Columns that only exist once a later supabase_schema.sql migration ran.
 
@@ -155,7 +172,7 @@ class OptionalColumns:
         """Switch off the candidate column the error ``response`` names. Returns it, or None when unrelated."""
         if getattr(response, "status_code", 0) != 400:
             return None
-        text = str(getattr(response, "text", "") or "")
+        text = _error_message(response)
         for column in self.wanted(table, candidates):
             if column in text:
                 self.disable(table, column)
