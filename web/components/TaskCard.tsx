@@ -25,10 +25,11 @@ export default function TaskCard({ task, nowSeconds, listState, headingLevel = 2
   const submitted = task.status === 'submitted';
   const left = timeLeft(task.due_timestamp, nowSeconds);
   const urgent = !muted && !submitted && left.urgent;
+  // The late-submission badge is long: it may wrap (badge-wrap) instead of overflowing a 320 px card.
   const badge = submitted
     ? { label: 'Entregada', tone: 'activo' }
     : overdue
-      ? { label: 'Atrasada · Moodle puede aceptar entregas tardías', tone: 'urgente' }
+      ? { label: 'Atrasada · Moodle puede aceptar entregas tardías', tone: 'urgente badge-wrap' }
       : { label: left.label, tone: urgent ? 'urgente' : 'pausado' };
   const Heading = headingLevel === 3 ? 'h3' : 'h2';
   const href = taskDetailHref(task.id, listState);

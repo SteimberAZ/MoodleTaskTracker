@@ -4,6 +4,8 @@ import { describe, expect, it, vi } from 'vitest';
 
 // ClassReminderSetting imports its server action, which pulls in server-only modules.
 vi.mock('@/app/horario/actions', () => ({ setClassReminder: vi.fn() }));
+// TaskCard renders MuteButton, whose server action pulls in server-only modules.
+vi.mock('@/components/MuteButton', () => ({ default: () => null }));
 import type { FormState } from '@/app/actions';
 import { leadSavedMessage } from '@/components/ClassReminderSetting';
 import CopyButton from '@/components/CopyButton';
@@ -11,6 +13,25 @@ import LiveStatus from '@/components/LiveStatus';
 import { NavPlaceholder } from '@/components/NavLinks';
 import ReminderForm, { countFieldErrors } from '@/components/ReminderForm';
 import ScheduleDays from '@/components/ScheduleDays';
+import TaskCard from '@/components/TaskCard';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
+describe('TaskCard overdue badge', () => {
+  const task = {
+    id: 't1', title: 'Ensayo', course: 'Curso', module: 'assign', status: 'pending', is_dismissed: 0,
+    due_timestamp: 1_000, due_date_str: 'ayer', task_url: 'https://evirtual.utm.edu.ec/mod/assign/view.php?id=1',
+  } as unknown as Parameters<typeof TaskCard>[0]['task'];
+
+  it('lets the long late-submission badge wrap so it never overflows a 320 px card', () => {
+    const html = renderToStaticMarkup(
+      createElement(TaskCard, { task, nowSeconds: 2_000, listState: {} as never, overdue: true }),
+    );
+    expect(html).toContain('class="badge urgente badge-wrap"');
+    const css = readFileSync(join(process.cwd(), 'app', 'globals.css'), 'utf8');
+    expect(css).toMatch(/\.task-top \.badge\.badge-wrap \{[^}]*white-space: normal/);
+  });
+});
 
 describe('NavPlaceholder (header Suspense fallback)', () => {
   it('keeps a .site-nav element so the body:has(.site-nav) padding does not shift when the nav streams in', () => {

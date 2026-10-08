@@ -416,6 +416,8 @@ body:has(.site-nav) .container {
 .task-card, .reminder-card { position: relative; display: flex; flex-direction: column; gap: 4px; padding: 12px 14px 14px; }
 .task-top { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .task-top .badge { margin-left: auto; }
+/* A long badge (the overdue one) wraps inside the card instead of overflowing it on narrow phones. */
+.task-top .badge.badge-wrap { flex-shrink: 1; min-width: 0; max-width: 100%; white-space: normal; text-align: right; }
 .task-title {
   display: -webkit-box;
   -webkit-box-orient: vertical;
