@@ -73,6 +73,8 @@
 .sk-textarea { height: 96px; border-radius: 12px; }
 .sk-icon { width: 28px; height: 28px; border-radius: 50%; }
 .sk-back { width: 170px; height: 18px; margin: 13px 0; } /* sits in the 44px back-link row */
+.sk-bar { height: 12px; margin: 10px 0 22px; border-radius: 100px; }
+.sk-stat { min-height: 64px; border-radius: 16px; }
 
 /* Mi cuenta (.card-title 16px/1.15 + 8px margin, .muted paragraph 15px/1.55, .meta dt 11px/1.55, .small 12.5px/1.55,
    the 60x44 switch row). Heights are the real line boxes, so the loaded cards are the same size. */

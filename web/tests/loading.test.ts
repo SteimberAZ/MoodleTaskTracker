@@ -10,6 +10,7 @@ import {
   ReminderFormSkeleton,
   RemindersSkeleton,
   ScheduleSkeleton,
+  StatsSkeleton,
   TaskDetailSkeleton,
 } from '@/components/Skeletons';
 
@@ -18,6 +19,7 @@ const SKELETONS = {
   RemindersSkeleton,
   ScheduleSkeleton,
   NotificationsSkeleton,
+  StatsSkeleton,
   AccountSkeleton,
   AdminSkeleton,
   TaskDetailSkeleton,

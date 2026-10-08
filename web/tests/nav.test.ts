@@ -8,14 +8,14 @@ const hrefs = (isAdmin: boolean) => buildNavItems(isAdmin, '/').map((i) => i.hre
 const labels = (isAdmin: boolean) => buildNavItems(isAdmin, '/').map((i) => i.label);
 
 describe('buildNavItems', () => {
-  it('shows four tabs to a regular user, in order', () => {
-    expect(hrefs(false)).toEqual(['/', '/recordatorios', '/notificaciones', '/cuenta']);
-    expect(labels(false)).toEqual(['Tareas', 'Recordatorios', 'Notificaciones', 'Mi cuenta']);
+  it('shows five tabs to a regular user, in order', () => {
+    expect(hrefs(false)).toEqual(['/', '/estadisticas', '/recordatorios', '/notificaciones', '/cuenta']);
+    expect(labels(false)).toEqual(['Tareas', 'Estadísticas', 'Recordatorios', 'Notificaciones', 'Mi cuenta']);
   });
 
-  it('adds Admin last for admins, for five tabs at most', () => {
-    expect(hrefs(true)).toEqual(['/', '/recordatorios', '/notificaciones', '/cuenta', '/admin']);
-    expect(buildNavItems(true, '/')).toHaveLength(5);
+  it('adds Admin last for admins, for six tabs at most', () => {
+    expect(hrefs(true)).toEqual(['/', '/estadisticas', '/recordatorios', '/notificaciones', '/cuenta', '/admin']);
+    expect(buildNavItems(true, '/')).toHaveLength(6);
   });
 
   it('has no logout tab: logout lives in the header', () => {
@@ -29,6 +29,8 @@ describe('buildNavItems', () => {
     const byHref = Object.fromEntries(buildNavItems(false, '/').map((i) => [i.href, i.shortLabel]));
     expect(byHref['/notificaciones']).toBe('Avisos');
     expect(byHref['/recordatorios']).toBe('Recordar');
+    expect(byHref['/estadisticas']).toBe('Notas');
+    expect(byHref['/cuenta']).toBe('Cuenta');
     expect(byHref['/']).toBeUndefined();
   });
 
@@ -38,6 +40,8 @@ describe('buildNavItems', () => {
     expect(current('/tareas/abc123')).toEqual(['/']);
     expect(current('/recordatorios')).toEqual(['/recordatorios']);
     expect(current('/notificaciones')).toEqual(['/notificaciones']);
+    expect(current('/estadisticas')).toEqual(['/estadisticas']);
+    expect(current('/estadisticas/x')).toEqual(['/estadisticas']);
     expect(current('/cuenta')).toEqual(['/cuenta']);
     expect(current('/admin')).toEqual(['/admin']);
   });
@@ -56,11 +60,11 @@ describe('isNavActive', () => {
     expect(isNavActive(TASKS_PATH, '/reminders/new')).toBe(false);
   });
 
-  it('keeps Recordatorios active on the class schedule page (no sixth tab)', () => {
+  it('keeps Recordatorios active on the class schedule page (no extra tab)', () => {
     expect(isNavActive(REMINDERS_PATH, SCHEDULE_PATH)).toBe(true);
     expect(isNavActive(REMINDERS_PATH, '/horariox')).toBe(false);
     expect(buildNavItems(true, SCHEDULE_PATH).filter((i) => i.current).map((i) => i.href)).toEqual(['/recordatorios']);
-    expect(buildNavItems(true, '/')).toHaveLength(5);
+    expect(buildNavItems(true, '/')).toHaveLength(6);
   });
 
   it('only matches whole path segments', () => {

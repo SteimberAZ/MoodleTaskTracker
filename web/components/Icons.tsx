@@ -31,6 +31,15 @@ export const TasksIcon = () => (
   </Icon>
 );
 
+export const ChartIcon = () => (
+  <Icon>
+    <path d="M4 20h16" />
+    <path d="M7 16v-5" />
+    <path d="M12 16V7" />
+    <path d="M17 16v-9" />
+  </Icon>
+);
+
 export const ClockIcon = () => (
   <Icon>
     <circle cx="12" cy="12" r="9" />

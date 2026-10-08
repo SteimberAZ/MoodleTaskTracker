@@ -323,6 +323,13 @@ body:has(.site-nav) .container {
   body:has(.site-nav) .container { padding-bottom: 80px; }
 }
 
+/* Mid widths: six inline tabs only fit with the short labels and tighter padding. */
+@media (min-width: 720px) and (max-width: 1099px) {
+  .site-nav--inline .nav-item { padding: 0 12px; }
+  .site-nav--inline .nav-item .nav-label-short { display: inline; }
+  .site-nav--inline .nav-item .nav-label-long { display: none; }
+}
+
 /* ============================== Buttons ============================== */
 .btn {
   display: inline-flex;
@@ -1165,6 +1172,33 @@ main:has(.form.narrow)::before {
   .brand-word { font-size: 19px; letter-spacing: -1px; }
   .brand-logo { width: 24px; height: 29px; }
 }
+
+/* ============================== Grade statistics (/estadisticas) ============================== */
+.grade-summary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-bottom: 16px; }
+@media (min-width: 520px) { .grade-summary { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+.grade-stat { display: grid; gap: 2px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 16px; background: var(--surface); font-size: 13px; font-weight: 600; }
+.grade-stat-value { font: 800 24px/1.1 var(--display); }
+.grade-card { display: flex; flex-direction: column; gap: 8px; }
+.grade-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+.grade-course { font-size: 16px; letter-spacing: 0; overflow-wrap: anywhere; }
+.grade-score { font-size: 14px; }
+.grade-score strong { font: 800 28px/1 var(--display); }
+.grade-bar { position: relative; height: 12px; margin-top: 4px; border-radius: 100px; background: var(--border); }
+.grade-bar-fill, .grade-bar-pending { position: absolute; top: 0; bottom: 0; left: 0; border-radius: 100px; }
+.grade-bar-fill { background: var(--clay); }
+.grade-bar-fill.is-passed { background: var(--ok); }
+.grade-bar-pending { background: repeating-linear-gradient(135deg, color-mix(in srgb, var(--text) 22%, transparent) 0 4px, transparent 4px 8px); }
+.grade-bar-mark { position: absolute; top: -4px; bottom: -4px; width: 2px; margin-left: -1px; background: var(--text); }
+.grade-bar-legend { display: flex; justify-content: space-between; margin-top: 2px; }
+.grade-bar-legend span:nth-child(2) { position: relative; left: 20%; }
+.grade-lines { display: grid; gap: 2px; font-size: 14px; }
+.grade-items-title { margin-top: 6px; font: 700 12.5px/1.3 var(--font); letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+.grade-items { display: grid; gap: 6px; }
+.grade-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0 12px; padding-top: 6px; border-top: 1px solid var(--border); font-size: 14px; }
+.grade-item-name { min-width: 0; overflow-wrap: anywhere; font-weight: 600; }
+.grade-item-score { font-weight: 700; text-align: right; white-space: nowrap; }
+.grade-item-points { grid-column: 2; text-align: right; }
+.grade-item-date { grid-column: 1; grid-row: 2; }
 
 /* ============================== Accessibility ============================== */
 :focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }

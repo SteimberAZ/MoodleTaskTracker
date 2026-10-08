@@ -4,10 +4,11 @@ import type { ReactElement } from 'react';
 import Link, { useLinkStatus } from 'next/link';
 import { usePathname } from 'next/navigation';
 import { LOGIN_PATH, buildNavItems, type NavIconName } from '@/lib/nav';
-import { BellIcon, ClockIcon, ShieldIcon, TasksIcon, UserIcon } from './Icons';
+import { BellIcon, ChartIcon, ClockIcon, ShieldIcon, TasksIcon, UserIcon } from './Icons';
 
 const ICONS: Record<NavIconName, () => ReactElement> = {
   tasks: TasksIcon,
+  chart: ChartIcon,
   reminders: ClockIcon,
   bell: BellIcon,
   user: UserIcon,
@@ -24,7 +25,8 @@ function PendingMark() {
 }
 
 /**
- * The app navigation: Tareas / Recordatorios / Notificaciones / Mi cuenta / Admin (admins only).
+ * The app navigation: Tareas / Estadísticas / Recordatorios / Notificaciones / Mi cuenta / Admin (admins only).
+ * Short phone labels keep six tabs (admins) within 320px.
  * Logout is not a tab; it sits at the right end of the header (see LogoutButton).
  * Rendered twice by SiteHeader: `inline` inside the header (wide screens only) and `bar` as a bottom tab bar
  * (phones only). The bar must live OUTSIDE the sticky header: iOS WebKit mispositions `position: fixed`

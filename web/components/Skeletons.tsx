@@ -253,6 +253,39 @@ export function NotificationsSkeleton() {
   );
 }
 
+function GradeCardSkeleton() {
+  return (
+    <li className="card grade-card">
+      <div className="grade-top">
+        <Sk className="sk-title sk-w-60" />
+        <Sk className="sk-badge" />
+      </div>
+      <Sk className="sk-h2 sk-w-30" />
+      <Sk className="sk-bar" />
+      <Sk className="sk-text-sm sk-w-60" />
+      <Sk className="sk-text-sm sk-w-40" />
+    </li>
+  );
+}
+
+/** `/estadisticas`: header, the four summary tiles and the course cards. */
+export function StatsSkeleton() {
+  return (
+    <SkeletonShell>
+      <PageHeadSkeleton lines={1} />
+      <div className="grade-summary">
+        <Repeat times={4}>{(i) => <Sk key={i} className="sk-stat" />}</Repeat>
+      </div>
+      <section className="section">
+        <ul className="list grade-list">
+          <Repeat times={3}>{(i) => <GradeCardSkeleton key={i} />}</Repeat>
+        </ul>
+      </section>
+      <TimezoneNoteSkeleton />
+    </SkeletonShell>
+  );
+}
+
 /**
  * `/cuenta`: header and the profile / push / ntfy cards. Every block is sized from the real page (see the `sk-card-title`,
  * `sk-para`, `sk-dt` and `sk-note` rules in skeleton.css) so the cards keep their height, and the page its scrollability,

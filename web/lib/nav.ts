@@ -2,12 +2,13 @@
 
 export const TASKS_PATH = '/';
 export const REMINDERS_PATH = '/recordatorios';
-/** The class schedule lives inside Recordatorios (a segment at the top of both pages), so the tab bar stays at five items. */
+export const STATS_PATH = '/estadisticas';
+/** The class schedule lives inside Recordatorios (a segment at the top of both pages), so it gets no tab of its own. */
 export const SCHEDULE_PATH = '/horario';
 /** The only page without the app navigation (logged out). */
 export const LOGIN_PATH = '/login';
 
-export type NavIconName = 'tasks' | 'reminders' | 'bell' | 'user' | 'shield';
+export type NavIconName = 'tasks' | 'chart' | 'reminders' | 'bell' | 'user' | 'shield';
 
 export interface NavItem {
   href: string;
@@ -35,14 +36,15 @@ export function isNavActive(href: string, pathname: string): boolean {
 
 /**
  * Tabs of the main navigation, in display order. Logout is deliberately not a tab: it lives at the
- * right end of the header. Admin appears for admins only, so there are four or five items.
+ * right end of the header. Admin appears for admins only: five tabs for users, six for admins.
  */
 export function buildNavItems(isAdmin: boolean, pathname: string): NavItem[] {
   const items: Omit<NavItem, 'current'>[] = [
     { href: TASKS_PATH, label: 'Tareas', icon: 'tasks' },
+    { href: STATS_PATH, label: 'Estadísticas', shortLabel: 'Notas', icon: 'chart' },
     { href: REMINDERS_PATH, label: 'Recordatorios', shortLabel: 'Recordar', icon: 'reminders' },
     { href: '/notificaciones', label: 'Notificaciones', shortLabel: 'Avisos', icon: 'bell' },
-    { href: '/cuenta', label: 'Mi cuenta', icon: 'user' },
+    { href: '/cuenta', label: 'Mi cuenta', shortLabel: 'Cuenta', icon: 'user' },
   ];
   if (isAdmin) items.push({ href: '/admin', label: 'Admin', icon: 'shield' });
   return items.map((item) => ({ ...item, current: isNavActive(item.href, pathname) }));
