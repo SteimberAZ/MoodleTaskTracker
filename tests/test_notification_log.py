@@ -132,11 +132,24 @@ def test_a_delivery_records_one_row_with_the_channel_outcome():
         "ntfy_ok": True, "push_state": "partial", "created_at": "2026-10-06T12:00:00+00:00"}]
 
 
+def test_a_removed_stale_device_does_not_make_a_delivery_partial():
+    log, db = _log()
+    results = {"https://push.example/0": PushResult.GONE}  # an uninstalled PWA on an old phone
+    _deliverer(log, subs=2, results=results)(dict(USER, ntfy_enabled=False), "T", "B", kind="task")
+    log.flush()
+    assert (db.rows[0]["push_state"], db.rows[0]["push_ok"], db.rows[0]["push_total"]) == ("ok", 1, 1)
+    log2, db2 = _log()
+    _deliverer(log2, subs=1, results=results)(dict(USER, ntfy_enabled=False), "T", "B", kind="task")
+    log2.flush()
+    assert db2.rows[0]["push_state"] == "no_devices"  # every device was gone: none left, not "failed"
+
+
 @pytest.mark.parametrize("subs, results, ntfy_on, ntfy_ok, expected", [
     (2, {}, True, True, ("sent", 2, 2, True, True)),
     (2, {}, True, False, ("sent", 2, 2, True, False)),  # push rescues a failing ntfy
     (1, {"https://push.example/0": PushResult.FAILED}, True, True, ("sent", 0, 1, True, True)),  # ntfy rescues
-    (1, {"https://push.example/0": PushResult.GONE}, False, False, ("failed", 0, 1, False, False)),
+    (1, {"https://push.example/0": PushResult.GONE}, False, False, ("failed", 0, 0, False, False)),
+    (2, {"https://push.example/0": PushResult.GONE}, False, False, ("sent", 1, 1, False, False)),
     (2, {"https://push.example/0": PushResult.FAILED, "https://push.example/1": PushResult.FAILED}, True, False,
      ("failed", 0, 2, True, False)),
     (0, {}, False, False, ("failed", 0, 0, False, False)),  # no channel at all

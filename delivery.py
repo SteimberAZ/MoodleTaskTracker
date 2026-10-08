@@ -304,9 +304,14 @@ def deliver_to_user(
                 print(f"[Deliver] user {label}: push send crashed: {type(exc).__name__}")
                 result = PushResult.FAILED
             counts[result if result in counts else PushResult.FAILED] += 1
-        push_ok, push_total = counts[PushResult.OK], len(subs)
+        # A GONE device was deleted during this call: it is no longer one of the user's devices, so it
+        # neither makes a delivery "partial" nor counts in push_total.
+        push_ok, push_total = counts[PushResult.OK], len(subs) - counts[PushResult.GONE]
         if push_state is None:
-            push_state = "ok" if push_ok == push_total else ("partial" if push_ok else "failed")
+            if push_total <= 0:
+                push_state = "no_devices"
+            else:
+                push_state = "ok" if push_ok == push_total else ("partial" if push_ok else "failed")
         text = f"push {push_ok}/{push_total} ok" if subs else "push none"
         if push_state == "read_error":
             push_total, text = PUSH_UNKNOWN, "push FAILED (subscriptions unreadable)"
