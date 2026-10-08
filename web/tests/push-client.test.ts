@@ -168,7 +168,8 @@ describe('readDeviceState', () => {
     const snapshot = await readDeviceState(CURRENT);
     expect(snapshot.state).toBe('unsynced');
     expect(snapshot.server?.registered).toBe(false);
-    expect(gets).toEqual([`/api/push/status?endpoint=${encodeURIComponent('https://fcm.googleapis.com/fcm/send/same')}`]);
+    expect(gets).toEqual([]);
+    expect(posts).toContainEqual({ url: '/api/push/status', body: { endpoint: 'https://fcm.googleapis.com/fcm/send/same' } });
   });
 
   it('keeps subscribed (with the server view) when the server confirms the device', async () => {

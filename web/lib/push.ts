@@ -204,7 +204,7 @@ export interface PushInputs {
   /** The subscription is bound to another application server key than the configured one. */
   keyMismatch?: boolean;
   /**
-   * What `GET /api/push/status` said about this subscription: false when the server has no row for it,
+   * What `POST /api/push/status` said about this subscription: false when the server has no row for it,
    * null/undefined when it could not be asked (offline, network error), which keeps the browser's view.
    */
   serverRegistered?: boolean | null;
@@ -234,7 +234,7 @@ export function shouldShowPushBanner(state: PushState): boolean {
 }
 
 /* ------------------------------------------------------------------------- */
-/* Server-side view of one device (GET /api/push/status)                      */
+/* Server-side view of one device (POST /api/push/status)                     */
 /* ------------------------------------------------------------------------- */
 
 export interface PushServerStatus {
@@ -251,7 +251,7 @@ export interface PushServerStatus {
 const isoOrNull = (value: unknown): string | null =>
   typeof value === 'string' && !Number.isNaN(Date.parse(value)) ? value : null;
 
-/** Tolerant reader of the JSON of `GET /api/push/status`; null when it is not that shape at all. */
+/** Tolerant reader of the JSON of `POST /api/push/status`; null when it is not that shape at all. */
 export function parsePushServerStatus(data: unknown): PushServerStatus | null {
   if (!isRecord(data) || typeof data.registered !== 'boolean') return null;
   const failures = Number(data.failure_count);

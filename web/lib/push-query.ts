@@ -68,7 +68,7 @@ export function pushUserDevicesPath(userId: string): string {
 }
 
 /* ------------------------------------------------------------------------- */
-/* Device health (GET /api/push/status and the admin page)                    */
+/* Device health (POST /api/push/status and the admin page)                   */
 /* ------------------------------------------------------------------------- */
 
 const STATUS_BASE = 'last_success_at,last_failure_at,failure_count,test_requested_at';
@@ -89,7 +89,7 @@ export interface PushStatusRow {
   test_requested_at?: string | null;
 }
 
-/** The `GET /api/push/status` answer for the rows read: `registered` false (and every field null) when there is none. */
+/** The `POST /api/push/status` answer for the rows read: `registered` false (and every field null) when there is none. */
 export function pushStatusFromRows(rows: PushStatusRow[] | null | undefined): PushServerStatus {
   const row = Array.isArray(rows) ? rows[0] : undefined;
   return {

@@ -18,7 +18,7 @@ export type PushSession = { ok: true; user: SessionUser } | { ok: false; respons
 
 /**
  * Origin check, then session check (JSON 401, no redirect; 503 when the session cannot be verified).
- * Used as is by the GET handlers (`/api/push/status`), which have no body.
+ * `authorizePushRequest` adds the JSON body checks on top of it.
  */
 export async function authorizePushSession(request: Request): Promise<PushSession> {
   const headers = request.headers;

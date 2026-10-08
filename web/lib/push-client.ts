@@ -61,16 +61,19 @@ export async function getReadyRegistration(timeoutMs = 8000): Promise<ServiceWor
 const STATUS_TIMEOUT_MS = 8000;
 
 /**
- * Asks the server what it knows about this device (`GET /api/push/status`). Null when it cannot answer:
+ * Asks the server what it knows about this device (`POST /api/push/status`). Null when it cannot answer:
  * offline, network error, timeout, logged out or any non-2xx. Callers then keep the browser's own view.
  */
 export async function fetchPushStatus(endpoint: string): Promise<PushServerStatus | null> {
   if (typeof navigator !== 'undefined' && navigator.onLine === false) return null;
   try {
-    const res = await fetch(`/api/push/status?endpoint=${encodeURIComponent(endpoint)}`, {
-      method: 'GET',
+    // POST, so the endpoint (a capability URL) never appears in a query string or an access log.
+    const res = await fetch('/api/push/status', {
+      method: 'POST',
       credentials: 'same-origin',
       cache: 'no-store',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ endpoint }),
       signal: typeof AbortSignal?.timeout === 'function' ? AbortSignal.timeout(STATUS_TIMEOUT_MS) : undefined,
     });
     if (!res.ok) return null;

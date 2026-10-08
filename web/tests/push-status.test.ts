@@ -6,7 +6,7 @@ vi.mock('@/lib/auth', () => ({ getCurrentUser: () => getCurrentUser() }));
 const dbFetch = vi.fn();
 vi.mock('@/lib/db', () => ({ dbFetch: (...args: unknown[]) => dbFetch(...args), dbJson: vi.fn() }));
 
-const { GET } = await import('@/app/api/push/status/route');
+const { POST } = await import('@/app/api/push/status/route');
 
 const USER = '3f2c8a52-8d5e-4a0b-9f0e-6f3a1c2b4d5e';
 const HOST = 'tareas.example.com';
@@ -23,9 +23,14 @@ const respond = (status: number, body: unknown) =>
   ({ ok: status >= 200 && status < 300, status, text: async () => JSON.stringify(body) }) as unknown as Response;
 
 function request(endpoint: string | null = ENDPOINT): Request {
-  const query = endpoint === null ? '' : `?endpoint=${encodeURIComponent(endpoint)}`;
-  return new Request(`https://${HOST}/api/push/status${query}`, { headers: { host: HOST, origin: `https://${HOST}` } });
+  return new Request(`https://${HOST}/api/push/status`, {
+    method: 'POST',
+    headers: { host: HOST, origin: `https://${HOST}`, 'content-type': 'application/json' },
+    body: JSON.stringify(endpoint === null ? {} : { endpoint }),
+  });
 }
+
+const GET = POST; // every case below goes through the POST handler
 
 beforeEach(() => {
   getCurrentUser.mockReset();
@@ -33,7 +38,12 @@ beforeEach(() => {
   dbFetch.mockReset();
 });
 
-describe('GET /api/push/status', () => {
+describe('POST /api/push/status', () => {
+  it('has no GET handler: the endpoint never travels in a query string', async () => {
+    const route = await import('@/app/api/push/status/route');
+    expect('GET' in route).toBe(false);
+  });
+
   it('reads the device scoped to the session user and returns its health', async () => {
     dbFetch.mockResolvedValueOnce(respond(200, [ROW]));
     const res = await GET(request());
