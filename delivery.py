@@ -378,8 +378,10 @@ def _clear_test_flag(supabase, row: Dict) -> bool:
 def process_push_tests(supabase, sender, history=None, answered: Optional[Set[Tuple[str, str]]] = None) -> int:
     """Answer the "Enviar prueba" button: send a test push to every subscription that asked for one.
 
-    The web sets ``test_requested_at`` on the row; this clears it again, also when the send failed or
-    raised, so a broken subscription cannot loop. The clear only matches the value that was read, so a
+    The web sets ``test_requested_at`` on the row; this clears it again, also when the send failed,
+    raised or found the device gone (the sender deletes that row, but its delete may fail and a kept
+    flag would resend the test every tick; clearing a deleted row just matches nothing), so a broken
+    subscription cannot loop. The clear only matches the value that was read, so a
     newer press made meanwhile survives and gets its own test. A request whose clear failed is kept in
     ``answered`` (process-wide by default) and is never sent twice: later ticks only retry the clear.
     Returns how many tests were accepted. Never raises for a single row, and does nothing without a
@@ -426,7 +428,7 @@ def process_push_tests(supabase, sender, history=None, answered: Optional[Set[Tu
             push_ok=1 if result is PushResult.OK else 0, push_total=1, ntfy_attempted=False, ntfy_ok=False,
             push_state=push_state, delivered=result is PushResult.OK,
         )
-        if result is not PushResult.GONE and not _clear_test_flag(supabase, row):  # a deleted row has no flag
+        if not _clear_test_flag(supabase, row):
             print("[Deliver] push test flag not cleared; it is retried without sending the test again.")
             answered.add(key)
         label = result.value if isinstance(result, PushResult) else ("disabled" if not sender_on else "failed")

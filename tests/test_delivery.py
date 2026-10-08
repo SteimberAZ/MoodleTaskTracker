@@ -267,10 +267,13 @@ def test_a_failed_test_still_clears_the_flag_so_it_cannot_loop():
     assert ("s-a", {"test_requested_at": None}) in db.updates
 
 
-def test_a_gone_subscription_has_nothing_left_to_clear():
+def test_a_gone_subscription_still_gets_its_flag_cleared():
+    # The sender deletes a gone row, but that delete may fail: a kept flag would resend the test
+    # (and write a failed history row) every tick. Clearing a deleted row just matches nothing.
     db = FakeDb(tests=[_test_row("a")])
-    assert process_push_tests(db, FakeSender({"https://push.example/a": PushResult.GONE})) == 0
-    assert db.updates == []
+    sender = FakeSender({"https://push.example/a": PushResult.GONE})
+    assert process_push_tests(db, sender) == 0
+    assert db.clears == [("s-a", None)] and db.updates == [("s-a", {"test_requested_at": None})]
 
 
 def test_a_crashing_send_still_clears_the_flag_and_the_rest_continue():
