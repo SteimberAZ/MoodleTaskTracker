@@ -1199,6 +1199,17 @@ main:has(.form.narrow)::before {
 .grade-item-score { font-weight: 700; text-align: right; white-space: nowrap; }
 .grade-item-points { grid-column: 2; text-align: right; }
 .grade-item-date { grid-column: 1; grid-row: 2; }
+/* Exams the student enters by hand (mid-cycle / end-of-cycle): one disclosure per exam. */
+.grade-exams { display: grid; gap: 6px; }
+.exam-entry { border: 1px solid var(--border); border-radius: 12px; padding: 0 12px; font-size: 14px; }
+.exam-entry.is-missing { border-style: dashed; border-color: var(--clay); }
+.exam-entry summary { display: flex; align-items: center; min-height: 44px; cursor: pointer; font-weight: 700; overflow-wrap: anywhere; }
+.exam-form { display: grid; gap: 10px; padding-bottom: 12px; }
+.exam-form label { display: grid; gap: 4px; font-weight: 600; min-width: 0; }
+.exam-form select { max-width: 100%; }
+.exam-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.exam-delete { padding-bottom: 12px; }
+.grade-item-tag { margin-left: 6px; font-weight: 500; }
 
 /* ============================== Accessibility ============================== */
 :focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }

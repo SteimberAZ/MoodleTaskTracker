@@ -1,8 +1,10 @@
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import CourseGradeCard from '@/components/CourseGradeCard';
 import { computeCourseStanding, type CourseStanding, type GradeItemRow } from '@/lib/grades';
+
+vi.mock('@/app/estadisticas/actions', () => ({ saveExam: vi.fn(), deleteExam: vi.fn() }));
 
 const base: Omit<GradeItemRow, 'course_id' | 'item_id' | 'item_type'> = {
   course_name: 'Física',
@@ -125,5 +127,27 @@ describe('CourseGradeCard', () => {
     expect(html).toContain('Sin notas');
     expect(html).toContain('Aún no tienes notas en esta materia.');
     expect(html).not.toContain('Te faltan');
+  });
+});
+
+describe('CourseGradeCard exams', () => {
+  const html = (examsEnabled: boolean, manual = [] as Parameters<typeof computeCourseStanding>[1]) =>
+    renderToStaticMarkup(createElement(CourseGradeCard, { standing: computeCourseStanding(onTrack, manual), examsEnabled }));
+
+  it('asks for both exams while the table exists and nothing was entered', () => {
+    const out = html(true);
+    expect(out).toContain('¿Ya diste tu examen de medio ciclo? Agrégalo');
+    expect(out).toContain('¿Ya diste tu examen de fin de ciclo? Agrégalo');
+    expect(out).toContain('name="grade"');
+  });
+
+  it('hides the exam forms until the table exists', () => {
+    expect(html(false)).not.toContain('Agrégalo');
+  });
+
+  it('tags an entered exam as the student own grade', () => {
+    const out = html(true, [{ course_id: onTrack[0].course_id, kind: 'final', grade: 12, max_points: 15, linked_item_id: null }]);
+    expect(out).toContain('Examen de fin de ciclo: 12/15 (nota tuya)');
+    expect(out).toContain('(nota tuya)</span>');
   });
 });

@@ -32,7 +32,52 @@ export interface GradeItemRow {
   fetched_at: string | null;
 }
 
-export type StandingMethod = 'weights' | 'points' | 'estimate' | 'none';
+export type ExamKind = 'midterm' | 'final';
+export const EXAM_KINDS: readonly ExamKind[] = ['midterm', 'final'];
+export const EXAM_LABEL: Record<ExamKind, string> = {
+  midterm: 'Examen de medio ciclo',
+  final: 'Examen de fin de ciclo',
+};
+/** Course points an exam is worth unless the student says otherwise. */
+export const DEFAULT_EXAM_POINTS = 15;
+
+export const MANUAL_GRADE_COLUMNS = 'course_id,kind,grade,max_points,linked_item_id';
+
+/**
+ * A student-entered exam (moodle_manual_grades). grade null + link: "this exam is that Moodle item";
+ * grade null, no link: "this course has no such exam".
+ */
+export interface ManualGradeRow {
+  course_id: number;
+  kind: ExamKind;
+  grade: number | null;
+  max_points: number;
+  linked_item_id: number | null;
+}
+
+/**
+ * How an exam shows on the course card. missing: nothing entered (the card asks for it); manual: a grade the
+ * student entered counts; moodle: it is linked and Moodle already has the grade, which wins; linked: it is a
+ * Moodle item still without grade; none: the course has no such exam.
+ */
+export type ExamState = 'missing' | 'manual' | 'moodle' | 'linked' | 'none';
+
+export interface ExamEntry {
+  kind: ExamKind;
+  label: string;
+  state: ExamState;
+  grade: number | null;
+  maxPoints: number;
+  linkedItemId: number | null;
+  linkedItemName: string | null;
+}
+
+export interface LinkableItem {
+  itemId: number;
+  name: string;
+}
+
+export type StandingMethod = 'weights' | 'points' | 'estimate' | 'manual' | 'none';
 export type StandingStatus = 'passed' | 'on_track' | 'at_risk' | 'lost' | 'unknown' | 'no_grades';
 
 export interface GradedItem {
@@ -45,6 +90,8 @@ export interface GradedItem {
   /** Points this item adds to the 100-point total; null for an estimate. */
   contribution: number | null;
   gradedAt: number | null;
+  /** Entered by the student, not read from Moodle. */
+  manual: boolean;
 }
 
 export interface CourseStanding {
@@ -64,6 +111,9 @@ export interface CourseStanding {
   graded: GradedItem[];
   pendingItems: number;
   fetchedAt: string | null;
+  exams: ExamEntry[];
+  /** Moodle activities an exam can be linked to (leaves of this course). */
+  linkable: LinkableItem[];
 }
 
 export interface StandingsSummary {
@@ -82,6 +132,12 @@ export function gradeItemsPath(userId: string): string {
     'limit=3000',
   )}`;
 }
+
+export function manualGradesPath(userId: string): string {
+  return `moodle_manual_grades${scopedQuery(userId, `select=${MANUAL_GRADE_COLUMNS}`, 'limit=500')}`;
+}
+
+export const isExamKind = (value: unknown): value is ExamKind => value === 'midterm' || value === 'final';
 
 function toInt(value: unknown): number | null {
   if (typeof value === 'number') return Number.isInteger(value) ? value : null;
@@ -130,6 +186,29 @@ export function parseGradeRows(raw: unknown): GradeItemRow[] {
       weight_raw: toNum(r.weight_raw),
       graded_at: toNum(r.graded_at),
       fetched_at: toStr(r.fetched_at),
+    });
+  }
+  return rows;
+}
+
+/** Validates the moodle_manual_grades answer; malformed rows are dropped. */
+export function parseManualRows(raw: unknown): ManualGradeRow[] {
+  if (!Array.isArray(raw)) return [];
+  const rows: ManualGradeRow[] = [];
+  for (const entry of raw) {
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) continue;
+    const r = entry as Record<string, unknown>;
+    const courseId = toInt(r.course_id);
+    const maxPoints = toNum(r.max_points);
+    const grade = r.grade === null || r.grade === undefined ? null : toNum(r.grade);
+    if (courseId === null || !isExamKind(r.kind) || maxPoints === null || !(maxPoints > 0)) continue;
+    if (r.grade !== null && r.grade !== undefined && grade === null) continue;
+    rows.push({
+      course_id: courseId,
+      kind: r.kind,
+      grade,
+      max_points: maxPoints,
+      linked_item_id: r.linked_item_id === null || r.linked_item_id === undefined ? null : toInt(r.linked_item_id),
     });
   }
   return rows;
@@ -254,15 +333,79 @@ export function latestFetch(rows: GradeItemRow[]): string | null {
   return best;
 }
 
-/** Standing of ONE course: pass `rows` that all belong to the same `course_id`. */
-export function computeCourseStanding(rows: GradeItemRow[]): CourseStanding {
+/**
+ * Applies the student's exam entries to the Moodle rows.
+ * - A grade linked to a Moodle activity that Moodle has not graded replaces that activity's grade (same weight,
+ *   no double counting). When Moodle already graded it, Moodle wins and the entry is ignored.
+ * - A grade without a (valid) link is a fixed block of `max_points` course points: the Moodle part is scaled to
+ *   the remaining 100 - blocks points, so the total stays on 100.
+ */
+function applyExams(rows: GradeItemRow[], manual: ManualGradeRow[]) {
+  const leafById = new Map(rows.filter(isLeaf).map((r) => [r.item_id, r]));
+  const replaced = new Set<number>();
+  const blocks: ManualGradeRow[] = [];
+  const exams: ExamEntry[] = [];
+
+  for (const kind of EXAM_KINDS) {
+    const entry = manual.find((m) => m.kind === kind);
+    const linked = entry?.linked_item_id != null ? leafById.get(entry.linked_item_id) : undefined;
+    let state: ExamState;
+    if (!entry) state = 'missing';
+    else if (linked && isGraded(linked) && !replaced.has(linked.item_id)) state = 'moodle';
+    else if (entry.grade !== null) state = 'manual';
+    else state = linked ? 'linked' : 'none';
+
+    if (entry && state === 'manual') {
+      if (linked) replaced.add(linked.item_id);
+      else blocks.push(entry);
+    }
+    exams.push({
+      kind,
+      label: EXAM_LABEL[kind],
+      state,
+      grade: entry?.grade ?? null,
+      maxPoints: entry?.max_points ?? DEFAULT_EXAM_POINTS,
+      linkedItemId: linked ? linked.item_id : null,
+      linkedItemName: linked ? linked.item_name || 'Actividad sin nombre' : null,
+    });
+  }
+
+  const replacedRows = rows.map((r) => {
+    if (!replaced.has(r.item_id)) return r;
+    const entry = manual.find((m) => m.linked_item_id === r.item_id && m.grade !== null) as ManualGradeRow;
+    const fraction = Math.min(1, Math.max(0, (entry.grade as number) / entry.max_points));
+    return { ...r, grade_raw: (r.grade_min ?? 0) + fraction * range(r), graded_at: null };
+  });
+  return { rows: replacedRows, replaced, blocks, exams };
+}
+
+/** Standing of ONE course: pass `rows` that all belong to the same `course_id`, and that course's exam entries. */
+export function computeCourseStanding(moodleRows: GradeItemRow[], manual: ManualGradeRow[] = []): CourseStanding {
+  const { rows, replaced, blocks, exams } = applyExams(moodleRows, manual);
   const leaves = rows.filter(isLeaf);
   const courseRow = rows.find((r) => r.item_type === 'course');
   const gradedLeaves = leaves.filter(isGraded);
 
-  const computation: Computation = byWeights(rows, leaves, courseRow) ??
+  const moodle: Computation = byWeights(rows, leaves, courseRow) ??
     byPoints(leaves) ??
     byEstimate(courseRow) ?? { method: 'none', earned: 0, spent: null, available: null, contributions: new Map() };
+
+  // Unlinked exam blocks take their points off the top; the Moodle part fills the rest of the 100.
+  const blockMax = Math.min(COURSE_POINTS, blocks.reduce((acc, b) => acc + b.max_points, 0));
+  const blockEarned = blocks.reduce((acc, b) => acc + Math.min(b.grade as number, b.max_points), 0);
+  const scale = (COURSE_POINTS - blockMax) / COURSE_POINTS;
+  let computation: Computation = moodle;
+  if (blocks.length > 0) {
+    const base = moodle.method === 'none' ? { ...moodle, method: 'manual' as const, spent: 0 } : moodle;
+    const spent = base.spent === null ? null : round2(base.spent * scale + blockMax);
+    computation = {
+      method: base.method,
+      earned: base.earned * scale + blockEarned,
+      spent,
+      available: spent === null ? null : Math.max(0, round2(COURSE_POINTS - spent)),
+      contributions: new Map([...base.contributions].map(([id, c]) => [id, c * scale])),
+    };
+  }
 
   const earned = round2(computation.earned);
   const needed = round2(Math.max(0, PASS_MARK - earned));
@@ -270,22 +413,23 @@ export function computeCourseStanding(rows: GradeItemRow[]): CourseStanding {
   // An estimate is Moodle's course total, which is renormalized over the graded items; it cannot confirm a pass
   // while any stored activity is still ungraded.
   const passed = earned >= PASS_MARK && (computation.method !== 'estimate' || pendingItems === 0);
-  const projected = computation.method === 'weights' || computation.method === 'points';
+  const projected = computation.method === 'weights' || computation.method === 'points' || computation.method === 'manual';
   const spent = computation.spent === null ? null : round2(computation.spent);
   const available = computation.available === null ? null : round2(computation.available);
   const maxReachable = projected && available !== null ? round2(earned + available) : null;
   const reachable = maxReachable === null ? null : maxReachable >= PASS_MARK;
   const neededShare = projected && available !== null && available > 0 ? needed / available : null;
+  const anyGrade = gradedLeaves.length > 0 || blocks.length > 0;
 
   let status: StandingStatus;
   if (passed) status = 'passed';
-  else if (!projected) status = gradedLeaves.length > 0 || (courseRow !== undefined && isGraded(courseRow)) ? 'unknown' : 'no_grades';
-  else if (gradedLeaves.length === 0) status = 'no_grades';
+  else if (!projected) status = anyGrade || (courseRow !== undefined && isGraded(courseRow)) ? 'unknown' : 'no_grades';
+  else if (!anyGrade) status = 'no_grades';
   else if (reachable === false) status = 'lost';
   else if (neededShare !== null && neededShare > AT_RISK_SHARE) status = 'at_risk';
   else status = 'on_track';
 
-  const graded: GradedItem[] = [...gradedLeaves].sort(compareGraded).map((leaf) => {
+  const fromMoodle: GradedItem[] = [...gradedLeaves].sort(compareGraded).map((leaf) => {
     const c = computation.contributions.get(leaf.item_id);
     return {
       itemId: leaf.item_id,
@@ -296,8 +440,25 @@ export function computeCourseStanding(rows: GradeItemRow[]): CourseStanding {
       max: leaf.grade_max,
       contribution: c === undefined ? null : round2(c),
       gradedAt: leaf.graded_at,
+      manual: replaced.has(leaf.item_id),
     };
   });
+  const fromBlocks: GradedItem[] = blocks.map((b, i) => ({
+    itemId: -(i + 1),
+    name: EXAM_LABEL[b.kind],
+    module: null,
+    grade: b.grade as number,
+    min: 0,
+    max: b.max_points,
+    contribution: round2(Math.min(b.grade as number, b.max_points)),
+    gradedAt: null,
+    manual: true,
+  }));
+  const graded = [...fromBlocks, ...fromMoodle];
+  const linkable: LinkableItem[] = moodleRows
+    .filter(isLeaf)
+    .sort((a, b) => a.sort_order - b.sort_order)
+    .map((r) => ({ itemId: r.item_id, name: r.item_name || 'Actividad sin nombre' }));
 
   return {
     courseId: rows[0]?.course_id ?? 0,
@@ -315,7 +476,9 @@ export function computeCourseStanding(rows: GradeItemRow[]): CourseStanding {
     status,
     graded,
     pendingItems,
-    fetchedAt: latestFetch(rows),
+    fetchedAt: latestFetch(moodleRows),
+    exams,
+    linkable,
   };
 }
 
@@ -329,15 +492,16 @@ const STATUS_RANK: Record<StandingStatus, number> = {
 };
 
 /** One standing per course, the ones needing attention first. */
-export function buildStandings(rows: GradeItemRow[]): CourseStanding[] {
+export function buildStandings(rows: GradeItemRow[], manual: ManualGradeRow[] = []): CourseStanding[] {
   const byCourse = new Map<number, GradeItemRow[]>();
   for (const r of rows) {
     const list = byCourse.get(r.course_id);
     if (list) list.push(r);
     else byCourse.set(r.course_id, [r]);
   }
-  return [...byCourse.values()]
-    .map(computeCourseStanding)
+  // Exam entries of a course with no stored Moodle rows are ignored: the course card needs its name and total.
+  return [...byCourse.entries()]
+    .map(([courseId, list]) => computeCourseStanding(list, manual.filter((m) => m.course_id === courseId)))
     .sort((a, b) => STATUS_RANK[a.status] - STATUS_RANK[b.status] || a.courseName.localeCompare(b.courseName, 'es'));
 }
 

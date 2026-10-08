@@ -1,5 +1,6 @@
 import { formatPoints, type CourseStanding, type StandingStatus } from '@/lib/grades';
 import { formatGuayaquilShort } from '@/lib/time';
+import ExamEntry from './ExamEntry';
 
 /** Badge text and tone per standing status; the tone is a globals.css modifier, empty means neutral. */
 const BADGE: Record<StandingStatus, { label: string; tone: string }> = {
@@ -17,8 +18,8 @@ const clamp = (value: number, min: number, max: number): number => Math.min(max,
  * One course on /estadisticas: the score out of 100, a progress bar with the 70-point mark, what is still needed
  * and the graded activities. Text that mixes values and words is built as one string so it renders as one text node.
  */
-export default function CourseGradeCard({ standing }: { standing: CourseStanding }) {
-  const { courseName, status, passed, estimate, earned, available, needed, maxReachable, neededShare, graded, pendingItems } =
+export default function CourseGradeCard({ standing, examsEnabled = false }: { standing: CourseStanding; examsEnabled?: boolean }) {
+  const { courseId, exams, linkable, courseName, status, passed, estimate, earned, available, needed, maxReachable, neededShare, graded, pendingItems } =
     standing;
   const badge = BADGE[status];
   const points = formatPoints(earned);
@@ -83,7 +84,10 @@ export default function CourseGradeCard({ standing }: { standing: CourseStanding
           <ul className="grade-items plain-list">
             {graded.map((item) => (
               <li key={item.itemId} className="grade-item">
-                <span className="grade-item-name">{item.name}</span>
+                <span className="grade-item-name">
+                  {item.name}
+                  {item.manual && <span className="grade-item-tag muted small">(nota tuya)</span>}
+                </span>
                 <span className="grade-item-score">
                   {`${formatPoints(item.grade)}${item.max !== null ? `/${formatPoints(item.max)}` : ''}`}
                 </span>
@@ -97,6 +101,13 @@ export default function CourseGradeCard({ standing }: { standing: CourseStanding
             ))}
           </ul>
         </>
+      )}
+      {examsEnabled && (
+        <div className="grade-exams">
+          {exams.map((exam) => (
+            <ExamEntry key={exam.kind} courseId={courseId} exam={exam} linkable={linkable} />
+          ))}
+        </div>
       )}
       {pendingItems > 0 && (
         <p className="muted small">

@@ -1,6 +1,6 @@
 import type { Metadata } from 'next';
 import { withUser } from '@/lib/auth';
-import { loadGrades } from '@/lib/grades-store';
+import { loadGrades, loadManualGrades } from '@/lib/grades-store';
 import { buildStandings, latestFetch, summarizeStandings } from '@/lib/grades';
 import { formatGuayaquil } from '@/lib/time';
 import CourseGradeCard from '@/components/CourseGradeCard';
@@ -10,7 +10,7 @@ export const dynamic = 'force-dynamic';
 export const metadata: Metadata = { title: 'Estadísticas' };
 
 export default async function StatsPage() {
-  const [, grades] = await withUser((userId) => loadGrades(userId));
+  const [, [grades, manual]] = await withUser((userId) => Promise.all([loadGrades(userId), loadManualGrades(userId)]));
 
   let body;
   if (grades.state === 'error') {
@@ -24,7 +24,7 @@ export default async function StatsPage() {
       </p>
     );
   } else {
-    const standings = buildStandings(grades.rows);
+    const standings = buildStandings(grades.rows, manual.rows);
     const summary = summarizeStandings(standings);
     body = (
       <>
@@ -49,7 +49,7 @@ export default async function StatsPage() {
         <section className="section">
           <ul className="list grade-list">
             {standings.map((standing) => (
-              <CourseGradeCard key={standing.courseId} standing={standing} />
+              <CourseGradeCard key={standing.courseId} standing={standing} examsEnabled={manual.available} />
             ))}
           </ul>
         </section>

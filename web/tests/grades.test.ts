@@ -5,10 +5,13 @@ import {
   formatPoints,
   gradeItemsPath,
   latestFetch,
+  manualGradesPath,
   parseGradeRows,
+  parseManualRows,
   round2,
   summarizeStandings,
   type GradeItemRow,
+  type ManualGradeRow,
 } from '@/lib/grades';
 
 const USER = '3f2c8a52-8d5e-4a0b-9f0e-6f3a1c2b4d5e';
@@ -308,5 +311,100 @@ describe('parseGradeRows', () => {
     expect(parseGradeRows([{ course_id: 1, item_type: 'mod' }, { course_id: 1, item_id: 2, item_type: 5 }, null, 'x'])).toEqual([]);
     expect(parseGradeRows({ not: 'an array' })).toEqual([]);
     expect(parseGradeRows(null)).toEqual([]);
+  });
+});
+
+describe('manual exam grades', () => {
+  const exam = (o: Partial<ManualGradeRow> & Pick<ManualGradeRow, 'kind'>): ManualGradeRow => ({
+    course_id: 10,
+    grade: null,
+    max_points: 15,
+    linked_item_id: null,
+    ...o,
+  });
+
+  it('asks for both exams while nothing was entered', () => {
+    const s = computeCourseStanding(A);
+    expect(s.exams.map((e) => [e.kind, e.state, e.maxPoints])).toEqual([
+      ['midterm', 'missing', 15],
+      ['final', 'missing', 15],
+    ]);
+    expect(s.linkable.map((i) => i.itemId)).toEqual([501, 502, 503]);
+  });
+
+  it('a grade linked to an ungraded Moodle activity replaces it with the same weight', () => {
+    const s = computeCourseStanding(A, [exam({ kind: 'midterm', grade: 12, linked_item_id: 502 })]);
+    // 12/15 = 0.8 of the 30-point activity.
+    expect(s).toMatchObject({ method: 'weights', earned: 41, spent: 50, available: 50, needed: 29 });
+    expect(s.exams[0]).toMatchObject({ state: 'manual', linkedItemId: 502, linkedItemName: 'Examen parcial' });
+    const item = s.graded.find((g) => g.itemId === 502);
+    expect(item).toMatchObject({ manual: true, contribution: 24 });
+    expect(s.pendingItems).toBe(1);
+  });
+
+  it('Moodle wins once the linked activity has its own grade', () => {
+    const s = computeCourseStanding(A, [exam({ kind: 'midterm', grade: 2, linked_item_id: 501 })]);
+    expect(s.earned).toBe(17);
+    expect(s.exams[0].state).toBe('moodle');
+    expect(s.graded.every((g) => !g.manual)).toBe(true);
+  });
+
+  it('an unlinked grade is a fixed block and the Moodle part fills the remaining points', () => {
+    const s = computeCourseStanding(A, [exam({ kind: 'final', grade: 15 })]);
+    // Moodle part scaled to 85: 17 * 0.85 + 15 = 29.45; spent 20 * 0.85 + 15 = 32.
+    expect(s).toMatchObject({ earned: 29.45, spent: 32, available: 68, status: 'on_track' });
+    expect(s.graded[0]).toMatchObject({ itemId: -1, name: 'Examen de fin de ciclo', manual: true, contribution: 15 });
+    expect(s.graded.find((g) => g.itemId === 501)?.contribution).toBe(14.45);
+    expect(s.exams[1].state).toBe('manual');
+  });
+
+  it('an exam marked as not applicable or as a Moodle item changes no points', () => {
+    const s = computeCourseStanding(A, [
+      exam({ kind: 'midterm', linked_item_id: 502 }),
+      exam({ kind: 'final' }),
+    ]);
+    expect(s.earned).toBe(17);
+    expect(s.exams.map((e) => e.state)).toEqual(['linked', 'none']);
+  });
+
+  it('a link to an activity that no longer exists counts as an unlinked block', () => {
+    const s = computeCourseStanding(A, [exam({ kind: 'midterm', grade: 15, linked_item_id: 999 })]);
+    expect(s.earned).toBe(29.45);
+    expect(s.exams[0]).toMatchObject({ state: 'manual', linkedItemId: null });
+  });
+
+  it('a course without Moodle grades is projected from the exam blocks alone', () => {
+    const only = [row({ course_id: 13, course_name: 'Inglés', item_id: 800, item_type: 'course' })];
+    const s = computeCourseStanding(only, [exam({ course_id: 13, kind: 'midterm', grade: 12 })]);
+    expect(s).toMatchObject({ method: 'manual', earned: 12, spent: 15, available: 85, status: 'on_track' });
+  });
+
+  it('buildStandings hands each course only its own exams', () => {
+    const list = buildStandings([...A, ...C], [exam({ course_id: 12, kind: 'final', grade: 10 })]);
+    expect(list.find((s) => s.courseId === 10)?.exams.every((e) => e.state === 'missing')).toBe(true);
+    expect(list.find((s) => s.courseId === 12)?.exams[1].state).toBe('manual');
+  });
+
+  it('parseManualRows keeps only valid rows', () => {
+    expect(
+      parseManualRows([
+        { course_id: 10, kind: 'midterm', grade: '12.5', max_points: 15, linked_item_id: null },
+        { course_id: 10, kind: 'final', grade: null, max_points: 15, linked_item_id: 502 },
+        { course_id: 10, kind: 'quiz', grade: 1, max_points: 15 },
+        { course_id: 10, kind: 'final', grade: 'x', max_points: 15 },
+        { course_id: 10, kind: 'final', grade: 1, max_points: 0 },
+        null,
+      ]),
+    ).toEqual([
+      { course_id: 10, kind: 'midterm', grade: 12.5, max_points: 15, linked_item_id: null },
+      { course_id: 10, kind: 'final', grade: null, max_points: 15, linked_item_id: 502 },
+    ]);
+    expect(parseManualRows({})).toEqual([]);
+  });
+
+  it('manualGradesPath is scoped to the user', () => {
+    expect(manualGradesPath(USER)).toBe(
+      `moodle_manual_grades?user_id=eq.${USER}&select=course_id,kind,grade,max_points,linked_item_id&limit=500`,
+    );
   });
 });
