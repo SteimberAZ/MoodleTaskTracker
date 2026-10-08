@@ -432,7 +432,7 @@ def test_end_to_end_through_the_real_supabase_client_and_the_real_library(monkey
     assert delivery.deliver_to_user(user, "T", "B", url="/", tag="t", supabase=client, sender=sender) is True
 
     assert log[0] == ("GET", "https://sb.example/rest/v1/moodle_push_subscriptions",
-                      {"user_id": "eq.uuuuuuuu-1111", "select": "id,endpoint,p256dh,auth,failure_count"})
+                      {"user_id": "eq.uuuuuuuu-1111", "select": "id,endpoint,p256dh,auth,failure_count,created_at,last_success_at,last_failure_at", "order": "updated_at.desc", "limit": "10"})
     assert [e[1] for e in log if e[0] == "POST"] == list(verdict)  # every subscription tried, no ntfy
     patches = [e for e in log if e[0] == "PATCH"]
     assert [(p[1], p[2]["failure_count"]) for p in patches] == [("eq.s-ok", 0)]

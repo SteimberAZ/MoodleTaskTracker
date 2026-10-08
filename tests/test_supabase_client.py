@@ -13,15 +13,6 @@ class _Resp:
         return self._payload
 
 
-def test_key_prefers_service_role_then_supabase_key(monkeypatch):
-    monkeypatch.setenv("SUPABASE_URL", "https://sb.example")
-    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "service")
-    monkeypatch.setenv("SUPABASE_KEY", "legacy")
-    assert SupabaseClient.for_worker().key == "service"
-    monkeypatch.delenv("SUPABASE_SERVICE_ROLE_KEY")
-    assert SupabaseClient.for_worker().key == "legacy"
-
-
 def _clear(monkeypatch):
     for k in ("SUPABASE_SERVICE_ROLE_KEY", "SUPABASE_KEY", "SUPABASE_ANON_KEY", "MOODLE_DB_JWT"):
         monkeypatch.delenv(k, raising=False)
@@ -46,11 +37,26 @@ def test_jwt_mode_without_anon_uses_jwt_for_both(monkeypatch):
     assert h["Authorization"] == "Bearer the.jwt.token"
 
 
+def test_no_service_role_fallback_without_moodle_db_jwt(monkeypatch, capsys):
+    _clear(monkeypatch)
+    monkeypatch.setattr(supabase_client, "_missing_jwt_logged", False)
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "service")
+    monkeypatch.setenv("SUPABASE_KEY", "legacy")
+    monkeypatch.setenv("SUPABASE_ANON_KEY", "anon")
+    c = SupabaseClient.for_worker()
+    assert c.is_configured is False
+    assert "service" not in c._headers()["Authorization"] and "legacy" not in c._headers()["apikey"]
+    SupabaseClient.for_worker()
+    out = capsys.readouterr().out
+    assert out.count("MOODLE_DB_JWT is not set") == 1  # one clear error per process
+    assert "service" not in out.replace("service-role", "")
+
+
 def test_legacy_alias_still_works(monkeypatch):
     _clear(monkeypatch)
-    monkeypatch.setenv("SUPABASE_KEY", "legacy")
+    monkeypatch.setenv("MOODLE_DB_JWT", "the.jwt.token")
     c = SupabaseClient.for_service_role()
-    assert c._headers()["apikey"] == "legacy"
+    assert c.is_configured and c._headers()["apikey"] == "the.jwt.token"
 
 
 def test_reminders_use_prefixed_table(monkeypatch):

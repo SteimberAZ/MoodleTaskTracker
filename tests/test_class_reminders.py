@@ -419,7 +419,7 @@ def test_fetch_class_reminder_users_query(monkeypatch):
     assert [u["id"] for u in _client().fetch_class_reminder_users()] == [U1]
     assert seen == [{"url": "https://sb.example/rest/v1/moodle_users", "params": {
         "active": "eq.true", "class_reminder_minutes": "not.is.null",
-        "select": "id,ntfy_topic,class_reminder_minutes,is_admin,ntfy_enabled"}}]
+        "select": "id,ntfy_topic,class_reminder_minutes,is_admin,ntfy_confirmed_at,ntfy_enabled"}}]
 
 
 def test_fetch_class_reminder_users_raises_when_the_column_is_missing(monkeypatch):
