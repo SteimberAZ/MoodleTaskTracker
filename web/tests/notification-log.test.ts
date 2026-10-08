@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   BODY_PREVIEW_CHARS,
   HISTORY_COLUMNS,
+  HISTORY_COLUMNS_LEGACY,
   HISTORY_FILTERS,
   bodyIsLong,
   channelBadges,
@@ -59,7 +60,7 @@ describe('historyPageQuery', () => {
 
   it('selects only the needed columns, newest first, 20 per page', () => {
     expect(historyPageQuery(USER, 'todos', 1)).toBe(
-      `?user_id=eq.${USER}&select=id,kind,title,body,url,status,push_ok,push_total,ntfy_attempted,ntfy_ok,created_at` +
+      `?user_id=eq.${USER}&select=id,kind,title,body,url,status,push_ok,push_total,ntfy_attempted,ntfy_ok,created_at,push_state` +
         '&order=created_at.desc,id.desc&limit=20&offset=0',
     );
     expect(historyPageQuery(USER, 'todos', 1)).not.toContain('select=*');
@@ -231,12 +232,64 @@ describe('channelBadges', () => {
     expect(channelBadges({ ...base, push_ok: 0, push_total: 0 })).toEqual([]);
     expect(channelBadges({ ...base, status: 'failed', push_ok: 0, push_total: -1 })).toEqual([
       { key: 'status', text: 'No entregada', tone: 'urgente' },
-      { key: 'push', text: 'Push ✗', srText: 'Push: no se pudieron leer tus dispositivos', tone: 'urgente' },
+      { key: 'push', text: 'Push: error al leer dispositivos', tone: 'urgente' },
     ]);
   });
 
   it('never reports more devices ok than the total', () => {
     expect(channelBadges({ ...base, push_ok: 5, push_total: 2 })[0].text).toBe('Push 2/2');
+  });
+});
+
+describe('channelBadges with push_state', () => {
+  const base = { status: 'sent', push_ok: 0, push_total: 0, ntfy_attempted: true, ntfy_ok: true };
+  const push = (row: Parameters<typeof channelBadges>[0]) => channelBadges(row).find((b) => b.key === 'push');
+
+  it('read_error with no devices tried: error al leer dispositivos (urgent)', () => {
+    expect(push({ ...base, push_state: 'read_error' })).toEqual({
+      key: 'push',
+      text: 'Push: error al leer dispositivos',
+      tone: 'urgente',
+    });
+  });
+
+  it('disabled: Push desactivado (urgent)', () => {
+    expect(push({ ...base, push_state: 'disabled' })).toMatchObject({ text: 'Push desactivado', tone: 'urgente' });
+  });
+
+  it('no_devices: Sin dispositivos Push (urgent), even when ntfy delivered', () => {
+    const badges = channelBadges({ ...base, push_state: 'no_devices' });
+    expect(badges.map((b) => [b.text, b.tone])).toEqual([
+      ['Sin dispositivos Push', 'urgente'],
+      ['ntfy ✓', 'activo'],
+    ]);
+  });
+
+  it('partial: Entrega parcial with the counts for screen readers', () => {
+    expect(push({ ...base, push_state: 'partial', push_ok: 1, push_total: 3 })).toEqual({
+      key: 'push',
+      text: 'Entrega parcial',
+      srText: 'Push: entrega parcial, 1 de 3 dispositivos',
+      tone: 'urgente',
+    });
+  });
+
+  it('ok and failed keep the counts', () => {
+    expect(push({ ...base, push_state: 'ok', push_ok: 2, push_total: 2 })).toMatchObject({ text: 'Push 2/2', tone: 'activo' });
+    expect(push({ ...base, push_state: 'failed', push_ok: 0, push_total: 2 })).toMatchObject({ text: 'Push 0/2', tone: 'urgente' });
+  });
+
+  it('NULL or missing push_state on old rows behaves as before', () => {
+    expect(push({ ...base, push_state: null })).toBeUndefined();
+    expect(push(base)).toBeUndefined();
+    expect(push({ ...base, push_state: null, push_ok: 1, push_total: 1 })).toMatchObject({ text: 'Push 1/1' });
+    expect(push({ ...base, push_state: 'unknown_value', push_ok: 1, push_total: 1 })).toMatchObject({ text: 'Push 1/1' });
+  });
+
+  it('has a legacy column list without push_state for the migration fallback', () => {
+    expect(HISTORY_COLUMNS).toBe(`${HISTORY_COLUMNS_LEGACY},push_state`);
+    expect(historyPageQuery(USER, 'todos', 1, HISTORY_COLUMNS_LEGACY)).not.toContain('push_state');
+    expect(notificationRowQuery(USER, '7b1f6c1e-3a52-4a52-9d0e-0c5f3a9a1b11', HISTORY_COLUMNS_LEGACY)).not.toContain('push_state');
   });
 });
 

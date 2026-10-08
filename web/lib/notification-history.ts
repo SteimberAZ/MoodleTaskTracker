@@ -1,7 +1,10 @@
 import 'server-only';
 import { dbFetch } from './db';
 import { clampPage, parseContentRange } from './pagination';
+import { isMissingColumnError } from './push-query';
 import {
+  HISTORY_COLUMNS,
+  HISTORY_COLUMNS_LEGACY,
   HISTORY_PAGE_SIZE,
   HISTORY_TABLE,
   clearHistoryQuery,
@@ -22,8 +25,21 @@ export interface HistoryPage {
 // PostgREST answers 404 (PGRST205 / 42P01) for a relation that does not exist.
 const TABLE_MISSING = 404;
 
+// `push_state` is newer than the table. Once PostgREST says it does not exist, this server instance stops
+// asking for it (the next deploy, after the migration, starts over).
+let pushStateColumn = true;
+
+/** Runs a history read, retrying once without `push_state` when the column does not exist yet. */
+async function fetchHistory(build: (columns: string) => string, init?: RequestInit): Promise<Response> {
+  const res = await dbFetch(build(pushStateColumn ? HISTORY_COLUMNS : HISTORY_COLUMNS_LEGACY), init);
+  if (res.status !== 400 || !pushStateColumn) return res;
+  if (!isMissingColumnError(res.status, await res.clone().text())) return res;
+  pushStateColumn = false;
+  return dbFetch(build(HISTORY_COLUMNS_LEGACY), init);
+}
+
 async function readPage(userId: string, filter: HistoryFilter, page: number) {
-  const res = await dbFetch(`${HISTORY_TABLE}${historyPageQuery(userId, filter, page)}`, {
+  const res = await fetchHistory((columns) => `${HISTORY_TABLE}${historyPageQuery(userId, filter, page, columns)}`, {
     headers: { Prefer: 'count=exact' },
   });
   if (res.status === TABLE_MISSING) return { missing: true as const };
@@ -53,7 +69,7 @@ export async function listHistoryPage(userId: string, filter: HistoryFilter, pag
 
 /** The session user's history row `id` (the notification they tapped), or null when it is gone, not theirs, or the table is missing. */
 export async function getHistoryEntry(userId: string, id: string): Promise<NotificationLogRow | null> {
-  const res = await dbFetch(`${HISTORY_TABLE}${notificationRowQuery(userId, id)}`);
+  const res = await fetchHistory((columns) => `${HISTORY_TABLE}${notificationRowQuery(userId, id, columns)}`);
   if (res.status === TABLE_MISSING) return null;
   if (!res.ok) {
     console.error('Supabase request failed', res.status);

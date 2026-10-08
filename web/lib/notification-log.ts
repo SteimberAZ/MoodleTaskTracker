@@ -25,10 +25,19 @@ export interface NotificationLogRow {
   ntfy_attempted: boolean | null;
   ntfy_ok: boolean | null;
   created_at: string;
+  /**
+   * Overall push outcome written by the worker: ok, partial, failed, no_devices, read_error or disabled.
+   * Missing (older rows, or before the column exists) means "derive it from the counts", as before.
+   */
+  push_state?: string | null;
 }
 
 /** Only the columns the list renders (the `tag` and `user_id` columns are never read by the page). */
 export const HISTORY_COLUMNS =
+  'select=id,kind,title,body,url,status,push_ok,push_total,ntfy_attempted,ntfy_ok,created_at,push_state';
+
+/** The same list without `push_state`, read when the column does not exist yet (migration pending). */
+export const HISTORY_COLUMNS_LEGACY =
   'select=id,kind,title,body,url,status,push_ok,push_total,ntfy_attempted,ntfy_ok,created_at';
 
 // ---------------------------------------------------------------- filters (?hk=)
@@ -69,11 +78,11 @@ export function historyKindParts(filter: HistoryFilter): string[] {
 // ---------------------------------------------------------------- queries
 
 /** One page of history, newest first, always scoped to the session user. */
-export function historyPageQuery(userId: string, filter: HistoryFilter, page: number): string {
+export function historyPageQuery(userId: string, filter: HistoryFilter, page: number, columns = HISTORY_COLUMNS): string {
   const { limit, offset } = pageRange(page, HISTORY_PAGE_SIZE);
   return scopedQuery(
     userId,
-    HISTORY_COLUMNS,
+    columns,
     ...historyKindParts(filter),
     'order=created_at.desc,id.desc',
     `limit=${limit}`,
@@ -112,8 +121,8 @@ export function parseNotificationParam(raw: string | string[] | undefined | null
 }
 
 /** One history row of the session user by id: `?user_id=eq.<me>&id=eq.<uuid>&select=...&limit=1`. Another user's row never matches. */
-export function notificationRowQuery(userId: string, id: string): string {
-  return ownedRowQuery(userId, id, HISTORY_COLUMNS, 'limit=1');
+export function notificationRowQuery(userId: string, id: string, columns = HISTORY_COLUMNS): string {
+  return ownedRowQuery(userId, id, columns, 'limit=1');
 }
 
 /** DOM id of a history entry; the opened notification is scrolled to and highlighted through it. */
@@ -271,25 +280,38 @@ const count = (value: number | null | undefined) => (Number.isFinite(value) && (
 
 /**
  * Per-channel outcome of one notification. Meaning never relies on color alone: every state has its own
- * text ("No entregada", "Push 0/1", "ntfy ✗"). Push is hidden when the user had no registered device;
- * `push_total` -1 means the devices could not be read (push failed, shown as "Push ✗").
+ * text ("No entregada", "Push 0/1", "ntfy ✗"). A push failure is never hidden, even when ntfy delivered:
+ * unreadable devices (`push_total` -1 or push_state read_error), Web Push disabled on the worker, and no
+ * registered device each get their own urgent badge. Older rows without push_state keep the count-based
+ * badges (push hidden when the user had no registered device).
  */
-export function channelBadges(row: Pick<NotificationLogRow, 'status' | 'push_ok' | 'push_total' | 'ntfy_attempted' | 'ntfy_ok'>): ChannelBadge[] {
+export function channelBadges(
+  row: Pick<NotificationLogRow, 'status' | 'push_ok' | 'push_total' | 'ntfy_attempted' | 'ntfy_ok' | 'push_state'>,
+): ChannelBadge[] {
   const badges: ChannelBadge[] = [];
   if (row.status === 'failed') badges.push({ key: 'status', text: 'No entregada', tone: 'urgente' });
 
   const total = count(row.push_total);
-  if (row.push_total === -1) {
+  const state = row.push_state ?? null;
+  if (row.push_total === -1 || (state === 'read_error' && total === 0)) {
     // The worker could not read the devices, so push failed without trying any.
-    badges.push({ key: 'push', text: 'Push ✗', srText: 'Push: no se pudieron leer tus dispositivos', tone: 'urgente' });
+    badges.push({ key: 'push', text: 'Push: error al leer dispositivos', tone: 'urgente' });
+  } else if (state === 'disabled') {
+    badges.push({ key: 'push', text: 'Push desactivado', srText: 'Push desactivado en el servidor', tone: 'urgente' });
+  } else if (state === 'no_devices') {
+    badges.push({ key: 'push', text: 'Sin dispositivos Push', tone: 'urgente' });
   } else if (total > 0) {
     const ok = Math.min(count(row.push_ok), total);
-    badges.push({
-      key: 'push',
-      text: `Push ${ok}/${total}`,
-      srText: `Push: ${ok} de ${total} dispositivos`,
-      tone: ok === total ? 'activo' : 'urgente',
-    });
+    badges.push(
+      state === 'partial'
+        ? { key: 'push', text: 'Entrega parcial', srText: `Push: entrega parcial, ${ok} de ${total} dispositivos`, tone: 'urgente' }
+        : {
+            key: 'push',
+            text: `Push ${ok}/${total}`,
+            srText: `Push: ${ok} de ${total} dispositivos`,
+            tone: ok === total ? 'activo' : 'urgente',
+          },
+    );
   }
 
   if (row.ntfy_attempted) {
