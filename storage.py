@@ -410,14 +410,25 @@ class Storage:
             self._flush_deferred_milestones()
 
     def _flush_deferred_milestones(self):
-        """Mirror milestones that waited for their task row, once that row exists remotely."""
+        """Mirror milestones that waited for their task row, once that row exists remotely.
+
+        Synchronous, so a milestone whose mirror fails again stays deferred instead of being lost.
+        """
         sent = 0
         for _ in range(len(self._deferred_milestones)):
             task_id, milestone, sent_at = self._deferred_milestones.popleft()
             if task_id in self._unmirrored_tasks:
                 self._deferred_milestones.append((task_id, milestone, sent_at))
+                continue
+            try:
+                ok = self.supabase.upsert_milestone(task_id, milestone, sent_at, async_call=False)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[Storage] Supabase milestone mirror failed ({type(exc).__name__}); still deferred.")
+                ok = False
+            if ok is False:
+                self._deferred_milestones.append((task_id, milestone, sent_at))
+                break  # Supabase is failing: the rest waits for the next flush instead of timing out too
             else:
-                self.supabase.upsert_milestone(task_id, milestone, sent_at)
                 sent += 1
         if sent:
             print(f"[Storage] Mirrored {sent} deferred milestones to Supabase.")
@@ -501,9 +512,12 @@ class Storage:
                 print("[Storage] Skipping Supabase milestone mirror: task upsert failed this round.")
             self._deferred_milestones.append((task_id, milestone, now))
             return
+        # Synchronous: only the first local insert is ever mirrored, so a POST that failed in a
+        # background thread (whose result nobody reads) would be lost for good. False goes back to the
+        # deferred queue and is retried after the next successful task mirror.
         try:
-            result = self.supabase.upsert_milestone(task_id, milestone, now)
-        except Exception as exc:  # noqa: BLE001 - e.g. the mirror thread could not start
+            result = self.supabase.upsert_milestone(task_id, milestone, now, async_call=False)
+        except Exception as exc:  # noqa: BLE001
             print(f"[Storage] Supabase milestone mirror failed ({type(exc).__name__}); deferred.")
             result = False
         if result is False:

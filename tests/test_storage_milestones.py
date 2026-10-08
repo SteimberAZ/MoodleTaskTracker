@@ -215,6 +215,24 @@ def test_rearmed_milestones_leave_the_deferred_queue(tmp_path):
     assert [m[1] for m in s._deferred_milestones] == ["new"]
 
 
+def test_a_failed_milestone_mirror_is_deferred_not_lost(tmp_path):
+    class Flaky(FakeMirror):
+        def upsert_milestone(self, task_id, milestone, sent_at, async_call=True):
+            self.milestones.append((task_id, milestone, async_call))
+            return self.milestone_result
+
+    mirror = Flaky(milestone_result=False)  # e.g. the 5 s write timed out
+    s = _storage(tmp_path, mirror)
+    s.record_milestone("t1", "1d")
+    assert mirror.milestones == [("t1", "1d", False)]  # synchronous: its result is read
+    assert [m[:2] for m in s._deferred_milestones] == [("t1", "1d")]
+    s._flush_deferred_milestones()  # still failing: kept for the next flush
+    assert [m[:2] for m in s._deferred_milestones] == [("t1", "1d")]
+    mirror.milestone_result = True
+    s._flush_deferred_milestones()
+    assert not s._deferred_milestones and mirror.milestones[-1] == ("t1", "1d", False)
+
+
 # ---- hydration -------------------------------------------------------------------------------------
 
 
