@@ -1,4 +1,5 @@
 """Worker loop: delivery cadence, round budget, stop handling, crash survival and the login poll."""
+import json
 import signal
 import threading
 
@@ -309,7 +310,7 @@ def test_a_crashing_tick_is_logged_and_the_history_still_flushed(monkeypatch, st
     worker.run_tick(ctx)  # does not raise
     out = capsys.readouterr().out
     assert "Traceback" in out and "tick crashed" in out
-    assert ctx.round_error is True
+    assert ctx.tick_crashed is True
     assert ctx.history.flushes == 2 and ctx.history.prunes == 1
 
 
@@ -415,3 +416,312 @@ def test_the_login_poll_falls_back_to_the_full_read():
             return [{"id": "u0", "last_login_at": "L9", "token": "t"}]
 
     assert [u["id"] for u in worker.fetch_fresh_logins(Plain(), {"u0": "L1"})] == ["u0"]
+
+
+# ---- heartbeat ------------------------------------------------------------------------------------------
+
+HEARTBEAT_KEYS = {"at", "version", "webpush_enabled", "push_status", "last_push_ok_at", "push_counts", "users_ok",
+                  "users_err", "last_round_mode", "tick_seconds", "sync_seconds", "delivery_lag_seconds",
+                  "degraded", "degraded_reasons"}
+
+
+@pytest.fixture(autouse=True)
+def _no_health_env(monkeypatch):
+    for name in ("HEALTHCHECK_URL", "WORKER_STRICT", "WORKER_VERSION"):
+        monkeypatch.delenv(name, raising=False)
+    worker._LOGGED_ONCE.clear()
+
+
+class OnSender:
+    enabled = True
+    status = "Web Push: enabled (key from vapid_private.pem; public key BPUB; subject mailto:owner@example.com)"
+    warning = None
+    public_key_b64 = "BPUB"
+
+    def __init__(self, stats=None):
+        self.stats = stats
+        self.resets = []
+
+    def stats_snapshot(self, reset=True):
+        self.resets.append(reset)
+        return dict(self.stats or {})
+
+
+class SettingsDb:
+    is_configured = True
+
+    def __init__(self, fail=None, result=True):
+        self.fail, self.result, self.settings = fail, result, []
+
+    def upsert_setting(self, key, value, async_call=True):
+        if self.fail:
+            raise self.fail
+        self.settings.append((key, value, async_call))
+        return self.result
+
+
+def test_the_heartbeat_has_the_contract_keys_and_no_secrets():
+    stats = {"sent_ok": 3, "failed": 1, "transient": 0, "gone": 0, "server_errors": {"503": 1},
+             "last_ok_at": "2026-10-08T12:00:00+00:00",
+             "last_error": "HTTP 410 for https://fcm.googleapis.com/fcm/send/SECRET-TOKEN"}
+    ctx = worker.WorkerContext(None, SettingsDb(), OnSender(stats), History(), lambda *a, **k: True, clock=Clock())
+    ctx.version, ctx.users_ok, ctx.users_err, ctx.last_round_mode = "abc1234", 4, 1, "users"
+    ctx.max_delivery_gap = 95
+    payload = worker.build_heartbeat(ctx, 12.34, 8.0)
+    assert set(payload) == HEARTBEAT_KEYS
+    assert payload["webpush_enabled"] is True and payload["version"] == "abc1234"
+    assert payload["last_push_ok_at"] == "2026-10-08T12:00:00+00:00"
+    assert payload["push_counts"]["sent_ok"] == 3 and "last_ok_at" not in payload["push_counts"]
+    assert (payload["users_ok"], payload["users_err"], payload["last_round_mode"]) == (4, 1, "users")
+    assert (payload["tick_seconds"], payload["sync_seconds"], payload["delivery_lag_seconds"]) == (12.3, 8.0, 35.0)
+    assert payload["degraded"] is False and payload["degraded_reasons"] == []
+    text = json.dumps(payload)
+    assert "owner@example.com" not in text and "SECRET-TOKEN" not in text and "fcm.googleapis" not in text
+    assert ctx.max_delivery_gap == 0  # the lag is reported once
+    assert "BPUB" in payload["push_status"]  # the public key is public and helps compare with the web
+
+
+def test_the_last_push_ok_is_kept_across_heartbeats_and_counts_are_optional():
+    sender = OnSender({"sent_ok": 1, "last_ok_at": "T1"})
+    ctx = worker.WorkerContext(None, SettingsDb(), sender, History(), lambda *a, **k: True)
+    worker.build_heartbeat(ctx, 1, 0)
+    sender.stats = {"sent_ok": 0, "last_ok_at": None}
+    assert worker.build_heartbeat(ctx, 1, 0)["last_push_ok_at"] == "T1"
+    assert sender.resets == [True, True]
+    assert worker.build_heartbeat(_ctx(), 1, 0)["push_counts"] is None  # sender without stats_snapshot
+
+
+def test_the_heartbeat_is_written_synchronously_every_tick(steps):
+    class Users(SettingsDb):
+        def fetch_active_users(self):
+            return []
+
+    db = Users()
+    ctx = worker.WorkerContext(None, db, OffSender(), History(), lambda *a, **k: True)
+    ctx.degraded_reasons = ["webpush_disabled"]
+    worker.run_tick(ctx)
+    (key, value, async_call), = db.settings
+    assert key == "worker_status" and async_call is False
+    payload = json.loads(value)
+    assert payload["last_round_mode"] == "skipped" and payload["degraded"] is True
+    assert payload["degraded_reasons"] == ["webpush_disabled"]
+
+
+@pytest.mark.parametrize("db", [SettingsDb(fail=RuntimeError("down")), SettingsDb(result=False)])
+def test_a_failing_heartbeat_write_never_raises(db, capsys):
+    ctx = worker.WorkerContext(None, db, OffSender(), History(), lambda *a, **k: True)
+    assert worker.write_heartbeat(ctx, {"at": "x"}) is False
+    assert worker.write_heartbeat(ctx, {"at": "y"}) is False
+    assert capsys.readouterr().out.count("worker_status") == 1  # logged once, not every tick
+
+
+def test_a_crashing_heartbeat_build_never_breaks_the_tick(monkeypatch, steps):
+    def boom(*a):
+        raise RuntimeError("boom")
+
+    ctx = worker.WorkerContext(None, SettingsDb(), OffSender(), History(), lambda *a, **k: True)
+    monkeypatch.setattr(worker, "build_heartbeat", boom)
+    ctx.stop_event.set()
+    worker.run_tick(ctx)  # does not raise
+
+
+def test_broken_sender_stats_never_break_the_heartbeat():
+    class BadSender(OffSender):
+        def stats_snapshot(self, reset=True):
+            raise RuntimeError("stats down")
+
+    ctx = worker.WorkerContext(None, SettingsDb(), BadSender(), History(), lambda *a, **k: True)
+    assert worker.build_heartbeat(ctx, 1, 0)["push_counts"] is None
+
+
+def test_no_heartbeat_without_a_configured_database():
+    class Offline(SettingsDb):
+        is_configured = False
+
+    db = Offline()
+    ctx = worker.WorkerContext(None, db, OffSender(), History(), lambda *a, **k: True)
+    assert worker.write_heartbeat(ctx, {}) is False and db.settings == []
+
+
+def test_the_version_prefers_the_env_then_git(monkeypatch):
+    assert worker.worker_version({"WORKER_VERSION": "v42"}) == "v42"
+
+    def no_git(*a, **k):
+        raise FileNotFoundError("git")
+
+    monkeypatch.setattr(worker.subprocess, "run", no_git)
+    assert worker.worker_version({}) == worker.WORKER_VERSION
+
+
+# ---- dead-man switch ------------------------------------------------------------------------------------
+
+
+def test_the_healthcheck_pings_the_url_and_appends_fail_when_unhealthy():
+    calls = []
+
+    def get(url, timeout):
+        calls.append((url, timeout))
+
+    env = {"HEALTHCHECK_URL": "https://hc.example/abc/"}
+    healthy = worker.WorkerContext(None, None, OnSender(), History(), lambda *a, **k: True)
+    worker.ping_healthcheck(healthy, http_get=get, env=env)
+    worker.ping_healthcheck(_ctx(), http_get=get, env=env)  # Web Push disabled
+    healthy.round_error = True
+    worker.ping_healthcheck(healthy, http_get=get, env=env)
+    healthy.round_error, healthy.tick_crashed = False, True
+    worker.ping_healthcheck(healthy, http_get=get, env=env)
+    healthy.tick_crashed, healthy.degraded_reasons = False, ["vapid_subject_placeholder"]
+    worker.ping_healthcheck(healthy, http_get=get, env=env)
+    assert calls == [("https://hc.example/abc/", 5)] + [("https://hc.example/abc/fail", 5)] * 4
+
+
+def test_the_healthcheck_is_optional_and_swallows_errors(capsys):
+    def never(*a, **k):
+        pytest.fail("no URL, no call")
+
+    def down(url, timeout):
+        raise OSError("unreachable https://hc.example/secret")
+
+    worker.ping_healthcheck(_ctx(), http_get=never, env={})
+    worker.ping_healthcheck(_ctx(), http_get=down, env={"HEALTHCHECK_URL": "https://hc.example/secret"})
+    assert "secret" not in capsys.readouterr().out
+
+
+# ---- startup checks -------------------------------------------------------------------------------------
+
+
+class Configured:
+    is_configured = True
+
+
+class Unconfigured:
+    is_configured = False
+
+
+@pytest.mark.parametrize("supabase,sender,env,reason", [
+    (Unconfigured(), OnSender(), {"VAPID_SUBJECT": "mailto:a@b.c"}, "supabase_not_configured"),
+    (Configured(), OffSender(), {"VAPID_SUBJECT": "mailto:a@b.c"}, "webpush_disabled"),
+    (Configured(), OnSender(), {}, "vapid_subject_placeholder"),
+])
+def test_each_startup_problem_is_reported_and_fatal_only_when_strict(supabase, sender, env, reason, capsys):
+    assert worker.check_startup(supabase, sender, env) == [reason]
+    out = capsys.readouterr().out
+    assert "MODO DEGRADADO" in out and reason in out
+    with pytest.raises(SystemExit) as info:
+        worker.check_startup(supabase, sender, dict(env, WORKER_STRICT="1"))
+    assert info.value.code == 1
+
+
+def test_a_healthy_startup_reports_nothing(capsys):
+    env = {"VAPID_SUBJECT": "mailto:a@b.c", "WORKER_STRICT": "1"}
+    assert worker.check_startup(Configured(), OnSender(), env) == []
+    assert capsys.readouterr().out == ""
+
+
+# ---- single instance ------------------------------------------------------------------------------------
+
+
+def test_a_second_lock_on_the_same_database_fails(tmp_path):
+    path = str(tmp_path / "moodle_tasks.db.lock")
+    first, second = worker.InstanceLock(path), worker.InstanceLock(path)
+    assert first.acquire() is True
+    try:
+        assert second.acquire() is False
+    finally:
+        first.release()
+    assert second.acquire() is True
+    second.release()
+
+
+def test_a_second_worker_exits_with_code_1(tmp_path, capsys):
+    class Db:
+        db_path = str(tmp_path / "moodle_tasks.db")
+
+    held = worker.acquire_instance_lock(Db())
+    try:
+        with pytest.raises(SystemExit) as info:
+            worker.acquire_instance_lock(Db())
+        assert info.value.code == 1
+        assert "otro worker" in capsys.readouterr().out
+    finally:
+        held.release()
+
+
+# ---- startup hydration, VAPID key, daily prune ----------------------------------------------------------
+
+
+def test_hydration_runs_when_the_storage_supports_it(capsys):
+    class Hydrating:
+        def __init__(self):
+            self.calls = []
+
+        def hydrate_from_remote(self, supabase):
+            self.calls.append(supabase)
+            return {"milestones": 3}
+
+    class Broken:
+        def hydrate_from_remote(self, supabase):
+            raise RuntimeError("down")
+
+    store, db = Hydrating(), object()
+    worker.hydrate_storage(store, db)
+    assert store.calls == [db] and "milestones" in capsys.readouterr().out
+    worker.hydrate_storage(object(), db)  # older storage: nothing to do
+    worker.hydrate_storage(Broken(), db)  # never raises
+
+
+def test_the_public_vapid_key_is_published_only_for_an_enabled_sender():
+    db = SettingsDb()
+    worker.publish_vapid_public_key(db, OnSender())
+    worker.publish_vapid_public_key(db, OffSender())
+    assert db.settings == [("vapid_public_key", "BPUB", False)]
+    worker.publish_vapid_public_key(SettingsDb(fail=RuntimeError("x")), OnSender())  # never raises
+
+
+def test_stale_class_keys_are_pruned_once_a_day():
+    class Pruning:
+        calls = 0
+
+        def prune_stale_class_keys(self):
+            Pruning.calls += 1
+            return 2
+
+    ctx = worker.WorkerContext(Pruning(), None, OffSender(), History(), lambda *a, **k: True)
+    worker.prune_storage_if_due(ctx)
+    worker.prune_storage_if_due(ctx)
+    assert Pruning.calls == 1
+    ctx.last_storage_prune_day = "2000-01-01"
+    worker.prune_storage_if_due(ctx)
+    assert Pruning.calls == 2
+
+
+def test_run_worker_reports_a_degraded_start_in_the_heartbeat(monkeypatch, tmp_path):
+    class Db(SettingsDb):
+        def fetch_active_users(self):
+            return []
+
+        def insert_notification_log(self, rows):
+            pass
+
+        def prune_notification_log(self, cutoff):
+            pass
+
+    class Offline:
+        is_configured, url = False, ""
+
+    db = Db()
+    storage = Storage(str(tmp_path / "t.db"))
+    storage.supabase = Offline()
+    monkeypatch.setattr(worker, "Storage", lambda: storage)
+    monkeypatch.setattr(worker.SupabaseClient, "for_worker", classmethod(lambda cls: db))
+    monkeypatch.setattr(worker.WebPushSender, "from_env", classmethod(lambda cls, sb: OffSender()))
+    for name in ("process_class_reminders", "check_and_notify_upcoming_classes", "process_due_reminders",
+                 "process_push_tests"):
+        monkeypatch.setattr(worker, name, lambda *a, **k: 0)
+    stop = threading.Event()
+    monkeypatch.setattr(worker, "report_tick", lambda ctx, *a: (seen.append(list(ctx.degraded_reasons)), stop.set()))
+    seen = []
+    worker.run_worker(stop_event=stop, tick_seconds=0)
+    assert seen == [["webpush_disabled"]]
+    # the lock was released: a new worker could start
+    assert worker.InstanceLock(f"{storage.db_path}.lock").acquire() is True

@@ -6,15 +6,24 @@ Moodle is: during a long Moodle round the pass also runs between users, at most 
 ``DELIVERY_INTERVAL_SECONDS``. A round has a wall-clock budget; users it did not reach go first next
 round. SIGINT/SIGTERM stop the loop at a step boundary, and an unexpected exception in a tick is
 logged and survived.
+
+Health: every tick ends with a heartbeat in moodle_settings ``worker_status`` (JSON, see
+``build_heartbeat``) and, when ``HEALTHCHECK_URL`` is set, a dead-man-switch ping. A missing
+Supabase config, a disabled Web Push sender or the placeholder VAPID subject are reported loudly at
+startup and in every heartbeat (``degraded``); ``WORKER_STRICT=1`` makes them fatal instead. Only one
+worker may run per database: a second one exits with code 1.
 """
 import inspect
+import json
 import os
+import re
 import signal
+import subprocess
 import sys
 import threading
 import time
 import traceback
-from datetime import datetime
+from datetime import datetime, timezone
 from functools import partial
 from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import quote, urlparse
@@ -32,7 +41,7 @@ from delivery import deliver_to_user, process_push_tests
 from notification_log import NotificationLog
 from supabase_client import SupabaseClient
 from api_sync import CircuitBreaker, sync_user_via_api
-from webpush_sender import TTL_REMINDER, WebPushSender
+from webpush_sender import TTL_REMINDER, WebPushSender, resolve_subject
 
 TICK_SECONDS = 60
 # The delivery pass runs at most this often between the users of a long Moodle round.
@@ -42,6 +51,24 @@ ROUND_BUDGET_SECONDS = 600
 # Pause between two users of a round (politeness towards Moodle).
 USER_PAUSE_SECONDS = 0.5
 
+WORKER_VERSION = "1.0"  # reported when the git revision cannot be read
+WORKER_STATUS_KEY = "worker_status"
+VAPID_PUBLIC_KEY_SETTING = "vapid_public_key"
+HEALTHCHECK_TIMEOUT_SECONDS = 5
+
+# Startup problems that leave the worker running in a degraded mode (fatal with WORKER_STRICT=1).
+DEGRADED_MESSAGES = {
+    "supabase_not_configured": "Supabase no está configurado (SUPABASE_URL / MOODLE_DB_JWT): no hay usuarios, "
+                               "recordatorios ni historial; solo SQLite local.",
+    "webpush_disabled": "Web Push está desactivado: nadie recibe notificaciones nativas (solo ntfy).",
+    "vapid_subject_placeholder": "VAPID_SUBJECT no está definido: se usa mailto:admin@localhost y algunos "
+                                 "servicios de push pueden rechazar los envíos.",
+}
+
+_EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
+_URL_RE = re.compile(r"https?://\S+")
+_LOGGED_ONCE: Dict[str, str] = {}
+
 
 def _stamp() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -49,6 +76,20 @@ def _stamp() -> str:
 
 def _user_id(user: Dict) -> str:
     return str(user.get("id") or "")
+
+
+def _log_on_change(key: str, message: Optional[str]) -> None:
+    """Print ``message`` only when it differs from the last one for ``key`` (no per-tick log spam)."""
+    if _LOGGED_ONCE.get(key) != (message or ""):
+        _LOGGED_ONCE[key] = message or ""
+        if message:
+            print(message)
+
+
+def _scrub(text: Any, limit: int = 200) -> str:
+    """Status text safe to publish: e-mail addresses and URLs (push endpoints) removed, clipped."""
+    cleaned = _URL_RE.sub("<url>", _EMAIL_RE.sub("<email>", str(text or "")))
+    return " ".join(cleaned.split())[:limit]
 
 
 class RoundPlanner:
@@ -296,7 +337,12 @@ class WorkerContext:
         self.last_round_mode = "skipped"  # "users" | "skipped"
         self.users_ok = 0
         self.users_err = 0
-        self.round_error = False  # the last tick crashed or could not read the users
+        self.round_error = False  # the latest full round could not read the users
+        self.tick_crashed = False  # the current tick raised an unexpected exception
+        self.version = WORKER_VERSION
+        self.degraded_reasons: List[str] = []  # startup problems (see DEGRADED_MESSAGES)
+        self.last_push_ok_at: Optional[str] = None  # latest successful push seen by the sender stats
+        self.last_storage_prune_day: Optional[str] = None
 
     @property
     def stopping(self) -> bool:
@@ -378,23 +424,277 @@ def _sync_options(ctx: WorkerContext) -> Dict[str, Any]:
     )
 
 
+# ---- health: heartbeat, dead-man switch, startup checks ------------------------------------------
+
+
+def worker_version(env: Optional[Dict[str, str]] = None) -> str:
+    """``WORKER_VERSION`` env, else the short git revision of this checkout, else a constant."""
+    env = os.environ if env is None else env
+    explicit = str(env.get("WORKER_VERSION") or "").strip()
+    if explicit:
+        return explicit[:40]
+    try:
+        out = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=SCRIPT_DIR, capture_output=True,
+                             text=True, timeout=2)
+        if out.returncode == 0 and out.stdout.strip():
+            return out.stdout.strip()[:40]
+    except Exception:  # noqa: BLE001 - git missing or slow: the constant is enough
+        pass
+    return WORKER_VERSION
+
+
+def _push_counts(ctx: WorkerContext) -> Optional[Dict[str, Any]]:
+    """The sender's per-tick counters (``stats_snapshot``), when the sender provides them."""
+    snapshot = getattr(ctx.sender, "stats_snapshot", None)
+    if not callable(snapshot):
+        return None
+    try:
+        stats = snapshot(reset=True)
+    except Exception as err:  # noqa: BLE001
+        _log_on_change("push-stats", f"[{_stamp()}] [!] No se pudieron leer las estadísticas de Web Push: {err}")
+        return None
+    if not isinstance(stats, dict):
+        return None
+    if stats.get("last_ok_at"):
+        ctx.last_push_ok_at = str(stats["last_ok_at"])
+    counts = {k: v for k, v in stats.items() if k != "last_ok_at"}
+    if counts.get("last_error") is not None:
+        counts["last_error"] = _scrub(counts["last_error"])
+    return counts
+
+
+def build_heartbeat(ctx: WorkerContext, tick_seconds: float, sync_seconds: float) -> Dict[str, Any]:
+    """The ``worker_status`` document (contract C5) plus ``degraded`` / ``degraded_reasons``.
+
+    ``users_ok`` / ``users_err`` / ``last_round_mode`` describe the latest full Moodle round,
+    ``push_counts`` the pushes since the previous heartbeat, and ``delivery_lag_seconds`` how much
+    longer than ``DELIVERY_INTERVAL_SECONDS`` the longest gap between two delivery passes was since
+    the previous heartbeat (0 = on time). Holds no secrets: statuses are scrubbed of e-mails/URLs.
+    """
+    lag = max(0.0, ctx.max_delivery_gap - DELIVERY_INTERVAL_SECONDS)
+    ctx.max_delivery_gap = 0.0
+    push_counts = _push_counts(ctx)  # first: it refreshes last_push_ok_at
+    return {
+        "at": datetime.now(timezone.utc).isoformat(),
+        "version": ctx.version,
+        "webpush_enabled": bool(getattr(ctx.sender, "enabled", False)),
+        "push_status": _scrub(getattr(ctx.sender, "status", "")),
+        "last_push_ok_at": ctx.last_push_ok_at,
+        "push_counts": push_counts,
+        "users_ok": ctx.users_ok,
+        "users_err": ctx.users_err,
+        "last_round_mode": ctx.last_round_mode,
+        "tick_seconds": round(tick_seconds, 1),
+        "sync_seconds": round(sync_seconds, 1),
+        "delivery_lag_seconds": round(lag, 1),
+        "degraded": bool(ctx.degraded_reasons),
+        "degraded_reasons": list(ctx.degraded_reasons),
+    }
+
+
+def write_heartbeat(ctx: WorkerContext, payload: Dict[str, Any]) -> bool:
+    """Upsert ``worker_status``. Never raises; a failure is logged once until it changes."""
+    upsert = getattr(ctx.supabase, "upsert_setting", None)
+    if not callable(upsert) or not getattr(ctx.supabase, "is_configured", False):
+        return False
+    try:
+        ok = upsert(WORKER_STATUS_KEY, json.dumps(payload, ensure_ascii=False), async_call=False)
+    except Exception as err:  # noqa: BLE001
+        ok = False
+        _log_on_change("heartbeat", f"[{_stamp()}] [!] No se pudo escribir worker_status: {type(err).__name__}")
+    else:
+        _log_on_change("heartbeat", None if ok is not False else
+                       f"[{_stamp()}] [!] No se pudo escribir worker_status (ver log de Supabase).")
+    return ok is not False
+
+
+def ping_healthcheck(ctx: WorkerContext, http_get: Optional[Callable[..., Any]] = None,
+                     env: Optional[Dict[str, str]] = None) -> None:
+    """Dead-man switch: GET ``HEALTHCHECK_URL`` (``/fail`` appended when the worker is unhealthy).
+
+    Unhealthy = Web Push disabled, a degraded startup, a crashed tick or a latest full round that
+    could not read the users. Never raises; the URL is
+    never logged (it is a secret of the monitoring service).
+    """
+    env = os.environ if env is None else env
+    url = str(env.get("HEALTHCHECK_URL") or "").strip()
+    if not url:
+        return
+    healthy = (bool(getattr(ctx.sender, "enabled", False)) and not ctx.degraded_reasons
+               and not ctx.round_error and not ctx.tick_crashed)
+    target = url if healthy else url.rstrip("/") + "/fail"
+    try:
+        if http_get is None:
+            import requests
+
+            http_get = requests.get
+        http_get(target, timeout=HEALTHCHECK_TIMEOUT_SECONDS)
+    except Exception as err:  # noqa: BLE001
+        _log_on_change("healthcheck", f"[{_stamp()}] [!] Healthcheck sin respuesta: {type(err).__name__}")
+    else:
+        _log_on_change("healthcheck", None)
+
+
+def report_tick(ctx: WorkerContext, tick_seconds: float, sync_seconds: float) -> None:
+    """Heartbeat plus dead-man switch at the end of a tick. Never raises."""
+    try:
+        write_heartbeat(ctx, build_heartbeat(ctx, tick_seconds, sync_seconds))
+    except Exception as err:  # noqa: BLE001
+        print(f"[{_stamp()}] [!] Error al preparar worker_status: {err}")
+    ping_healthcheck(ctx)
+
+
+def prune_storage_if_due(ctx: WorkerContext) -> None:
+    """Once a (local) day: drop stale class-reminder keys, when the storage layer supports it."""
+    prune = getattr(ctx.storage, "prune_stale_class_keys", None)
+    today = datetime.now().strftime("%Y-%m-%d")
+    if not callable(prune) or ctx.last_storage_prune_day == today:
+        return
+    ctx.last_storage_prune_day = today
+    try:
+        removed = prune()
+        if removed:
+            print(f"[{_stamp()}] 🧹 Claves de clases antiguas eliminadas: {removed}")
+    except Exception as err:  # noqa: BLE001
+        print(f"[{_stamp()}] [!] Error al depurar claves de clases: {err}")
+
+
+def startup_problems(supabase, sender, env: Optional[Dict[str, str]] = None) -> List[str]:
+    """Reasons (keys of ``DEGRADED_MESSAGES``) the worker would run degraded."""
+    env = os.environ if env is None else env
+    problems = []
+    if not getattr(supabase, "is_configured", False):
+        problems.append("supabase_not_configured")
+    if not getattr(sender, "enabled", False):
+        problems.append("webpush_disabled")
+    elif resolve_subject(env)[1]:
+        problems.append("vapid_subject_placeholder")
+    return problems
+
+
+def check_startup(supabase, sender, env: Optional[Dict[str, str]] = None) -> List[str]:
+    """Log every startup problem loudly. With ``WORKER_STRICT=1`` any problem exits with code 1."""
+    env = os.environ if env is None else env
+    problems = startup_problems(supabase, sender, env)
+    if not problems:
+        return problems
+    strict = str(env.get("WORKER_STRICT") or "").strip() == "1"
+    print("!" * 60)
+    print("  ⚠️ ⚠️ WORKER EN MODO DEGRADADO" + (" (WORKER_STRICT=1: se detiene)" if strict else ""))
+    for reason in problems:
+        print(f"  - [{reason}] {DEGRADED_MESSAGES[reason]}")
+    if not strict:
+        print("  El estado se publica en worker_status (panel /admin). WORKER_STRICT=1 lo vuelve fatal.")
+    print("!" * 60)
+    if strict:
+        sys.exit(1)
+    return problems
+
+
+class InstanceLock:
+    """Exclusive, non-blocking lock on a file, held for the process lifetime (one worker per database)."""
+
+    def __init__(self, path: str):
+        self.path = path
+        self._handle = None
+
+    def acquire(self) -> bool:
+        handle = open(self.path, "a+")
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            handle.close()
+            return False
+        self._handle = handle
+        return True
+
+    def release(self) -> None:
+        handle, self._handle = self._handle, None
+        if handle is None:
+            return
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            pass
+        finally:
+            handle.close()
+
+
+def acquire_instance_lock(storage) -> InstanceLock:
+    """Lock ``<database>.lock`` next to the SQLite file, or exit with code 1 when another worker holds it."""
+    lock = InstanceLock(f"{storage.db_path}.lock")
+    if not lock.acquire():
+        print(f"[{_stamp()}] [!] Ya hay otro worker en ejecución con {os.path.basename(storage.db_path)} "
+              f"(bloqueo {lock.path}); este proceso se cierra.")
+        sys.exit(1)
+    return lock
+
+
+def hydrate_storage(storage, supabase) -> None:
+    """Restore dedupe state from Supabase into a fresh local database, when the storage layer can."""
+    hydrate = getattr(storage, "hydrate_from_remote", None)
+    if not callable(hydrate):
+        return
+    try:
+        result = hydrate(supabase)
+        print(f"  ♻️ Estado local restaurado desde Supabase: {result}")
+    except Exception as err:  # noqa: BLE001
+        print(f"  [!] No se pudo restaurar el estado local desde Supabase: {err}")
+
+
+def publish_vapid_public_key(supabase, sender) -> None:
+    """Publish the sender's public key so the web can detect subscriptions bound to another key."""
+    key = getattr(sender, "public_key_b64", None)
+    upsert = getattr(supabase, "upsert_setting", None)
+    if not getattr(sender, "enabled", False) or not isinstance(key, str) or not key or not callable(upsert):
+        return
+    try:
+        if upsert(VAPID_PUBLIC_KEY_SETTING, key, async_call=False) is False:
+            print("  [!] No se pudo publicar vapid_public_key en moodle_settings.")
+    except Exception as err:  # noqa: BLE001
+        print(f"  [!] No se pudo publicar vapid_public_key: {type(err).__name__}")
+
+
 def run_tick(ctx: WorkerContext) -> None:
     """One tick: the delivery pass, then a Moodle round (or a cheap new-login check). Never raises
-    an ``Exception``: a crash is logged with its traceback and the history is still flushed."""
-    ctx.round_error = False
+    an ``Exception``: a crash is logged with its traceback, the history is still flushed and the
+    heartbeat still written."""
+    ctx.tick_crashed = False
+    tick_started = ctx.clock()
+    sync_seconds = 0.0
     try:
         run_delivery_pass(ctx)
         if ctx.stopping:
             return
         now_ts = time.time()
+        sync_started = ctx.clock()
         if now_ts - ctx.last_tasks_check >= ctx.tasks_check_seconds:
             print(f"\n[{_stamp()}] 📋 Verificando Moodle y actualizando tareas...")
             ctx.last_tasks_check = now_ts
             stats: Dict[str, Any] = {}
-            ctx.last_round_mode = run_task_tick(
-                ctx.storage, ctx.supabase, seen_logins=ctx.seen_logins, planner=ctx.planner, stats=stats,
-                **_sync_options(ctx),
-            )
+            try:
+                ctx.last_round_mode = run_task_tick(
+                    ctx.storage, ctx.supabase, seen_logins=ctx.seen_logins, planner=ctx.planner, stats=stats,
+                    **_sync_options(ctx),
+                )
+            finally:
+                sync_seconds = ctx.clock() - sync_started
             ctx.users_ok, ctx.users_err = stats.get("users_ok", 0), stats.get("users_err", 0)
             ctx.round_error = bool(stats.get("error"))
         else:
@@ -408,8 +708,9 @@ def run_tick(ctx: WorkerContext) -> None:
                 print(f"\n[{_stamp()}] 🆕 Sincronizando {len(fresh)} usuario(s) con inicio de sesión reciente...")
                 outcomes = sync_all_users(ctx.storage, ctx.supabase, fresh, **_sync_options(ctx))
                 remember_logins(_reached(fresh, outcomes), ctx.seen_logins)
+                sync_seconds = ctx.clock() - sync_started
     except Exception:  # noqa: BLE001 - one bad tick must never stop the worker
-        ctx.round_error = True
+        ctx.tick_crashed = True
         print(f"[{_stamp()}] [!] Error inesperado en el ciclo del worker; se continúa en el próximo ciclo.\n"
               f"{traceback.format_exc()}")
     finally:
@@ -419,6 +720,8 @@ def run_tick(ctx: WorkerContext) -> None:
             ctx.history.prune_if_due(ctx.storage)
         except Exception as err:  # noqa: BLE001
             print(f"[{_stamp()}] [!] Error al depurar el historial de avisos: {err}")
+        prune_storage_if_due(ctx)
+        report_tick(ctx, ctx.clock() - tick_started, sync_seconds)
 
 
 def run_loop(ctx: WorkerContext, tick_seconds: float = TICK_SECONDS,
@@ -465,7 +768,14 @@ def install_stop_handlers(stop_event: threading.Event) -> Callable[[], None]:
 def run_worker(stop_event: Optional[threading.Event] = None, tick_seconds: float = TICK_SECONDS) -> None:
     """Ejecutor en segundo plano: tareas y recordatorios por usuario + recordatorios de clases por usuario."""
     storage = Storage()
+    lock = acquire_instance_lock(storage)  # exits when another worker already runs on this database
+    try:
+        _run_worker(storage, stop_event, tick_seconds)
+    finally:
+        lock.release()
 
+
+def _run_worker(storage, stop_event: Optional[threading.Event], tick_seconds: float) -> None:
     try:
         tasks_check_mins = int(storage.get_setting("check_interval_mins", "30"))
     except ValueError:
@@ -479,6 +789,7 @@ def run_worker(stop_event: Optional[threading.Event] = None, tick_seconds: float
     deliver = partial(deliver_to_user, supabase=supabase, sender=sender, history=history)
     ctx = WorkerContext(storage, supabase, sender, history, deliver, stop_event=stop_event,
                         tasks_check_seconds=tasks_check_mins * 60)
+    ctx.version = worker_version()
 
     print("=" * 60)
     print("  🚀 MOODLE TRACKER - HEADLESS WORKER (MULTIUSUARIO)")
@@ -490,7 +801,11 @@ def run_worker(stop_event: Optional[threading.Event] = None, tick_seconds: float
     print(f"  🔔 ntfy (canal opcional por usuario): {ntfy_base_url()}")
     print(f"  📋 Revisión de tareas: cada {tasks_check_mins} minutos (máx. {ROUND_BUDGET_SECONDS // 60} min por ronda)")
     print("  🎓 Alertas de clases: según el horario importado de cada usuario (30 min, 1 h o 3 h antes)")
+    print(f"  🏷️ Versión: {ctx.version} (estado en moodle_settings.{WORKER_STATUS_KEY} cada ciclo)")
     print("=" * 60)
+    ctx.degraded_reasons = check_startup(supabase, sender)  # exits with WORKER_STRICT=1
+    hydrate_storage(storage, supabase)
+    publish_vapid_public_key(supabase, sender)
 
     restore = install_stop_handlers(ctx.stop_event)
     try:
