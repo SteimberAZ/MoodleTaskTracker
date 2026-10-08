@@ -113,6 +113,53 @@ export function testPushWarning(heartbeat: WorkerHeartbeat | null, now: Date): T
   return null;
 }
 
+export interface ServiceBadge {
+  text: string;
+  tone: 'activo' | 'urgente' | 'finalizado';
+}
+
+export interface ServiceSummary {
+  worker: ServiceBadge;
+  push: ServiceBadge;
+  /** The worker signs with another VAPID key than the one the web subscribes with. */
+  vapidMismatch: boolean;
+  /** "sent_ok 12 · failed 1 · gone 0", or null when the worker reports no counters. */
+  counts: string | null;
+  roundMode: string | null;
+}
+
+const ageLabel = (iso: string, now: Date): string => {
+  const seconds = Math.max(0, Math.round((now.getTime() - Date.parse(iso)) / 1000));
+  if (seconds < 90) return `hace ${seconds} s`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 90) return `hace ${minutes} min`;
+  return `hace ${Math.round(minutes / 60)} h`;
+};
+
+/** What the admin "Estado del servicio" card shows. Meaning never relies on color: every state has its own text. */
+export function serviceSummary(status: WorkerStatus | null, webVapidKey: string | null | undefined, now: Date): ServiceSummary {
+  const hb = status?.heartbeat ?? null;
+  let worker: ServiceBadge;
+  if (!hb) worker = { text: 'Sin datos: el worker no reporta su estado', tone: 'finalizado' };
+  else if (isStale(hb.at, now)) worker = { text: hb.at ? `Detenido (último latido ${ageLabel(hb.at, now)})` : 'Detenido', tone: 'urgente' };
+  else worker = { text: `Activo (latido ${ageLabel(hb.at as string, now)})`, tone: 'activo' };
+
+  let push: ServiceBadge;
+  const detail = hb?.push_status ? ` (${hb.push_status})` : '';
+  if (!hb || hb.webpush_enabled === null) push = { text: `Web Push: desconocido${detail}`, tone: 'finalizado' };
+  else if (hb.webpush_enabled) push = { text: `Web Push activo${detail}`, tone: 'activo' };
+  else push = { text: `Web Push desactivado${detail}`, tone: 'urgente' };
+
+  const entries = Object.entries(hb?.push_counts ?? {});
+  return {
+    worker,
+    push,
+    vapidMismatch: vapidMismatch(status?.vapidPublicKey, webVapidKey),
+    counts: entries.length > 0 ? entries.map(([key, value]) => `${key} ${value}`).join(' · ') : null,
+    roundMode: hb?.last_round_mode ?? null,
+  };
+}
+
 export const WORKER_STATUS_PATH = 'moodle_settings?key=in.(worker_status,vapid_public_key)&select=key,value';
 
 /** Reads both settings rows in one request. Throws when the table cannot be read. */

@@ -6,13 +6,14 @@ vi.mock('@/lib/auth', () => ({ getCurrentUser: () => getCurrentUser() }));
 const dbJson = vi.fn();
 vi.mock('@/lib/db', () => ({ dbJson: (...args: unknown[]) => dbJson(...args), dbFetch: vi.fn() }));
 
-const { WORKER_STATUS_PATH, getWorkerStatus, isStale, parseHeartbeat, testPushWarning, vapidMismatch } = await import(
+const { WORKER_STATUS_PATH, getWorkerStatus, isStale, parseHeartbeat, serviceSummary, testPushWarning, vapidMismatch } = await import(
   '@/lib/worker-status'
 );
 const { POST } = await import('@/app/api/push/test/route');
 
 const NOW = new Date('2026-10-08T12:00:00.000Z');
 const KEY = 'BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U';
+const OTHER_KEY = `${KEY.slice(0, -1)}A`;
 const ago = (seconds: number) => new Date(NOW.getTime() - seconds * 1000).toISOString();
 
 describe('isStale', () => {
@@ -172,5 +173,42 @@ describe('POST /api/push/test warning', () => {
     getCurrentUser.mockResolvedValue({ id: '44444444-2222-3333-4444-555555555555' });
     route('44444444-2222-3333-4444-555555555555', { at: new Date().toISOString(), webpush_enabled: false });
     expect((await (await POST(post())).json()).warning).toBe('push_disabled');
+  });
+});
+
+describe('serviceSummary (admin card)', () => {
+  const status = (heartbeat: Record<string, unknown> | null, vapidPublicKey: string | null = KEY) => ({
+    heartbeat: heartbeat ? parseHeartbeat(JSON.stringify(heartbeat)) : null,
+    vapidPublicKey,
+  });
+
+  it('shows a live worker, Web Push enabled, its counters and round mode', () => {
+    const summary = serviceSummary(
+      status({ at: ago(20), webpush_enabled: true, push_status: 'ok', push_counts: { sent_ok: 4, gone: 1 }, last_round_mode: 'full' }),
+      KEY,
+      NOW,
+    );
+    expect(summary.worker).toEqual({ text: 'Activo (latido hace 20 s)', tone: 'activo' });
+    expect(summary.push).toEqual({ text: 'Web Push activo (ok)', tone: 'activo' });
+    expect(summary.counts).toBe('sent_ok 4 · gone 1');
+    expect(summary.roundMode).toBe('full');
+    expect(summary.vapidMismatch).toBe(false);
+  });
+
+  it('flags a stopped worker, disabled Web Push and a VAPID mismatch', () => {
+    const summary = serviceSummary(status({ at: ago(600), webpush_enabled: false, push_status: 'key_mismatch' }), OTHER_KEY, NOW);
+    expect(summary.worker).toEqual({ text: 'Detenido (último latido hace 10 min)', tone: 'urgente' });
+    expect(summary.push).toEqual({ text: 'Web Push desactivado (key_mismatch)', tone: 'urgente' });
+    expect(summary.vapidMismatch).toBe(true);
+  });
+
+  it('says unknown when the worker reports nothing or the read failed', () => {
+    for (const s of [status(null, null), null]) {
+      const summary = serviceSummary(s, KEY, NOW);
+      expect(summary.worker.tone).toBe('finalizado');
+      expect(summary.push.text).toBe('Web Push: desconocido');
+      expect(summary.counts).toBeNull();
+      expect(summary.vapidMismatch).toBe(false);
+    }
   });
 });

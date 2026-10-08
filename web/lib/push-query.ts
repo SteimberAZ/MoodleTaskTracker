@@ -1,5 +1,5 @@
 import type { Platform } from './platform';
-import { isPlausibleEndpoint, type PushServerStatus, type ValidSubscription } from './push';
+import { deliveryFailing, isPlausibleEndpoint, type PushServerStatus, type ValidSubscription } from './push';
 import { isUuid, scopedQuery, userFilter } from './queries';
 
 /**
@@ -100,11 +100,12 @@ export function pushStatusFromRows(rows: PushStatusRow[] | null | undefined): Pu
 
 /** Admin overview: every device with its owner and delivery health (`withReason` false before the migration). */
 export function pushHealthPath(withReason = true): string {
-  const columns = `user_id,platform,updated_at,${STATUS_BASE}${withReason ? `,${REASON}` : ''}`;
+  const columns = `id,user_id,platform,updated_at,${STATUS_BASE}${withReason ? `,${REASON}` : ''}`;
   return `${PUSH_TABLE}?select=${columns}&order=updated_at.desc&limit=10000`;
 }
 
 export interface PushDeviceHealth {
+  id: string;
   user_id: string;
   platform: string | null;
   updated_at: string | null;
@@ -113,6 +114,22 @@ export interface PushDeviceHealth {
   failure_count: number | null;
   last_failure_reason?: string | null;
   test_requested_at: string | null;
+}
+
+const PLATFORM_LABELS: Record<string, string> = { ios: 'iPhone/iPad', android: 'Android', desktop: 'Computadora' };
+
+/** Short name of a device for the admin list ("Android", "Computadora", "Dispositivo"). */
+export function devicePlatformLabel(platform: string | null | undefined): string {
+  return (platform && PLATFORM_LABELS[platform]) || 'Dispositivo';
+}
+
+/** True when the newest event of a device is a failure (same rule as the device card on /notificaciones). */
+export function deviceFailing(device: Pick<PushDeviceHealth, 'failure_count' | 'last_failure_at' | 'last_success_at'>): boolean {
+  return deliveryFailing({
+    failure_count: device.failure_count ?? 0,
+    last_failure_at: device.last_failure_at,
+    last_success_at: device.last_success_at,
+  });
 }
 
 export function groupByOwner<T extends { user_id: string }>(rows: T[]): Map<string, T[]> {

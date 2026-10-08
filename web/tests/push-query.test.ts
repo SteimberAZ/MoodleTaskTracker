@@ -3,6 +3,8 @@ import {
   MAX_DEVICES_PER_USER,
   PUSH_OWNERS_PATH,
   countByOwner,
+  deviceFailing,
+  devicePlatformLabel,
   formatDeviceCount,
   groupByOwner,
   isMissingColumnError,
@@ -246,5 +248,22 @@ describe('device status and health reads', () => {
     expect(isMissingColumnError(500, JSON.stringify({ code: '42703' }))).toBe(false);
     expect(isMissingColumnError(400, 'not json')).toBe(false);
     expect(isMissingColumnError(400, '')).toBe(false);
+  });
+});
+
+describe('admin device health labels', () => {
+  it('names the platform of a device', () => {
+    expect(devicePlatformLabel('ios')).toBe('iPhone/iPad');
+    expect(devicePlatformLabel('android')).toBe('Android');
+    expect(devicePlatformLabel('desktop')).toBe('Computadora');
+    expect(devicePlatformLabel(null)).toBe('Dispositivo');
+    expect(devicePlatformLabel('toaster')).toBe('Dispositivo');
+  });
+
+  it('marks a device failing only when its newest event is a failure', () => {
+    const at = (h: number) => `2026-10-08T${String(h).padStart(2, '0')}:00:00.000Z`;
+    expect(deviceFailing({ failure_count: 3, last_failure_at: at(13), last_success_at: at(12) })).toBe(true);
+    expect(deviceFailing({ failure_count: 3, last_failure_at: at(11), last_success_at: at(12) })).toBe(false);
+    expect(deviceFailing({ failure_count: null, last_failure_at: at(13), last_success_at: null })).toBe(false);
   });
 });
