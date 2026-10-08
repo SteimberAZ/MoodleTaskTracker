@@ -254,6 +254,7 @@ class RemoteState:
         return {
             "api_migration_done": [{"key": "api_migration_done:u1", "value": "1"}],
             "api_token_alert_fingerprint": [{"key": "api_token_alert_fingerprint:u1", "value": "fp"}],
+            "course_sweep_baseline": [],
         }[prefix]
 
 

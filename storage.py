@@ -30,9 +30,9 @@ MILESTONE_THRESHOLDS: Tuple[Tuple[str, int], ...] = (
 )
 
 # Hydration after a lost SQLite file: milestones of this many days, and the per-user flags that keep
-# the first-sync guard and the token alert from firing again.
+# the first-sync guard, the token alert and the course sweep baseline from firing again.
 HYDRATE_DAYS = 14
-HYDRATED_SETTING_PREFIXES = ("api_migration_done", "api_token_alert_fingerprint")
+HYDRATED_SETTING_PREFIXES = ("api_migration_done", "api_token_alert_fingerprint", "course_sweep_baseline")
 
 # Fields of a task that reach the moodle_tasks mirror (details_updated_at aside): a task whose
 # values are unchanged is not sent again.

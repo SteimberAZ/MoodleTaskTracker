@@ -18,7 +18,10 @@ Multi-user robustness:
     their cached tasks still get the 1d/8h alerts, marked as unverified;
   * after a complete fetch, tasks that vanished from the calendar are reconciled: a vanished
     assignment that was submitted becomes submitted, the rest are flagged missing remotely after
-    ``MISSING_ROUNDS`` consecutive absent rounds.
+    ``MISSING_ROUNDS`` consecutive absent rounds;
+  * the fetch also includes a course sweep (assignments and quizzes outside the timeline, at most once
+    per round per user): its first complete result is baselined (no "new" burst) and undated tasks are
+    reconciled only after a complete sweep.
 """
 import inspect
 import json
@@ -41,6 +44,7 @@ from notifier import TaskNotificationManager, send_system_alert
 MIGRATION_FLAG = "api_migration_done"
 ALERT_SETTING = "api_token_alert_fingerprint"
 MISSING_SETTING = "reconcile_missing"
+SWEEP_BASELINE_SETTING = "course_sweep_baseline"
 
 DISCONNECTED_TITLE = "Moodle desconectado"
 DISCONNECTED_MESSAGE = "Moodle desconectado: vuelve a conectar tu cuenta en la web"
@@ -113,6 +117,27 @@ def apply_migration_guard(storage, tasks: List[Dict], user_id: Optional[str] = N
         return False
     for t in tasks:
         storage.record_milestone(str(t["id"]), "new")
+    storage.set_setting(flag, "1")
+    return True
+
+
+def sweep_baseline_key(user_id: str) -> str:
+    """Local-settings key of the per-user flag set once the first complete course sweep was baselined."""
+    return f"{SWEEP_BASELINE_SETTING}:{user_id}"
+
+
+def apply_sweep_baseline(storage, tasks: List[Dict], user_id: Optional[str], client: Any) -> bool:
+    """One-time guard per user for the course sweep: the first complete sweep pre-records the 'new'
+    milestone of every swept task, so activities the user already had are not announced. Returns True
+    when it ran."""
+    if not user_id or getattr(client, "last_sweep_complete", False) is not True:
+        return False
+    flag = sweep_baseline_key(user_id)
+    if storage.get_setting(flag, "") == "1":
+        return False
+    for t in tasks:
+        if t.get("source") == "sweep" and not storage.has_notified_milestone(str(t["id"]), "new"):
+            storage.record_milestone(str(t["id"]), "new")
     storage.set_setting(flag, "1")
     return True
 
@@ -280,12 +305,16 @@ def reconcile_missing_tasks(
     label: str = "[ApiSync]",
     previous: Optional[Dict[str, Dict]] = None,
     now: Optional[float] = None,
+    include_undated: bool = False,
 ) -> Dict[str, int]:
     """Reconcile the user's local tasks that a COMPLETE fetch no longer returned.
 
-    Candidates are the user's visible (not muted) rows, not submitted, due within the overdue window,
-    and absent from ``fetched``. An assignment among them is re-checked once per round (while it is
-    not flagged yet): submitted -> saved as submitted. The rest count one absent round each; after
+    Candidates are the user's visible (not muted) rows, not submitted, and absent from ``fetched``, due
+    within the overdue window. Undated rows (due 0) are candidates only when ``include_undated`` says a
+    complete course sweep backed the fetch: the timeline never returns undated activities, so without
+    the sweep an absent one cannot be told apart from a task still in Moodle. An assignment among them
+    is re-checked once per round (while it is not flagged yet): submitted -> saved as submitted. The
+    rest count one absent round each; after
     ``MISSING_ROUNDS`` in a row they are flagged through ``supabase.mark_tasks_missing`` when the
     data layer has it. A row that reappears drops its counter. An assignment Moodle no longer knows
     (any other answered error) counts as absent. Raises on a network or token error so the caller
@@ -298,7 +327,8 @@ def reconcile_missing_tasks(
     candidates = [
         t for t in storage.get_all_tasks(order_by_due=False, user_id=user_id)
         if str(t["id"]) not in fetched_ids and t.get("status") != "submitted"
-        and int(t.get("due_timestamp") or 0) >= floor
+        and (int(t.get("due_timestamp") or 0) >= floor
+             or (include_undated and int(t.get("due_timestamp") or 0) == 0))
     ]
     counts = _load_missing_counts(storage, user_id)
     submitted: List[Dict] = []
@@ -392,7 +422,9 @@ def sync_tasks_via_api(
         _notify_cached_tasks(storage, user, deliver, process, route, label)
         return "invalid"
 
-    client = client or MoodleApiClient(creds.base_url, creds.token, user_id=user_id)
+    client = client or MoodleApiClient(
+        creds.base_url, creds.token, user_id=user_id, site_userid=(user or {}).get("site_userid"),
+    )
 
     try:
         tasks = client.fetch_tasks()
@@ -428,6 +460,9 @@ def sync_tasks_via_api(
             notify = _apply_web_mutes(storage, supabase, user_id, tasks, label)
         if apply_migration_guard(storage, tasks, user_id):
             print(f"{label} first sync: {len(tasks)} existing tasks marked as already announced.")
+        if apply_sweep_baseline(storage, tasks, user_id, client):
+            swept = sum(1 for t in tasks if t.get("source") == "sweep")
+            print(f"{label} first course sweep: {swept} swept task(s) marked as already announced.")
         # Announce every fetched task whose 'new' alert never got through, not only the rows inserted
         # this round: a failed delivery (or a round without notifications) is retried on the next sync.
         unannounced = [t for t in tasks if not storage.has_notified_milestone(str(t["id"]), "new")]
@@ -451,7 +486,10 @@ def sync_tasks_via_api(
         _LAST_FETCHED[user_id] = {str(t["id"]): dict(t) for t in tasks}
         if getattr(client, "last_fetch_complete", None) is True:
             try:
-                reconcile_missing_tasks(storage, supabase, client, user_id, tasks, label, previous=previous)
+                reconcile_missing_tasks(
+                    storage, supabase, client, user_id, tasks, label, previous=previous,
+                    include_undated=getattr(client, "last_sweep_complete", False) is True,
+                )
             except Exception as e:  # noqa: BLE001 - reconciliation is best effort, retried next round
                 print(f"{label} reconciliation skipped: {getattr(e, 'code', '') or type(e).__name__}")
         elif getattr(client, "last_fetch_complete", None) is False:

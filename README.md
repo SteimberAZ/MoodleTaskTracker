@@ -10,7 +10,7 @@ Web app para estudiantes de la **UTM** que reúne las tareas de Moodle (`evirtua
 | --- | --- | --- |
 | `web/` (Next.js 15) | Vercel | Login con la cuenta de Moodle, tareas, recordatorios, horario, historial de avisos, administración. Solo guarda datos; nunca envía notificaciones. |
 | Base de datos | Supabase self-hosted, **compartido con Mineral** | Solo las tablas `moodle_*` son de este proyecto. El acceso pasa por el rol `moodle_app`, que no puede tocar nada fuera de `moodle_*`. |
-| `worker.py` (Python) | VPS, bajo pm2 | Cada minuto envía los recordatorios y avisos pendientes. Cada 30 minutos, y justo después de cada inicio de sesión, sincroniza las tareas de cada usuario con su token de la API de Moodle. Guarda su estado local en `moodle_tasks.db` (SQLite). |
+| `worker.py` (Python) | VPS, bajo pm2 | Cada minuto envía los recordatorios y avisos pendientes. Cada 30 minutos, y justo después de cada inicio de sesión, sincroniza las tareas de cada usuario con su token de la API de Moodle. Además de la línea de tiempo, revisa las tareas y cuestionarios de cada curso matriculado, así aparecen también las actividades sin fecha de entrega o que no están en el calendario. Guarda su estado local en `moodle_tasks.db` (SQLite). |
 
 **Canales de aviso:**
 
