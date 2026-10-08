@@ -1,10 +1,70 @@
 import hashlib
 import re
+import time
 import urllib.parse
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 from bs4 import BeautifulSoup
 import requests
+
+
+# Phrases (lowercase) used as a text fallback when no CSS class identifies the status.
+# Pending phrases are checked first because "no entregado" contains "entregado".
+_PENDING_PHRASES = (
+    "borrador", "no se ha enviado", "no se ha realizado", "no entregado", "no enviado",
+    "sin entrega", "not submitted", "no submission", "no attempt", "draft",
+)
+_SUBMITTED_PHRASES = (
+    "enviado para calificar", "submitted for grading", "entregado", "submitted",
+)
+
+_ASSIGN_URL_RE = re.compile(r"/mod/assign/view\.php\?(?:[^\"'#\s]*&)?id=\d+", re.IGNORECASE)
+
+
+def parse_submission_status(html: str) -> Optional[str]:
+    """
+    Parse an assignment page (mod/assign/view.php) and return
+    'submitted', 'pending' or None when the status cannot be determined.
+    Moodle CSS classes are preferred; text matching is only a fallback.
+    """
+    if not html:
+        return None
+    try:
+        soup = BeautifulSoup(html, "html.parser")
+        table = soup.select_one(".submissionsummarytable, .submissionstatustable")
+        if table is None:
+            return None
+
+        # 1. CSS classes (language independent)
+        if table.select_one(".submissionstatussubmitted"):
+            return "submitted"
+        if table.select_one(".submissionstatusdraft, .submissionstatusnew"):
+            return "pending"
+
+        # 2. Text: prefer the cell in the "Submission status" row
+        status_text = ""
+        for row in table.select("tr"):
+            th = row.find("th")
+            td = row.find("td")
+            if th and td:
+                label = th.get_text(" ", strip=True).lower()
+                if "entrega" in label or "submission status" in label:
+                    status_text = td.get_text(" ", strip=True).lower()
+                    break
+        if not status_text:
+            status_text = table.get_text(" ", strip=True).lower()
+
+        if any(p in status_text for p in _PENDING_PHRASES):
+            return "pending"
+        if any(p in status_text for p in _SUBMITTED_PHRASES):
+            return "submitted"
+    except Exception:
+        return None
+    return None
+
+
+def _is_negated_submission(text: str) -> bool:
+    return any(p in text for p in ("no entregado", "not submitted", "no enviado", "no se ha enviado"))
 
 
 class MoodleClient:
@@ -115,10 +175,51 @@ class MoodleClient:
             if not tasks:
                 tasks = self._fallback_parse_my_overview(soup)
 
+            # Confirm the real submission state by reading each assignment page
+            self.enrich_submission_status(tasks)
+
             return True, tasks, f"Se encontraron {len(tasks)} tareas o eventos próximos."
 
         except Exception as e:
             return False, [], f"Error al procesar tareas de Moodle: {str(e)}"
+
+    def fetch_submission_status(self, task_url: str) -> Optional[str]:
+        """
+        GET the assignment page with the authenticated session.
+        Returns 'submitted', 'pending' or None (unknown or error; never raises).
+        """
+        if not task_url or not _ASSIGN_URL_RE.search(task_url):
+            return None
+        try:
+            resp = self.http.get(task_url, timeout=15, allow_redirects=True)
+            if resp.status_code != 200 or "login/index.php" in resp.url.lower():
+                return None
+            return parse_submission_status(resp.text)
+        except Exception:
+            return None
+
+    def enrich_submission_status(self, tasks: List[Dict], max_checks: int = 40, delay: float = 0.5):
+        """
+        For tasks not yet submitted that have an assign URL, read the assignment page and
+        update 'status'. Sets 'status_source' = 'assignment_page' on an explicit detection so
+        storage can tell it apart from the calendar-text heuristic.
+        """
+        checked = 0
+        for t in tasks:
+            if t.get("status") == "submitted":
+                continue
+            url = t.get("assign_url") or t.get("task_url", "")
+            if not url or not _ASSIGN_URL_RE.search(url):
+                continue
+            if checked >= max_checks:
+                break
+            if checked:
+                time.sleep(delay)
+            checked += 1
+            detected = self.fetch_submission_status(url)
+            if detected:
+                t["status"] = detected
+                t["status_source"] = "assignment_page"
 
     def _parse_event_node(self, node) -> Optional[Dict]:
         """Parsea un nodo de evento del calendario de Moodle."""
@@ -145,6 +246,13 @@ class MoodleClient:
 
             if "/mod/attendance/" in task_url.lower():
                 return None
+
+            # If the main link is not an assignment, look for an assign link inside the node
+            assign_url = ""
+            if not _ASSIGN_URL_RE.search(task_url):
+                assign_link = node.select_one("a[href*='/mod/assign/view.php']")
+                if assign_link and assign_link.has_attr("href"):
+                    assign_url = urllib.parse.urljoin(self.base_url, assign_link["href"])
 
             # Asegurar URL absoluta
             if task_url and not task_url.startswith("http"):
@@ -192,7 +300,9 @@ class MoodleClient:
             # 6. Estado de entrega
             status = "pending"
             status_text = node.get_text().lower()
-            if "entregado" in status_text or "submitted" in status_text or "enviado para calificar" in status_text:
+            if not _is_negated_submission(status_text) and (
+                "entregado" in status_text or "submitted" in status_text or "enviado para calificar" in status_text
+            ):
                 status = "submitted"
 
             return {
@@ -203,6 +313,7 @@ class MoodleClient:
                 "due_timestamp": timestamp,
                 "task_url": task_url or f"{self.base_url}/calendar/view.php",
                 "status": status,
+                "assign_url": assign_url,
             }
         except Exception:
             return None
@@ -216,6 +327,7 @@ class MoodleClient:
             if not title or len(title) < 3 or "asistencia" in title.lower() or "attendance" in title.lower():
                 continue
 
+            url = urllib.parse.urljoin(self.base_url, a.get("href", ""))
             task_id = hashlib.md5(url.encode("utf-8")).hexdigest()
             tasks.append({
                 "id": task_id,

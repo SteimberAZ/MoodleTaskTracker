@@ -184,6 +184,8 @@ class TaskNotificationManager:
         if new_tasks:
             for t in new_tasks:
                 task_id = str(t.get("id"))
+                if t.get("status") == "submitted" or t.get("is_dismissed"):
+                    continue
                 if not storage.has_notified_milestone(task_id, "new"):
                     send_windows_notification(
                         title="🔔 ¡Nueva tarea agregada en Moodle!",

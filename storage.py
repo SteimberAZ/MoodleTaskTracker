@@ -127,6 +127,17 @@ class Storage:
                     ))
                     new_tasks.append(t)
                 else:
+                    # 'submitted' is sticky: only an explicit read of the assignment page may
+                    # revert it; the calendar-text heuristic never downgrades it.
+                    new_status = t.get("status", existing["status"])
+                    if (
+                        existing["status"] == "submitted"
+                        and new_status != "submitted"
+                        and t.get("status_source") != "assignment_page"
+                    ):
+                        new_status = "submitted"
+                    # Reflect the effective status for the notifier and the Supabase mirror
+                    t["status"] = new_status
                     # Actualizar campos
                     conn.execute("""
                         UPDATE tasks SET
@@ -144,7 +155,7 @@ class Storage:
                         t.get("due_date_str", existing["due_date_str"]),
                         t.get("due_timestamp", existing["due_timestamp"]),
                         t.get("task_url", existing["task_url"]),
-                        t.get("status", existing["status"]),
+                        new_status,
                         now,
                         task_id,
                     ))
