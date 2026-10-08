@@ -1,7 +1,8 @@
+import { Suspense } from 'react';
 import Link from 'next/link';
 import { getCurrentUser } from '@/lib/auth';
 import LogoutButton from './LogoutButton';
-import NavLinks from './NavLinks';
+import NavLinks, { NavPlaceholder } from './NavLinks';
 
 /** Logo plus the "mineral / tareas" wordmark. Swaps the cap colour in dark mode. */
 export default function Brand() {
@@ -19,21 +20,42 @@ export default function Brand() {
   );
 }
 
+/** Navigation and logout of the signed-in user. Resolves after the session lookup; the header does not wait for it. */
+async function HeaderUserNav() {
+  const user = await getCurrentUser().catch(() => null);
+  if (!user) return null;
+  return (
+    <>
+      <NavLinks isAdmin={user.is_admin} variant="inline" />
+      <LogoutButton />
+    </>
+  );
+}
+
+/** Phones: bottom tab bar, kept outside the sticky header so `position: fixed` anchors to the viewport. */
+async function BottomUserNav() {
+  const user = await getCurrentUser().catch(() => null);
+  return user ? <NavLinks isAdmin={user.is_admin} variant="bar" /> : null;
+}
+
 /**
  * Sticky header shared by every page: logo on the left, navigation, logout at the right end.
+ * The header and the logo render synchronously, so a cold open paints the shell before the session query
+ * returns; the user-dependent parts stream in behind placeholders that reserve their space (see NavPlaceholder).
  * Logged out (or when the session cannot be resolved) it shows just the logo.
  */
-export async function SiteHeader() {
-  const user = await getCurrentUser().catch(() => null);
+export function SiteHeader() {
   return (
     <>
       <header className="site-header">
         <Brand />
-        {user && <NavLinks isAdmin={user.is_admin} variant="inline" />}
-        {user && <LogoutButton />}
+        <Suspense fallback={<NavPlaceholder variant="inline" />}>
+          <HeaderUserNav />
+        </Suspense>
       </header>
-      {/* Phones: bottom tab bar, kept outside the sticky header so `position: fixed` anchors to the viewport. */}
-      {user && <NavLinks isAdmin={user.is_admin} variant="bar" />}
+      <Suspense fallback={<NavPlaceholder variant="bar" />}>
+        <BottomUserNav />
+      </Suspense>
     </>
   );
 }

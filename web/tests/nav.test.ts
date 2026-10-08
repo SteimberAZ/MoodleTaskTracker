@@ -1,4 +1,7 @@
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
+import NavLinks from '@/components/NavLinks';
 import { REMINDERS_PATH, SCHEDULE_PATH, TASKS_PATH, buildNavItems, isNavActive } from '@/lib/nav';
 
 const hrefs = (isAdmin: boolean) => buildNavItems(isAdmin, '/').map((i) => i.href);
@@ -72,5 +75,32 @@ describe('reminder flow target', () => {
   it('returns to the reminders section, not to home', () => {
     expect(REMINDERS_PATH).toBe('/recordatorios');
     expect(REMINDERS_PATH).not.toBe(TASKS_PATH);
+  });
+});
+
+describe('NavLinks markup (label in name)', () => {
+  const html = renderToStaticMarkup(createElement(NavLinks, { isAdmin: true, variant: 'bar' }));
+  const links = html.match(/<a\b[^>]*>.*?<\/a>/g) ?? [];
+
+  it('renders one link per tab', () => {
+    expect(links).toHaveLength(buildNavItems(true, '/').length);
+  });
+
+  it('never overrides the visible text with aria-label or hides it with aria-hidden', () => {
+    for (const link of links) {
+      expect(link).not.toMatch(/aria-label=/);
+      // Only the icon and the pending marker are hidden; no label span is.
+      expect(link).not.toMatch(/<span class="nav-label-(short|long)" aria-hidden/);
+    }
+  });
+
+  it('exposes every visible label (short and long) as link text', () => {
+    for (const item of buildNavItems(true, '/')) {
+      const link = links.find((l) => l.includes(`href="${item.href}"`));
+      expect(link, item.href).toBeDefined();
+      const text = link!.replace(/<span[^>]*aria-hidden="true"[^>]*>.*?<\/span>/g, '').replace(/<[^>]+>/g, '');
+      expect(text).toContain(item.label);
+      if (item.shortLabel) expect(text).toContain(item.shortLabel);
+    }
   });
 });

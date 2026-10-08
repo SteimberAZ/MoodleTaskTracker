@@ -247,6 +247,10 @@ body:has(.site-nav) .container {
 }
 .logout-label { display: none; }
 
+/* Stand-ins while the user navigation streams in (NavPlaceholder): same boxes, nothing visible inside. */
+.site-nav--bar.nav-placeholder { min-height: calc(var(--nav-h) + env(safe-area-inset-bottom)); }
+.logout-placeholder { display: block; flex-shrink: 0; width: 44px; height: 44px; margin-right: -8px; }
+
 @media (min-width: 720px) {
   :root { --gutter: 24px; }
 
@@ -300,6 +304,8 @@ body:has(.site-nav) .container {
   }
   .logout-label { display: inline; }
   .logout-btn:hover { background: var(--border); }
+  .site-nav--inline.nav-placeholder { min-height: 44px; }
+  .logout-placeholder { width: 92px; margin-right: 0; }
 
   .container { padding-top: 32px; }
   body:has(.site-nav) .container { padding-bottom: 80px; }
