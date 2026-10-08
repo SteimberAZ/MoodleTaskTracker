@@ -1,15 +1,26 @@
 'use client';
 
+import SubmitButton from './SubmitButton';
+
 interface Props {
   action: () => Promise<void>;
   label: string;
   message: string;
   danger?: boolean;
   disabled?: boolean;
+  /** Shown while the action runs (defaults to "Procesando…"). */
+  pendingLabel?: string;
 }
 
 /** Form button that asks for confirmation before running a server action. */
-export default function ConfirmButton({ action, label, message, danger = false, disabled = false }: Props) {
+export default function ConfirmButton({
+  action,
+  label,
+  message,
+  danger = false,
+  disabled = false,
+  pendingLabel = 'Procesando…',
+}: Props) {
   return (
     <form
       action={action}
@@ -17,9 +28,9 @@ export default function ConfirmButton({ action, label, message, danger = false, 
         if (!window.confirm(message)) event.preventDefault();
       }}
     >
-      <button type="submit" className={`btn${danger ? ' danger' : ''}`} disabled={disabled}>
+      <SubmitButton className={`btn${danger ? ' danger' : ''}`} disabled={disabled} pendingLabel={pendingLabel}>
         {label}
-      </button>
+      </SubmitButton>
     </form>
   );
 }
