@@ -53,6 +53,16 @@ PUSH_SUBSCRIPTIONS_LIMIT = 10
 
 _MILESTONES_PREFER = "resolution=ignore-duplicates,return=minimal"
 
+# Grade statistics (supabase_schema.sql section 12): one row per (user, course, grade item). Every upserted
+# row carries exactly these keys (PostgREST rejects a bulk upsert with differing key sets: PGRST102).
+GRADE_ITEMS_TABLE = "moodle_grade_items"
+GRADE_ITEM_KEYS = (
+    "user_id", "course_id", "item_id", "course_name", "item_name", "item_type", "item_module", "cmid",
+    "item_instance", "category_id", "sort_order", "report_depth", "grade_raw", "grade_min", "grade_max",
+    "grade_formatted", "percentage_formatted", "weight_raw", "graded_at", "notified_grade", "fetched_at",
+)
+_GRADE_UPSERT_PREFER = "resolution=merge-duplicates,return=minimal"
+
 # Columns added by later supabase_schema.sql migrations. Each one is used until the server rejects
 # it, then dropped for the life of the process (see OptionalColumns).
 OPTIONAL_COLUMNS: Dict[str, Tuple[str, ...]] = {
@@ -507,6 +517,90 @@ class SupabaseClient:
                 print(f"[Supabase] mark_tasks_missing HTTP {getattr(r, 'status_code', 0)}: {_body(r)}")
                 ok = False
         return ok
+
+    # ---- grade statistics ----------------------------------------------------------------------------
+
+    @staticmethod
+    def _grade_row(user_id: str, row: Dict) -> Dict:
+        """One moodle_grade_items row. Every row carries exactly ``GRADE_ITEM_KEYS`` (unknown keys are dropped)."""
+        out = {key: row.get(key) for key in GRADE_ITEM_KEYS}
+        out["user_id"] = str(user_id)  # the owner argument always wins over a key in the row
+        out["course_id"] = int(row["course_id"])
+        out["item_id"] = int(row["item_id"])
+        out["course_name"] = str(row.get("course_name") or "")
+        out["item_type"] = str(row.get("item_type") or "")
+        out["sort_order"] = int(row.get("sort_order") or 0)
+        out["fetched_at"] = row.get("fetched_at") or _now_iso()
+        return out
+
+    def fetch_grade_items(self, user_id: str) -> List[Dict]:
+        """The stored ``course_id, item_id, grade_raw, notified_grade`` of one user, paged.
+
+        Returns [] when Supabase is not configured; RAISES on any transport/HTTP failure (RuntimeError
+        'HTTP 404' when the table does not exist yet), so the caller can tell "nothing stored" apart
+        from "could not read".
+        """
+        if not self.is_configured:
+            return []
+        params = {
+            "user_id": f"eq.{user_id}",
+            "select": "course_id,item_id,grade_raw,notified_grade",
+            "order": "course_id.asc,item_id.asc",
+        }
+        return self._get_paged(GRADE_ITEMS_TABLE, params)
+
+    def upsert_grade_items(self, user_id: str, rows: List[Dict]) -> bool:
+        """Upsert grade items of ``user_id`` (True when accepted or there was nothing to send). Never raises."""
+        if not self.is_configured or not rows:
+            return True
+        try:
+            # One row per key (last wins): a duplicate inside a single upsert makes Postgres fail the batch.
+            payload = list({(int(r["course_id"]), int(r["item_id"])): self._grade_row(user_id, r) for r in rows}.values())
+            return self._post(
+                "upsert_grade_items", f"{GRADE_ITEMS_TABLE}?on_conflict=user_id,course_id,item_id", payload,
+                timeout=_BULK_TIMEOUT, prefer=_GRADE_UPSERT_PREFER,
+            )
+        except Exception as e:
+            print(f"[Supabase] upsert_grade_items error: {type(e).__name__}")
+            return False
+
+    def _delete_grades(self, op: str, params: Dict) -> bool:
+        try:
+            r = self._call("delete", self._endpoint(GRADE_ITEMS_TABLE), params=params,
+                           headers=self._headers_with("return=minimal"), timeout=10)
+        except Exception as e:
+            print(f"[Supabase] {op} error: {type(e).__name__}")
+            return False
+        if _ok(r):
+            return True
+        print(f"[Supabase] {op} HTTP {getattr(r, 'status_code', 0)}: {_body(r)}")
+        return False
+
+    def delete_grade_items(self, user_id: str, course_id: int, keep_item_ids: Iterable[int]) -> bool:
+        """Delete the items of one course that the latest complete fetch no longer returned. Never raises.
+
+        An empty ``keep_item_ids`` deletes every stored item of that course.
+        """
+        if not self.is_configured:
+            return True
+        params = {"user_id": f"eq.{user_id}", "course_id": f"eq.{int(course_id)}"}
+        keep = sorted({int(i) for i in keep_item_ids or []})
+        if keep:
+            params["item_id"] = f"not.in.({','.join(str(i) for i in keep)})"
+        return self._delete_grades("delete_grade_items", params)
+
+    def delete_grade_courses(self, user_id: str, keep_course_ids: Iterable[int]) -> bool:
+        """Delete the grade items of the courses the user is no longer enrolled in. Never raises.
+
+        An empty ``keep_course_ids`` deletes every row of the user (no current course).
+        """
+        if not self.is_configured:
+            return True
+        params = {"user_id": f"eq.{user_id}"}
+        keep = sorted({int(i) for i in keep_course_ids or []})
+        if keep:
+            params["course_id"] = f"not.in.({','.join(str(i) for i in keep)})"
+        return self._delete_grades("delete_grade_courses", params)
 
     def _ntfy_enabled_rejected(self, r) -> bool:
         """True (remembered) when the server refused ntfy_enabled because the column does not exist yet."""

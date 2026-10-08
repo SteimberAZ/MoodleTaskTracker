@@ -29,6 +29,7 @@
 --         CHECK constraints, index cleanup, login throttle RPCs, atomic schedule
 --         replace. Apply note: run the WHOLE file in the SQL editor (or psql) as
 --         postgres, before deploying the worker/web versions that use it; safe to re-run.
+--   12    grade statistics: moodle_grade_items (worker writes, web reads); safe to re-run.
 -- ==========================================================
 
 -- 0. Dedicated role
@@ -993,6 +994,52 @@ $$;
 
 REVOKE EXECUTE ON FUNCTION public.moodle_replace_class_schedule(uuid, jsonb) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.moodle_replace_class_schedule(uuid, jsonb) TO moodle_app;
+
+-- ==========================================================
+-- 12. Grade statistics ("Estadisticas").
+--     The worker stores, per user, the grade items Moodle's user grade report shows the student
+--     (gradereport_user_get_grade_items): one row per (user, course, grade item), the course total and
+--     the category totals included. Items hidden from the student are never stored. The web computes
+--     the 100-point standing (70 to pass) from these rows. notified_grade is the grade the worker
+--     already announced (or baselined silently), so a "Te calificaron" alert goes out once.
+--     item_type: course | category | mod | manual
+-- ==========================================================
+CREATE TABLE IF NOT EXISTS public.moodle_grade_items (
+    user_id              uuid NOT NULL REFERENCES public.moodle_users(id) ON DELETE CASCADE,
+    course_id            integer NOT NULL,
+    item_id              integer NOT NULL,
+    course_name          text NOT NULL,
+    item_name            text,
+    item_type            text NOT NULL CHECK (item_type IN ('course', 'category', 'mod', 'manual')),
+    item_module          text,
+    cmid                 integer,
+    item_instance        integer,
+    category_id          integer,
+    sort_order           integer NOT NULL DEFAULT 0,
+    report_depth         integer,
+    grade_raw            double precision,
+    grade_min            double precision,
+    grade_max            double precision,
+    grade_formatted      text,
+    percentage_formatted text,
+    weight_raw           double precision,
+    graded_at            bigint,
+    notified_grade       text,
+    fetched_at           timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id, course_id, item_id)
+);
+
+-- Privileges + RLS (same model as above): moodle_app only. The primary key (user_id first) serves
+-- every read, which is always scoped to one user.
+ALTER TABLE public.moodle_grade_items ENABLE ROW LEVEL SECURITY;
+
+REVOKE ALL ON public.moodle_grade_items FROM PUBLIC, anon, authenticated;
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.moodle_grade_items TO moodle_app;
+
+DROP POLICY IF EXISTS moodle_app_all ON public.moodle_grade_items;
+CREATE POLICY moodle_app_all ON public.moodle_grade_items
+    FOR ALL TO moodle_app USING (true) WITH CHECK (true);
 
 -- Ask PostgREST to reload its schema cache so the new tables and columns are served right away.
 NOTIFY pgrst, 'reload schema';

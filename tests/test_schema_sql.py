@@ -12,6 +12,10 @@ import pytest
 SCHEMA_PATH = Path(__file__).resolve().parent.parent / "supabase_schema.sql"
 RAW = SCHEMA_PATH.read_text(encoding="utf-8")
 SECTION_11_HEADER = "-- 11. Hardening"
+SECTION_12_HEADER = "-- 12. Grade statistics"
+GRADE_COLUMNS = ["user_id", "course_id", "item_id", "course_name", "item_name", "item_type", "item_module", "cmid",
+                 "item_instance", "category_id", "sort_order", "report_depth", "grade_raw", "grade_min", "grade_max",
+                 "grade_formatted", "percentage_formatted", "weight_raw", "graded_at", "notified_grade", "fetched_at"]
 
 
 def _strip_comments(sql: str) -> str:
@@ -293,3 +297,39 @@ def test_section_11_runs_before_the_schema_reload_and_is_logged_in_the_header():
     assert RAW.index(SECTION_11_HEADER) < RAW.index("NOTIFY pgrst, 'reload schema';")
     header = RAW[: RAW.index("-- 0. Dedicated role")]
     assert "11    hardening" in header and "safe to re-run" in header
+
+
+def test_grade_items_table_follows_the_moodle_app_model():
+    assert "ALTER TABLE public.moodle_grade_items ENABLE ROW LEVEL SECURITY;" in SQL
+    assert "REVOKE ALL ON public.moodle_grade_items FROM PUBLIC, anon, authenticated;" in SQL
+    assert "GRANT SELECT, INSERT, UPDATE, DELETE ON public.moodle_grade_items TO moodle_app;" in SQL
+    assert "DROP POLICY IF EXISTS moodle_app_all ON public.moodle_grade_items;" in SQL
+    assert "CREATE POLICY moodle_app_all ON public.moodle_grade_items" in SQL
+
+
+def test_grade_items_columns_are_the_worker_contract():
+    from supabase_client import GRADE_ITEM_KEYS
+
+    assert _table_columns("moodle_grade_items") == GRADE_COLUMNS
+    assert list(GRADE_ITEM_KEYS) == GRADE_COLUMNS
+
+
+def test_grade_items_are_owned_by_a_user_and_keyed_per_item():
+    match = re.search(r"CREATE TABLE IF NOT EXISTS public\.moodle_grade_items \((.*?)\n\);", SQL, flags=re.S)
+    assert match, "table moodle_grade_items is not defined"
+    table = _ws(match.group(1))
+    assert "user_id uuid NOT NULL REFERENCES public.moodle_users(id) ON DELETE CASCADE" in table
+    assert "PRIMARY KEY (user_id, course_id, item_id)" in table
+    assert "item_type text NOT NULL CHECK (item_type IN ('course', 'category', 'mod', 'manual'))" in table
+
+
+def test_section_12_follows_section_11_and_precedes_the_schema_reload():
+    assert RAW.index(SECTION_11_HEADER) < RAW.index(SECTION_12_HEADER) < RAW.index("NOTIFY pgrst, 'reload schema';")
+    header = RAW[: RAW.index("-- 0. Dedicated role")]
+    assert "12    grade statistics" in header
+
+
+def test_section_12_needs_no_migration_of_existing_rows():
+    section = _strip_comments(RAW[RAW.index(SECTION_12_HEADER): RAW.index("NOTIFY pgrst, 'reload schema';")])
+    for forbidden in ("ADD COLUMN", "ADD CONSTRAINT", "UPDATE public.", "DELETE FROM"):
+        assert forbidden not in section
