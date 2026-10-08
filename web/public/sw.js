@@ -23,7 +23,7 @@ function resolveUrl(raw) {
   }
 }
 
-/** Payload JSON is { title, body, url, tag }. Safari requires every push to show a notification, so fall back to text. */
+/** Payload JSON is { title, body, url, tag, timestamp? }. Safari requires every push to show a notification, so fall back to text. */
 function readPayload(event) {
   if (!event.data) return {};
   try {
@@ -48,14 +48,43 @@ self.addEventListener('push', (event) => {
     badge: '/icons/badge-96.png',
     data: { url: resolveUrl(data.url) },
   };
-  if (typeof data.tag === 'string' && data.tag) {
-    options.tag = data.tag;
-    // A newer message with the same tag (e.g. "Falta 1 dia" -> "Faltan menos de 8 horas") replaces the
-    // old one and must alert again; renotify is only valid together with a tag.
-    options.renotify = true;
-  }
+  if (typeof data.tag === 'string' && data.tag) options.tag = data.tag;
+  // A newer message with the same tag replaces the old one silently unless the sender asks to alert again
+  // (`renotify: true`, e.g. "Falta 1 dia" -> "Faltan menos de 8 horas"); a retry of the same message does not.
+  // renotify is only valid together with a tag.
+  options.renotify = data.renotify === true && !!options.tag;
+  // When the message was created (epoch ms), so a push delivered late still shows its real time.
+  if (typeof data.timestamp === 'number' && Number.isFinite(data.timestamp)) options.timestamp = data.timestamp;
   event.waitUntil(self.registration.showNotification(title, options));
 });
+
+const OPEN_ACK_TIMEOUT_MS = 1000;
+
+/**
+ * Asks an open page to show `url` itself (client-side routing, no full reload). Resolves true only when the
+ * page acknowledged within OPEN_ACK_TIMEOUT_MS; false otherwise, and the caller navigates the window instead.
+ */
+function askPageToOpen(client, url) {
+  if (typeof MessageChannel !== 'function' || typeof client.postMessage !== 'function') return Promise.resolve(false);
+  return new Promise((resolve) => {
+    const channel = new MessageChannel();
+    let settled = false;
+    const finish = (acked) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      channel.port1.close();
+      resolve(acked);
+    };
+    const timer = setTimeout(() => finish(false), OPEN_ACK_TIMEOUT_MS);
+    channel.port1.onmessage = (event) => finish(!!(event.data && event.data.ok === true));
+    try {
+      client.postMessage({ type: 'open-url', url }, [channel.port2]);
+    } catch (_) {
+      finish(false);
+    }
+  });
+}
 
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
@@ -67,6 +96,7 @@ self.addEventListener('notificationclick', (event) => {
         if (new URL(client.url).origin !== self.location.origin) continue;
         try {
           await client.focus();
+          if (await askPageToOpen(client, target)) return;
           if ('navigate' in client) await client.navigate(target);
           return;
         } catch (_) {

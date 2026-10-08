@@ -12,7 +12,14 @@ const SOURCE = readFileSync(path.resolve(__dirname, '../public/sw.js'), 'utf8');
 
 type Handler = (event: Record<string, unknown>) => void;
 
-function loadWorker(clients: Array<{ url: string; focus: () => Promise<unknown>; navigate?: (url: string) => Promise<unknown> }> = []) {
+interface FakeClient {
+  url: string;
+  focus: () => Promise<unknown>;
+  navigate?: (url: string) => Promise<unknown>;
+  postMessage?: (message: unknown, transfer: MessagePort[]) => void;
+}
+
+function loadWorker(clients: FakeClient[] = []) {
   const handlers: Record<string, Handler[]> = {};
   const shown: Array<{ title: string; options: Record<string, unknown> }> = [];
   const fetchMock = vi.fn(async (_url: string, _init?: unknown) => ({ ok: true }));
@@ -38,7 +45,15 @@ function loadWorker(clients: Array<{ url: string; focus: () => Promise<unknown>;
       pushManager: { subscribe },
     },
   };
-  vm.runInNewContext(SOURCE, { self, URL, fetch: fetchMock });
+  // Timers are looked up at call time so vi.useFakeTimers() also drives the worker.
+  vm.runInNewContext(SOURCE, {
+    self,
+    URL,
+    fetch: fetchMock,
+    MessageChannel,
+    setTimeout: (fn: () => void, ms: number) => setTimeout(fn, ms),
+    clearTimeout: (id: ReturnType<typeof setTimeout>) => clearTimeout(id),
+  });
 
   /** Dispatches an event and waits for everything passed to waitUntil. */
   async function dispatch(type: string, event: Record<string, unknown> = {}) {
@@ -84,7 +99,7 @@ describe('sw.js push', () => {
       body: 'Tarea 2 vence a las 08:00',
       icon: '/icons/icon-192.png',
       badge: '/icons/badge-96.png',
-      renotify: true,
+      renotify: false,
       tag: 'task-abc123',
       data: { url: `${ORIGIN}/tareas/abc123` },
     });
@@ -102,14 +117,14 @@ describe('sw.js push', () => {
     expect(sw.shown[2].title).toBe('mineral tareas');
     expect(sw.shown[2].options.data).toEqual({ url: `${ORIGIN}/` });
     expect(sw.shown.every((n) => !('tag' in n.options))).toBe(true);
-    // renotify without a tag makes showNotification throw a TypeError.
-    expect(sw.shown.every((n) => !('renotify' in n.options))).toBe(true);
+    // renotify: true without a tag makes showNotification throw a TypeError.
+    expect(sw.shown.every((n) => n.options.renotify === false)).toBe(true);
   });
 
-  it('alerts again when a newer message replaces one with the same tag', async () => {
+  it('alerts again when the sender asks to (renotify: true) for a newer message with the same tag', async () => {
     const sw = loadWorker();
-    await sw.dispatch('push', pushEvent({ title: 'Recordatorio: Falta 1 dia', body: 'b', tag: 'task-abc123' }));
-    await sw.dispatch('push', pushEvent({ title: 'URGENTE: Faltan menos de 8 horas', body: 'b', tag: 'task-abc123' }));
+    await sw.dispatch('push', pushEvent({ title: 'Recordatorio: Falta 1 dia', body: 'b', tag: 'task-abc123', renotify: true }));
+    await sw.dispatch('push', pushEvent({ title: 'URGENTE: Faltan menos de 8 horas', body: 'b', tag: 'task-abc123', renotify: true }));
     expect(sw.shown.map((n) => [n.options.tag, n.options.renotify])).toEqual([
       ['task-abc123', true],
       ['task-abc123', true],
@@ -250,5 +265,95 @@ describe('sw.js pushsubscriptionchange', () => {
     const sw = loadWorker();
     sw.fetchMock.mockRejectedValueOnce(new Error('offline'));
     await expect(sw.dispatch('pushsubscriptionchange', { oldSubscription: OLD, newSubscription: NEW })).resolves.toBeUndefined();
+  });
+});
+
+describe('sw.js renotify and timestamp', () => {
+  it('renotify defaults to false, is true only when asked with a tag, and false without a tag', async () => {
+    const sw = loadWorker();
+    await sw.dispatch('push', pushEvent({ title: 't', body: 'b', renotify: true }));
+    await sw.dispatch('push', pushEvent({ title: 't', body: 'b', tag: 'task-1' }));
+    await sw.dispatch('push', pushEvent({ title: 't', body: 'b', tag: 'task-1', renotify: true }));
+    await sw.dispatch('push', pushEvent({ title: 't', body: 'b', tag: 'task-1', renotify: 'yes' }));
+    expect(sw.shown.map((n) => n.options.renotify)).toEqual([false, false, true, false]);
+  });
+
+  it('passes a numeric timestamp through and ignores anything else', async () => {
+    const sw = loadWorker();
+    await sw.dispatch('push', pushEvent({ title: 't', body: 'b', timestamp: 1791460800000 }));
+    await sw.dispatch('push', pushEvent({ title: 't', body: 'b', timestamp: '1791460800000' }));
+    await sw.dispatch('push', pushEvent({ title: 't', body: 'b' }));
+    expect(sw.shown[0].options.timestamp).toBe(1791460800000);
+    expect('timestamp' in sw.shown[1].options).toBe(false);
+    expect('timestamp' in sw.shown[2].options).toBe(false);
+  });
+});
+
+describe('sw.js notificationclick soft navigation', () => {
+  const URL_ENTRY = `${ORIGIN}/notificaciones?n=7b1f6c1e-3a52-4a52-9d0e-0c5f3a9a1b11`;
+  const click = () => ({ notification: { close: vi.fn(), data: { url: URL_ENTRY } } });
+
+  it('lets an open page route in place when it acknowledges the open-url message', async () => {
+    const navigate = vi.fn(async () => undefined);
+    const messages: unknown[] = [];
+    const sw = loadWorker([
+      {
+        url: `${ORIGIN}/cuenta`,
+        focus: vi.fn(async () => undefined),
+        navigate,
+        postMessage: (message, [port]) => {
+          messages.push(message);
+          port.postMessage({ ok: true });
+        },
+      },
+    ]);
+    await sw.dispatch('notificationclick', click());
+    expect(messages).toEqual([{ type: 'open-url', url: URL_ENTRY }]);
+    expect(navigate).not.toHaveBeenCalled();
+    expect(sw.self.clients.openWindow).not.toHaveBeenCalled();
+  });
+
+  it('falls back to navigating the window when the page does not answer within 1 s', async () => {
+    vi.useFakeTimers();
+    try {
+      const navigate = vi.fn(async () => undefined);
+      const sw = loadWorker([{ url: `${ORIGIN}/cuenta`, focus: vi.fn(async () => undefined), navigate, postMessage: () => undefined }]);
+      const done = sw.dispatch('notificationclick', click());
+      await vi.advanceTimersByTimeAsync(999);
+      expect(navigate).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      await done;
+      expect(navigate).toHaveBeenCalledWith(URL_ENTRY);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('falls back to navigating when posting fails or the page refuses', async () => {
+    const navigate = vi.fn(async () => undefined);
+    const sw = loadWorker([
+      {
+        url: `${ORIGIN}/cuenta`,
+        focus: vi.fn(async () => undefined),
+        navigate,
+        postMessage: () => {
+          throw new Error('DataCloneError');
+        },
+      },
+    ]);
+    await sw.dispatch('notificationclick', click());
+    expect(navigate).toHaveBeenCalledWith(URL_ENTRY);
+
+    const refused = vi.fn(async () => undefined);
+    const sw2 = loadWorker([
+      {
+        url: `${ORIGIN}/cuenta`,
+        focus: vi.fn(async () => undefined),
+        navigate: refused,
+        postMessage: (_message, [port]) => port.postMessage({ ok: false }),
+      },
+    ]);
+    await sw2.dispatch('notificationclick', click());
+    expect(refused).toHaveBeenCalledWith(URL_ENTRY);
   });
 });

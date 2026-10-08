@@ -10,14 +10,11 @@ export const MAX_ENDPOINT_LENGTH = 1000;
 /**
  * Push services used by the browsers (Chrome, Edge, Opera, Samsung Internet: FCM; Firefox: Mozilla autopush;
  * Safari and installed iOS web apps: Apple; legacy Edge: WNS). Endpoints are fetched by the VPS worker, so an
- * arbitrary https URL supplied by a user must never be accepted (blind SSRF).
+ * arbitrary https URL supplied by a user must never be accepted (blind SSRF). The hosts are exact, except the
+ * per-region WNS hosts (`<region>.notify.windows.com`); the worker (webpush_sender.py) uses the identical list.
  */
-export const PUSH_HOST_SUFFIXES = [
-  'fcm.googleapis.com',
-  'push.services.mozilla.com',
-  'push.apple.com',
-  'notify.windows.com',
-] as const;
+export const PUSH_EXACT_HOSTS = ['fcm.googleapis.com', 'updates.push.services.mozilla.com', 'web.push.apple.com'] as const;
+export const PUSH_HOST_SUFFIXES = ['.notify.windows.com'] as const;
 
 /* ------------------------------------------------------------------------- */
 /* VAPID key and base64url                                                    */
@@ -98,8 +95,13 @@ export function isPlausibleEndpoint(endpoint: unknown): endpoint is string {
 /** A plausible endpoint that also belongs to a known push service. Required to store a subscription. */
 export function isAllowedPushEndpoint(endpoint: unknown): endpoint is string {
   if (!isPlausibleEndpoint(endpoint)) return false;
-  const host = new URL(endpoint).hostname.toLowerCase();
-  return PUSH_HOST_SUFFIXES.some((suffix) => host === suffix || host.endsWith(`.${suffix}`));
+  const url = new URL(endpoint);
+  if (url.protocol !== 'https:') return false;
+  const host = url.hostname.toLowerCase();
+  return (
+    (PUSH_EXACT_HOSTS as readonly string[]).includes(host) ||
+    PUSH_HOST_SUFFIXES.some((suffix) => host.endsWith(suffix) && host.length > suffix.length)
+  );
 }
 
 export interface ValidSubscription {
@@ -128,14 +130,21 @@ export function validatePushSubscription(input: unknown): Parsed<ValidSubscripti
 export interface SubscribeBody extends ValidSubscription {
   /** Optional hint from the browser (the server falls back to the User-Agent). */
   platform?: Platform;
+  /**
+   * Sent only by an explicit "Activar" (enablePush): the device starts over with `failure_count = 0`.
+   * The silent re-post on every app open never sends it, so it cannot hide a device that keeps failing.
+   */
+  resetFailures?: true;
 }
 
-/** Body of `POST /api/push/subscribe`: a subscription JSON plus an optional `platform`. */
+/** Body of `POST /api/push/subscribe`: a subscription JSON plus an optional `platform` and `resetFailures: true`. */
 export function parseSubscribeBody(body: unknown): Parsed<SubscribeBody> {
   const sub = validatePushSubscription(body);
   if (!sub.ok) return sub;
-  const platform = isRecord(body) && isPlatform(body.platform) ? body.platform : undefined;
-  return { ok: true, value: platform ? { ...sub.value, platform } : sub.value };
+  const value: SubscribeBody = { ...sub.value };
+  if (isRecord(body) && isPlatform(body.platform)) value.platform = body.platform;
+  if (isRecord(body) && body.resetFailures === true) value.resetFailures = true;
+  return { ok: true, value };
 }
 
 /** Body of `POST /api/push/resubscribe`: `{ oldEndpoint?: string | null, subscription }`. */
@@ -176,7 +185,11 @@ export type PushState =
   /** The user blocked notifications; only the system settings can undo it. */
   | 'denied'
   /** Permission granted and this device has an active subscription. */
-  | 'subscribed';
+  | 'subscribed'
+  /** Subscribed with another VAPID key (rotated, or the web and worker disagree): nothing can reach it. */
+  | 'stale'
+  /** Subscribed in the browser, but the server has no row for it: the worker would never push to it. */
+  | 'unsynced';
 
 export interface PushInputs {
   vapidConfigured: boolean;
@@ -188,6 +201,13 @@ export interface PushInputs {
   /** `Notification.permission`, or null when the API does not exist. */
   permission: NotificationPermission | null;
   hasSubscription: boolean;
+  /** The subscription is bound to another application server key than the configured one. */
+  keyMismatch?: boolean;
+  /**
+   * What `GET /api/push/status` said about this subscription: false when the server has no row for it,
+   * null/undefined when it could not be asked (offline, network error), which keeps the browser's view.
+   */
+  serverRegistered?: boolean | null;
 }
 
 export function derivePushState(input: PushInputs): PushState {
@@ -195,11 +215,65 @@ export function derivePushState(input: PushInputs): PushState {
   if (input.platform === 'ios' && !input.standalone) return 'needs-install';
   if (!input.supported) return 'unsupported';
   if (input.permission === 'denied') return 'denied';
-  if (input.permission === 'granted' && input.hasSubscription) return 'subscribed';
+  if (input.permission === 'granted' && input.hasSubscription) {
+    if (input.keyMismatch) return 'stale';
+    if (input.serverRegistered === false) return 'unsynced';
+    return 'subscribed';
+  }
   return 'default';
 }
 
-/** States where the home banner invites the user to activate notifications on this device. */
+/**
+ * States where the home banner invites the user to act on this device: activate, install, repair a stale or
+ * unregistered subscription, or unblock notifications in the system settings (the link goes to /notificaciones).
+ */
 export function shouldShowPushBanner(state: PushState): boolean {
-  return state === 'default' || state === 'needs-install';
+  return (
+    state === 'default' || state === 'needs-install' || state === 'stale' || state === 'unsynced' || state === 'denied'
+  );
+}
+
+/* ------------------------------------------------------------------------- */
+/* Server-side view of one device (GET /api/push/status)                      */
+/* ------------------------------------------------------------------------- */
+
+export interface PushServerStatus {
+  /** The server has a row for this endpoint owned by the session user. */
+  registered: boolean;
+  last_success_at: string | null;
+  last_failure_at: string | null;
+  failure_count: number;
+  /** Null when unknown, including before the column exists. */
+  last_failure_reason: string | null;
+  test_requested_at: string | null;
+}
+
+const isoOrNull = (value: unknown): string | null =>
+  typeof value === 'string' && !Number.isNaN(Date.parse(value)) ? value : null;
+
+/** Tolerant reader of the JSON of `GET /api/push/status`; null when it is not that shape at all. */
+export function parsePushServerStatus(data: unknown): PushServerStatus | null {
+  if (!isRecord(data) || typeof data.registered !== 'boolean') return null;
+  const failures = Number(data.failure_count);
+  return {
+    registered: data.registered,
+    last_success_at: isoOrNull(data.last_success_at),
+    last_failure_at: isoOrNull(data.last_failure_at),
+    failure_count: Number.isFinite(failures) && failures > 0 ? Math.floor(failures) : 0,
+    last_failure_reason: typeof data.last_failure_reason === 'string' && data.last_failure_reason ? data.last_failure_reason : null,
+    test_requested_at: isoOrNull(data.test_requested_at),
+  };
+}
+
+/** The latest pushes to this device failed: there are failures and the newest one is after the last success. */
+export function deliveryFailing(status: Pick<PushServerStatus, 'failure_count' | 'last_failure_at' | 'last_success_at'>): boolean {
+  if (status.failure_count <= 0 || !status.last_failure_at) return false;
+  if (!status.last_success_at) return true;
+  return Date.parse(status.last_failure_at) > Date.parse(status.last_success_at);
+}
+
+/** A test push requested at `requestedAtMs` was delivered: the last success is newer than the request. */
+export function testDelivered(status: Pick<PushServerStatus, 'last_success_at'> | null, requestedAtMs: number): boolean {
+  if (!status?.last_success_at || !Number.isFinite(requestedAtMs)) return false;
+  return Date.parse(status.last_success_at) >= requestedAtMs;
 }

@@ -1,13 +1,25 @@
 import { describe, expect, it } from 'vitest';
 import {
+  MAX_DEVICES_PER_USER,
   PUSH_OWNERS_PATH,
   countByOwner,
+  deviceFailing,
+  devicePlatformLabel,
   formatDeviceCount,
+  groupByOwner,
+  isMissingColumnError,
+  pushDeleteIdsPath,
   pushDeletePath,
   pushEndpointQuery,
+  pushHealthPath,
+  pushOverflowPath,
+  pushStatusFromRows,
+  pushStatusPath,
   pushTestRequest,
   pushUpsertRequest,
+  pushUserDevicesPath,
 } from '@/lib/push-query';
+import { PUSH_EXACT_HOSTS, PUSH_HOST_SUFFIXES, isAllowedPushEndpoint, parseSubscribeBody } from '@/lib/push';
 import { isSameOriginRequest } from '@/lib/request-guard';
 
 const USER = '3f2c8a52-8d5e-4a0b-9f0e-6f3a1c2b4d5e';
@@ -116,5 +128,142 @@ describe('isSameOriginRequest', () => {
     expect(isSameOriginRequest({ origin: `https://${host}`, secFetchSite: 'same-site', host })).toBe(false);
     expect(isSameOriginRequest({ origin: 'null', host })).toBe(false);
     expect(isSameOriginRequest({ origin: 'not a url', host })).toBe(false);
+  });
+});
+
+describe('push endpoint allowlist (exact hosts, identical to the worker)', () => {
+  it('accepts only the exact push service hosts plus regional WNS hosts', () => {
+    for (const ok of [
+      'https://fcm.googleapis.com/fcm/send/x',
+      'https://updates.push.services.mozilla.com/wpush/v2/x',
+      'https://web.push.apple.com/x',
+      'https://wns2-par02p.notify.windows.com/w/?token=x',
+    ]) {
+      expect(isAllowedPushEndpoint(ok)).toBe(true);
+    }
+  });
+
+  it('rejects other subdomains of the push services and plain http', () => {
+    for (const bad of [
+      'https://random.push.apple.com/x',
+      'https://api.push.apple.com/x',
+      'https://evil.fcm.googleapis.com/x',
+      'https://push.services.mozilla.com/x',
+      'https://other.push.services.mozilla.com/x',
+      'https://notify.windows.com/x',
+      'https://evil.notify.windows.com.example/x',
+      'http://fcm.googleapis.com/fcm/send/x',
+    ]) {
+      expect(isAllowedPushEndpoint(bad)).toBe(false);
+    }
+    expect(PUSH_EXACT_HOSTS).toEqual(['fcm.googleapis.com', 'updates.push.services.mozilla.com', 'web.push.apple.com']);
+    expect(PUSH_HOST_SUFFIXES).toEqual(['.notify.windows.com']);
+  });
+});
+
+describe('device cap', () => {
+  it('lists the ids beyond the newest ten devices of the user', () => {
+    expect(MAX_DEVICES_PER_USER).toBe(10);
+    expect(pushOverflowPath(USER)).toBe(
+      `moodle_push_subscriptions?user_id=eq.${USER}&select=id&order=updated_at.desc,id.desc&offset=10&limit=1000`,
+    );
+  });
+
+  it('deletes only uuid ids, always scoped to the owner', () => {
+    const a = '7b1f6c1e-3a52-4a52-9d0e-0c5f3a9a1b11';
+    const b = '8c2f6c1e-3a52-4a52-9d0e-0c5f3a9a1b22';
+    expect(pushDeleteIdsPath(USER, [a, b, a, '1);drop'])).toBe(`moodle_push_subscriptions?user_id=eq.${USER}&id=in.(${a},${b})`);
+    expect(pushDeleteIdsPath(USER, [])).toBeNull();
+    expect(pushDeleteIdsPath(USER, ['not-a-uuid'])).toBeNull();
+    expect(() => pushDeleteIdsPath('x', [a])).toThrow();
+  });
+
+  it('counts the devices of one user by id only', () => {
+    expect(pushUserDevicesPath(USER)).toBe(`moodle_push_subscriptions?user_id=eq.${USER}&select=id&limit=11`);
+  });
+});
+
+describe('resetFailures', () => {
+  it('resets failure_count only when the explicit activation asks for it', () => {
+    expect(pushUpsertRequest(USER, SUB, META).body).not.toHaveProperty('failure_count');
+    expect(pushUpsertRequest(USER, SUB, META, { resetFailures: false }).body).not.toHaveProperty('failure_count');
+    expect(pushUpsertRequest(USER, SUB, META, { resetFailures: true }).body.failure_count).toBe(0);
+  });
+
+  it('is parsed from the subscribe body only when it is exactly true', () => {
+    const json = { endpoint: ENDPOINT, keys: { p256dh: SUB.p256dh, auth: SUB.auth } };
+    const on = parseSubscribeBody({ ...json, resetFailures: true });
+    expect(on.ok && on.value.resetFailures).toBe(true);
+    for (const value of [undefined, false, 'true', 1]) {
+      const off = parseSubscribeBody({ ...json, resetFailures: value });
+      expect(off.ok && off.value.resetFailures).toBeUndefined();
+    }
+  });
+});
+
+describe('device status and health reads', () => {
+  it('reads one device of the session user, with a fallback without last_failure_reason', () => {
+    const q = encodeURIComponent(ENDPOINT);
+    expect(pushStatusPath(USER, ENDPOINT)).toBe(
+      `moodle_push_subscriptions?user_id=eq.${USER}&endpoint=eq.${q}` +
+        '&select=last_success_at,last_failure_at,failure_count,test_requested_at,last_failure_reason&limit=1',
+    );
+    expect(pushStatusPath(USER, ENDPOINT, false)).not.toContain('last_failure_reason');
+    expect(() => pushStatusPath(OTHER.slice(1), ENDPOINT)).toThrow();
+  });
+
+  it('maps rows to the /api/push/status answer', () => {
+    expect(pushStatusFromRows([])).toEqual({
+      registered: false,
+      last_success_at: null,
+      last_failure_at: null,
+      failure_count: 0,
+      last_failure_reason: null,
+      test_requested_at: null,
+    });
+    expect(
+      pushStatusFromRows([{ last_success_at: NOW, last_failure_at: null, failure_count: 2, test_requested_at: null }]),
+    ).toEqual({
+      registered: true,
+      last_success_at: NOW,
+      last_failure_at: null,
+      failure_count: 2,
+      last_failure_reason: null,
+      test_requested_at: null,
+    });
+  });
+
+  it('lists device health for the admin page, with and without the reason column', () => {
+    expect(pushHealthPath()).toContain(',last_failure_reason&');
+    expect(pushHealthPath(false)).not.toContain('last_failure_reason');
+    const groups = groupByOwner([{ user_id: USER }, { user_id: OTHER }, { user_id: USER }]);
+    expect(groups.get(USER)).toHaveLength(2);
+    expect(groups.get(OTHER)).toHaveLength(1);
+  });
+
+  it('recognises the PostgREST missing-column errors only', () => {
+    expect(isMissingColumnError(400, JSON.stringify({ code: '42703', message: 'column does not exist' }))).toBe(true);
+    expect(isMissingColumnError(400, JSON.stringify({ code: 'PGRST204' }))).toBe(true);
+    expect(isMissingColumnError(400, JSON.stringify({ code: '22P02' }))).toBe(false);
+    expect(isMissingColumnError(500, JSON.stringify({ code: '42703' }))).toBe(false);
+    expect(isMissingColumnError(400, 'not json')).toBe(false);
+    expect(isMissingColumnError(400, '')).toBe(false);
+  });
+});
+
+describe('admin device health labels', () => {
+  it('names the platform of a device', () => {
+    expect(devicePlatformLabel('ios')).toBe('iPhone/iPad');
+    expect(devicePlatformLabel('android')).toBe('Android');
+    expect(devicePlatformLabel('desktop')).toBe('Computadora');
+    expect(devicePlatformLabel(null)).toBe('Dispositivo');
+    expect(devicePlatformLabel('toaster')).toBe('Dispositivo');
+  });
+
+  it('marks a device failing only when its newest event is a failure', () => {
+    const at = (h: number) => `2026-10-08T${String(h).padStart(2, '0')}:00:00.000Z`;
+    expect(deviceFailing({ failure_count: 3, last_failure_at: at(13), last_success_at: at(12) })).toBe(true);
+    expect(deviceFailing({ failure_count: 3, last_failure_at: at(11), last_success_at: at(12) })).toBe(false);
+    expect(deviceFailing({ failure_count: null, last_failure_at: at(13), last_success_at: null })).toBe(false);
   });
 });

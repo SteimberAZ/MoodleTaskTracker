@@ -47,7 +47,7 @@ export default function NotificationItem({ row, now, focused = false }: { row: N
         <KindIcon kind={row.kind} />
       </span>
       <div className="hist-main">
-        <h3 className="hist-title">
+        <h4 className="hist-title">
           {href ? (
             <Link href={href} title={title}>
               {title}
@@ -55,7 +55,7 @@ export default function NotificationItem({ row, now, focused = false }: { row: N
           ) : (
             title
           )}
-        </h3>
+        </h4>
         {row.body && <p className="hist-body">{row.body}</p>}
         {row.body && long && (
           <details className="hist-more">
