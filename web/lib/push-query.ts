@@ -128,7 +128,9 @@ export function devicePlatformLabel(platform: string | null | undefined): string
 }
 
 /** True when the newest event of a device is a failure (same rule as the device card on /notificaciones). */
-export function deviceFailing(device: Pick<PushDeviceHealth, 'last_failure_at' | 'last_success_at'>): boolean {
+export function deviceFailing(
+  device: Pick<PushDeviceHealth, 'last_failure_at' | 'last_success_at'> & { failure_count?: number | null },
+): boolean {
   return deliveryFailing({
     last_failure_at: device.last_failure_at,
     last_success_at: device.last_success_at,

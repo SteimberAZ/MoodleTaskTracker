@@ -270,7 +270,9 @@ export function parsePushServerStatus(data: unknown): PushServerStatus | null {
  * succeeded). Based on timestamps, not on `failure_count`: the worker records a rejection it does not
  * count against the device (401/403/413, 429/5xx) only in `last_failure_at`, and that must still show.
  */
-export function deliveryFailing(status: Pick<PushServerStatus, 'last_failure_at' | 'last_success_at'>): boolean {
+export function deliveryFailing(
+  status: Pick<PushServerStatus, 'last_failure_at' | 'last_success_at'> & { failure_count?: number | null },
+): boolean {
   const failedAt = status.last_failure_at ? Date.parse(status.last_failure_at) : Number.NaN;
   if (!Number.isFinite(failedAt)) return false;
   const succeededAt = status.last_success_at ? Date.parse(status.last_success_at) : Number.NaN;
