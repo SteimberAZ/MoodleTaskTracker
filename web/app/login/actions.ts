@@ -1,5 +1,6 @@
 'use server';
 
+import { headers } from 'next/headers';
 import { redirect } from 'next/navigation';
 import { startSession } from '@/lib/session';
 import { resolveSessionSecret } from '@/lib/session-token';
@@ -8,7 +9,7 @@ import { decideLogin } from '@/lib/login-flow';
 import { loginStore } from '@/lib/login-store';
 import { safeNext } from '@/lib/safe-next';
 import { dbFetchAnonymous } from '@/lib/db';
-import { THROTTLED_MESSAGE, createLoginThrottle, isCredentialFailure, throttleKey } from '@/lib/login-throttle';
+import { THROTTLED_MESSAGE, createLoginThrottle, isCredentialFailure, throttleKeys } from '@/lib/login-throttle';
 
 /** Echoes only non-secret fields (never the password) so the form can be refilled after an error. */
 export interface LoginState {
@@ -23,6 +24,12 @@ const MAX_INVITE = 40;
 const loginThrottle = createLoginThrottle((fn, args) =>
   dbFetchAnonymous(`rpc/${fn}`, { method: 'POST', body: JSON.stringify(args) }),
 );
+
+/** The requester's address as the platform reports it (Vercel sets x-real-ip); '' when unknown. */
+async function clientAddress(): Promise<string> {
+  const h = await headers();
+  return (h.get('x-real-ip') ?? h.get('x-forwarded-for')?.split(',')[0] ?? '').trim();
+}
 
 /**
  * Logs in with a UTM Moodle account. The password is read, used once against Moodle and
@@ -42,13 +49,15 @@ export async function login(_prev: LoginState, formData: FormData): Promise<Logi
   const moodleUrl = resolveMoodleUrl(process.env.MOODLE_URL);
   if (!moodleUrl) return { ...echo, error: 'MOODLE_URL no es válida: debe ser una URL https.' };
 
-  // Throttle before the password reaches Moodle; fails open when the RPCs are unavailable.
-  const throttleKeyHash = throttleKey(username);
-  if (!(await loginThrottle.gate(throttleKeyHash)).allowed) return { ...echo, error: THROTTLED_MESSAGE };
+  // Reserve the attempt before the password reaches Moodle; fails open when the RPCs are unavailable.
+  const keys = throttleKeys(username, await clientAddress());
+  if (!(await loginThrottle.begin(keys)).allowed) return { ...echo, error: THROTTLED_MESSAGE };
 
   const moodle = await connectToMoodle(moodleUrl, username, password);
-  if (moodle.ok) await loginThrottle.record(throttleKeyHash, true);
-  else if (isCredentialFailure(moodle.message)) await loginThrottle.record(throttleKeyHash, false);
+  await loginThrottle.finish(
+    keys,
+    moodle.ok ? 'success' : isCredentialFailure(moodle.message) ? 'failure' : 'released',
+  );
   if (!moodle.ok) return { ...echo, error: moodle.message };
 
   let userId: string;
