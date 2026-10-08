@@ -7,7 +7,14 @@ lead window: ``start - lead <= now < start`` (a late tick still warns before the
 
 Times are wall-clock Ecuador (UTC-5, no DST), the same zone the PDF is printed in. The weekday is
 ISO: 1 = Monday ... 7 = Sunday, as ``moodle_class_schedule.weekday`` stores it.
+
+A class is identified by its content, not by its row id: user, weekday, start time and normalized
+subject (``class_key``). Duplicate rows and a re-import with new ids on the same day therefore never
+send twice. When a class starts while its reminder was due but never delivered (every attempt
+failed or was still waiting for its retry), one "failed" history row titled ``MISSED_TITLE`` is
+written and logged, once per class and date.
 """
+import hashlib
 import re
 from datetime import date, datetime, time as dtime, timedelta
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -25,6 +32,12 @@ NTFY_TAGS = "alarm_clock,mortarboard,books"
 CLASSES_URL = "/horario"
 MIN_TTL = 60
 MILESTONE = "sent"
+MISSED_MILESTONE = "missed"
+MISSED_TITLE = "Aviso de clase no enviado"
+
+# Class keys whose reminder window this process saw open (so a missed one is reported, but a worker
+# that starts after a class began never reports classes it was not running for).
+_WINDOW_SEEN: Dict[str, str] = {}  # key -> local date
 
 
 def _cap_word(word: str) -> str:
@@ -124,6 +137,46 @@ def _past_period_end(row: Dict, today: date) -> bool:
         return False  # an unreadable end date must not silence the reminders
 
 
+def reset_state() -> None:
+    """Forget the reminder windows seen by this process (tests)."""
+    _WINDOW_SEEN.clear()
+
+
+def _subject_hash(subject: Any) -> str:
+    normalized = " ".join(str(subject or "").lower().split())
+    return hashlib.md5(normalized.encode("utf-8")).hexdigest()[:10]
+
+
+def class_key(user_id: Any, weekday: int, start: dtime, subject: Any, day: date) -> str:
+    """Stable dedupe key of one class on one date: ``class:<user>:<weekday>:<HH:MM>:<subject md5>:<date>``."""
+    return f"class:{user_id}:{weekday}:{start:%H:%M}:{_subject_hash(subject)}:{day.isoformat()}"
+
+
+def class_tag(weekday: int, start: dtime, subject: Any, day: date) -> str:
+    """Push tag of one class reminder: unique per class and date, so it never replaces another one."""
+    return f"class-{weekday}-{start:%H%M}-{_subject_hash(subject)}-{day.isoformat()}"
+
+
+def _history_of(deliver: Callable):
+    """The history a ``functools.partial(deliver_to_user, history=...)`` deliverer writes to, if any."""
+    return (getattr(deliver, "keywords", None) or {}).get("history")
+
+
+def _report_missed(storage, history, user: Dict, row: Dict, key: str, tag: str, title: str) -> None:
+    """One "failed" history row (and a log line) for a class whose reminder never got through."""
+    storage.record_milestone(key, MISSED_MILESTONE, mirror=False)
+    print(f"[ClassReminders] user {str(user.get('id'))[:8]}: reminder for '{title}' was not delivered before the class.")
+    if history is None:
+        return
+    try:
+        history.record(
+            user.get("id"), "class", MISSED_TITLE, title, CLASSES_URL, tag,
+            push_ok=0, push_total=0, ntfy_attempted=False, ntfy_ok=False, push_state="failed", delivered=False,
+        )
+    except Exception as exc:  # noqa: BLE001 - the history must never break the reminders
+        print(f"[ClassReminders] could not record the missed class: {type(exc).__name__}")
+
+
 def _lead_minutes(user: Dict) -> Optional[int]:
     try:
         minutes = int(user.get("class_reminder_minutes"))
@@ -137,18 +190,24 @@ def process_class_reminders(
     supabase,
     deliver: Optional[Callable],
     now: Optional[datetime] = None,
+    history=None,
 ) -> int:
     """Send the class reminders that are due now; returns how many were delivered.
 
     Reads the users with reminders on, then their classes for today's ISO weekday in Ecuador. A class
-    is recorded (``class:<id>:<YYYY-MM-DD>``) only after ``deliver`` reached at least one channel, so a
-    total failure is retried on the next tick while the class has not started. Never raises: an
+    is recorded (``class_key``) only after ``deliver`` really reached the user, so a failure is retried
+    (inside the delivery backoff) while the class has not started; a class that starts undelivered is
+    reported once in ``history`` (default: the history bound into ``deliver``). Never raises: an
     unreachable database or one malformed row is logged and skipped.
     """
+    history = history if history is not None else _history_of(deliver)
     if deliver is None or supabase is None or not getattr(supabase, "is_configured", False):
         return 0
     now_ec = (now or datetime.now(ECUADOR_TZ)).astimezone(ECUADOR_TZ)
     today = now_ec.date()
+    for seen_key, seen_day in list(_WINDOW_SEEN.items()):
+        if seen_day != today.isoformat():
+            _WINDOW_SEEN.pop(seen_key, None)
 
     try:
         users = {
@@ -171,11 +230,22 @@ def process_class_reminders(
                 continue
             lead = _lead_minutes(user)
             start = datetime.combine(today, start_time, tzinfo=ECUADOR_TZ)
+            weekday = now_ec.isoweekday()
+            key = class_key(user["id"], weekday, start_time, row.get("subject"), today)
+            tag = class_tag(weekday, start_time, row.get("subject"), today)
+            if now_ec >= start:
+                if (
+                    _WINDOW_SEEN.get(key) == today.isoformat()
+                    and not storage.has_notified_milestone(key, MILESTONE)
+                    and not storage.has_notified_milestone(key, MISSED_MILESTONE)
+                ):
+                    _report_missed(storage, history, user, row, key, tag, class_message(row, lead)[0])
+                continue
             if not in_reminder_window(start, lead, now_ec):
                 continue
-            key = f"class:{row['id']}:{today.isoformat()}"
             if storage.has_notified_milestone(key, MILESTONE):
-                continue
+                continue  # already delivered (also for a duplicate row of the same class)
+            _WINDOW_SEEN[key] = today.isoformat()
             title, body = class_message(row, lead)
             ttl = max(MIN_TTL, int((start - now_ec).total_seconds()))
             ok = deliver(
@@ -183,16 +253,17 @@ def process_class_reminders(
                 title,
                 body,
                 url=CLASSES_URL,
-                tag=f"class-{row['id']}-{today.isoformat()}",
+                tag=tag,
                 priority="high",
                 ttl=ttl,
                 ntfy_tags=NTFY_TAGS,
                 kind="class",
+                renotify=False,  # the tag is unique per class and date: nothing is replaced
             )
             if ok:
                 storage.record_milestone(key, MILESTONE, mirror=False)
                 sent += 1
-            # else: nothing got through; not recorded, so the next tick retries inside the window
+            # else: nothing got through; not recorded, so a later tick retries inside the window
         except Exception as exc:  # noqa: BLE001
             print(f"[ClassReminders] error with class {row.get('id')}: {exc}")
     return sent

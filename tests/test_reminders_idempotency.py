@@ -4,8 +4,12 @@ from functools import partial
 
 import pytest
 
+import class_reminders
+import class_schedule
 import delivery
 import worker
+from class_reminders import process_class_reminders
+from notification_log import NotificationLog
 from custom_reminders import decide_action, process_due_reminders
 from delivery import deliver_to_user
 from webpush_sender import PushResult
@@ -18,8 +22,10 @@ FIRE = "2026-01-01T11:59:00Z"
 @pytest.fixture(autouse=True)
 def _fresh_state():
     delivery.reset_delivery_state()
+    class_reminders.reset_state()
     yield
     delivery.reset_delivery_state()
+    class_reminders.reset_state()
 
 
 def _reminder(**over):
@@ -203,3 +209,111 @@ def test_the_owner_carries_ntfy_confirmed_at_when_the_embed_has_it():
     db = ConditionalDb([_reminder(moodle_users=users)])
     process_due_reminders(db, deliver=lambda owner, *a: seen.append(owner) or True, now=NOW, unpatched={})
     assert seen[0]["ntfy_confirmed_at"] == "2026-01-01T00:00:00Z" and seen[0]["ntfy_enabled"] is True
+
+
+# ---- class reminders ---------------------------------------------------------------------------------
+
+EC = class_schedule.ECUADOR_TZ
+UID = "11111111-aaaa-bbbb-cccc-000000000001"
+
+
+def _at(hour, minute=0):
+    return datetime(2026, 10, 6, hour, minute, tzinfo=EC)  # a Tuesday (ISO weekday 2)
+
+
+class ClassStorage:
+    def __init__(self):
+        self.recorded = set()
+
+    def has_notified_milestone(self, key, milestone):
+        return (key, milestone) in self.recorded
+
+    def record_milestone(self, key, milestone, mirror=True):
+        self.recorded.add((key, milestone))
+
+
+class ClassDb:
+    is_configured = True
+
+    def __init__(self, classes):
+        self.classes = classes
+
+    def fetch_class_reminder_users(self):
+        return [{"id": UID, "ntfy_topic": "utm-x", "ntfy_enabled": False, "class_reminder_minutes": 30}]
+
+    def fetch_class_schedule(self, user_ids, weekday):
+        return [c for c in self.classes if c["weekday"] == weekday]
+
+
+def _class(cid, subject="DESARROLLO DE APLICACIONES WEB", start="07:00:00"):
+    return {"id": cid, "user_id": UID, "subject": subject, "weekday": 2, "start_time": start, "end_time": "09:00:00"}
+
+
+class Recorder:
+    def __init__(self, ok=True):
+        self.ok, self.calls = ok, []
+
+    def __call__(self, user, title, body, **kw):
+        self.calls.append(kw)
+        return self.ok
+
+
+def test_two_rows_of_the_same_class_are_delivered_once():
+    storage, deliver = ClassStorage(), Recorder()
+    db = ClassDb([_class("a"), _class("b", subject="  desarrollo de aplicaciones   WEB ")])
+    assert process_class_reminders(storage, db, deliver, now=_at(6, 40)) == 1
+    assert len(deliver.calls) == 1 and deliver.calls[0]["renotify"] is False
+
+
+def test_a_reimport_with_new_ids_the_same_day_is_not_sent_again():
+    storage, deliver = ClassStorage(), Recorder()
+    process_class_reminders(storage, ClassDb([_class("old")]), deliver, now=_at(6, 40))
+    assert process_class_reminders(storage, ClassDb([_class("new-id")]), deliver, now=_at(6, 45)) == 0
+    assert len(deliver.calls) == 1
+
+
+def test_different_classes_at_the_same_time_are_both_sent():
+    storage, deliver = ClassStorage(), Recorder()
+    db = ClassDb([_class("a"), _class("b", subject="CALCULO")])
+    assert process_class_reminders(storage, db, deliver, now=_at(6, 40)) == 2
+
+
+class LogDb:
+    is_configured = True
+
+    def __init__(self):
+        self.rows = []
+
+    def insert_notification_log(self, rows):
+        self.rows.extend(dict(r) for r in rows)
+
+
+class NoDevicesDb(ClassDb):
+    def fetch_push_subscriptions(self, user_id):
+        return []
+
+
+def test_a_missed_class_window_writes_one_failed_row(monkeypatch, capsys):
+    clock = Clock(_at(6, 40).timestamp())
+    monkeypatch.setattr(delivery, "_now", clock)
+    db, log_db = NoDevicesDb([_class("a")]), LogDb()
+    history = NotificationLog(log_db)
+    deliver = partial(deliver_to_user, supabase=db, sender=Sender(ok=False), history=history)
+    storage = ClassStorage()
+    for minute in range(40, 70):  # the whole window and ten minutes of class
+        now = _at(6, minute) if minute < 60 else _at(7, minute - 60)
+        clock.t = now.timestamp()
+        assert process_class_reminders(storage, db, deliver, now=now) == 0
+    history.flush()
+    assert [(r["kind"], r["status"], r["title"]) for r in log_db.rows] == [
+        ("class", "failed", "📚 Clase en 30 min: Desarrollo de Aplicaciones Web"),  # first failure (no devices)
+        ("class", "failed", "Aviso de clase no enviado"),
+    ]
+    assert capsys.readouterr().out.count("was not delivered before the class") == 1
+
+
+def test_a_worker_started_after_the_class_began_reports_nothing():
+    storage, deliver = ClassStorage(), Recorder(ok=False)
+    for minute in (5, 6, 7):
+        process_class_reminders(storage, ClassDb([_class("a")]), deliver, now=_at(7, minute))
+    assert deliver.calls == [] and storage.recorded == set()

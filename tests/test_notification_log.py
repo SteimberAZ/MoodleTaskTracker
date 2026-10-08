@@ -213,7 +213,7 @@ def test_imported_class_reminders_are_recorded_as_class():
     assert process_class_reminders(FakeStorage(), ClassDb(), _deliverer(log), now=now) == 1
     log.flush()
     (row,) = db.rows
-    assert (row["kind"], row["url"], row["tag"]) == ("class", "/horario", "class-c1-2026-10-06")
+    assert (row["kind"], row["url"]) == ("class", "/horario") and row["tag"].startswith("class-2-0700-")
 
 
 def test_the_built_in_schedule_delivered_to_an_admin_is_recorded_as_class():
