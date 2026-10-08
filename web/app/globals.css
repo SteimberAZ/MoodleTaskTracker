@@ -560,6 +560,9 @@ body:has(.site-nav) .container {
   font-weight: 600;
 }
 .card + .alert { margin-top: 12px; }
+/* Error boundary and 404 screens (app/error.tsx, app/not-found.tsx). */
+.error-screen { max-width: 560px; margin-top: 8px; }
+.error-screen h1:focus { outline: none; }
 .field-error { color: var(--danger); font-size: 13px; font-weight: 600; }
 .success {
   margin: 0 0 4px;

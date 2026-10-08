@@ -9,7 +9,7 @@ export default function manifest(): MetadataRoute.Manifest {
     id: '/',
     name: 'mineral tareas',
     short_name: 'Tareas',
-    description: 'Recordatorios personales con avisos periódicos',
+    description: 'Tareas de Moodle UTM con avisos en tu celular',
     lang: 'es',
     start_url: '/',
     scope: '/',
