@@ -324,3 +324,77 @@ def test_without_supabase_notifications_proceed_as_before(tmp_path, pushes):
     out = sync_user_via_api(s, USER, NoSupabase(), client=EventClient(_events()), alert=lambda **k: None)
     assert out == "ok"
     assert sorted(t for _, t in pushes) == ["Loud task", "Muted task"]
+
+
+# ---- the 'new' alert is retried until it gets through ----------------------------------------------
+
+
+def _new_alert_titles(calls):
+    return [c["body"] for c in calls if c["title"] == "Nueva tarea en Moodle UTM"]
+
+
+def _first_then_far_task(tmp_path, mirror):
+    """Storage after a first (guarded) sync of task A; returns it and the events with a far-off task B."""
+    s = _storage(tmp_path, mirror)
+    first = [_event(URL_A, name="Old task", hours=200)]
+    sync_user_via_api(s, USER, mirror, client=EventClient(first), alert=lambda **k: None,
+                      deliver=lambda *a, **k: True)
+    return s, first + [_event(URL_B, name="Far task", id=2, hours=200)]  # > 72 h: only 'new' applies
+
+
+def test_a_failed_new_task_alert_is_retried_on_the_next_sync(tmp_path):
+    mirror = Mirror()
+    s, events = _first_then_far_task(tmp_path, mirror)
+    calls, ok = [], {"value": False}
+
+    def deliver(user, **k):
+        calls.append(k)
+        return ok["value"]
+
+    sync_user_via_api(s, USER, mirror, client=EventClient(events), alert=lambda **k: None, deliver=deliver)
+    assert len(_new_alert_titles(calls)) == 1  # tried, nothing got through
+    assert not s.has_notified_milestone(make_task_id(URL_B, USER["id"]), "new")
+
+    ok["value"] = True
+    sync_user_via_api(s, USER, mirror, client=EventClient(events), alert=lambda **k: None, deliver=deliver)
+    new = _new_alert_titles(calls)
+    assert len(new) == 2 and "Far task" in new[-1]
+    assert s.has_notified_milestone(make_task_id(URL_B, USER["id"]), "new")
+
+    sync_user_via_api(s, USER, mirror, client=EventClient(events), alert=lambda **k: None, deliver=deliver)
+    assert len(_new_alert_titles(calls)) == 2  # announced once, never again
+
+
+def test_a_new_task_found_while_mutes_are_unreadable_is_announced_once_they_are(tmp_path):
+    mirror = Mirror()
+    s, events = _first_then_far_task(tmp_path, mirror)
+    calls = []
+
+    def deliver(user, **k):
+        calls.append(k)
+        return True
+
+    mirror.fail = True
+    sync_user_via_api(s, USER, mirror, client=EventClient(events), alert=lambda **k: None, deliver=deliver)
+    assert calls == []
+
+    mirror.fail = False
+    sync_user_via_api(s, USER, mirror, client=EventClient(events), alert=lambda **k: None, deliver=deliver)
+    new = _new_alert_titles(calls)
+    assert len(new) == 1 and "Far task" in new[0]
+
+
+def test_a_task_muted_when_found_is_not_announced_as_new_after_unmuting(tmp_path):
+    mirror = Mirror()
+    s, events = _first_then_far_task(tmp_path, mirror)
+    calls = []
+
+    def deliver(user, **k):
+        calls.append(k)
+        return True
+
+    mirror.muted = {make_task_id(URL_B, USER["id"])}
+    sync_user_via_api(s, USER, mirror, client=EventClient(events), alert=lambda **k: None, deliver=deliver)
+    mirror.muted = set()
+    sync_user_via_api(s, USER, mirror, client=EventClient(events), alert=lambda **k: None, deliver=deliver)
+    assert _new_alert_titles(calls) == []

@@ -158,17 +158,20 @@ def sync_tasks_via_api(
             notify = _apply_web_mutes(storage, supabase, user_id, tasks, label)
         if apply_migration_guard(storage, tasks, user_id):
             print(f"{label} first sync: {len(tasks)} existing tasks marked as already announced.")
+        # Announce every fetched task whose 'new' alert never got through, not only the rows inserted
+        # this round: a failed delivery (or a round without notifications) is retried on the next sync.
+        unannounced = [t for t in tasks if not storage.has_notified_milestone(str(t["id"]), "new")]
         mirror_ok = getattr(storage, "last_task_mirror_ok", None)
         mirror = {True: "ok", False: "FAILED"}.get(mirror_ok, "n/a")
         print(f"{label} {len(tasks)} tasks fetched, {len(new_tasks)} new (supabase mirror: {mirror}).")
         if user_id:
             if notify:
                 extra = {"deliver": partial(deliver, user)} if deliver is not None else {}
-                process(tasks, storage, new_tasks=new_tasks, topic=route["topic"], desktop=False, **extra)
+                process(tasks, storage, new_tasks=unannounced, topic=route["topic"], desktop=False, **extra)
             else:
                 print(f"{label} notifications skipped this round (muted tasks unknown).")
         else:
-            process(tasks, storage, new_tasks=new_tasks)
+            process(tasks, storage, new_tasks=unannounced)
     except Exception as e:
         print(f"{label} error while storing/notifying: {e}")
         return "error"

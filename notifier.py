@@ -302,6 +302,9 @@ class TaskNotificationManager:
             for t in new_tasks:
                 task_id = str(t.get("id"))
                 if t.get("status") == "submitted" or t.get("is_dismissed"):
+                    # Nothing to announce: settle it so a later unmute does not alert it as "new".
+                    if not storage.has_notified_milestone(task_id, "new"):
+                        storage.record_milestone(task_id, "new")
                     continue
                 if not storage.has_notified_milestone(task_id, "new"):
                     _toast(
