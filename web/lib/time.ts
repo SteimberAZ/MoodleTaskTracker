@@ -49,3 +49,18 @@ export function formatGuayaquil(date: Date | string | null | undefined): string 
   const g = new Date(d.getTime() + OFFSET_MS);
   return `${pad(g.getUTCDate())}/${pad(g.getUTCMonth() + 1)}/${g.getUTCFullYear()} ${pad(g.getUTCHours())}:${pad(g.getUTCMinutes())}`;
 }
+
+const WEEKDAYS = ['dom', 'lun', 'mar', 'mié', 'jue', 'vie', 'sáb'];
+
+/**
+ * Deadline display in Guayaquil time with the weekday: "mié 08/10 · 23:59". The year is only shown when it
+ * differs from the current one ("lun 05/01/2027 · 08:00").
+ */
+export function formatGuayaquilDue(unixSeconds: number, nowSeconds: number = Date.now() / 1000): string {
+  if (!Number.isFinite(unixSeconds)) return '—';
+  const g = new Date(unixSeconds * 1000 + OFFSET_MS);
+  if (Number.isNaN(g.getTime())) return '—';
+  const now = new Date(nowSeconds * 1000 + OFFSET_MS);
+  const year = Number.isNaN(now.getTime()) || g.getUTCFullYear() !== now.getUTCFullYear() ? `/${g.getUTCFullYear()}` : '';
+  return `${WEEKDAYS[g.getUTCDay()]} ${pad(g.getUTCDate())}/${pad(g.getUTCMonth() + 1)}${year} · ${pad(g.getUTCHours())}:${pad(g.getUTCMinutes())}`;
+}
