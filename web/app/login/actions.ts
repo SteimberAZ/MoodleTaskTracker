@@ -2,6 +2,7 @@
 
 import { redirect } from 'next/navigation';
 import { startSession } from '@/lib/session';
+import { resolveSessionSecret } from '@/lib/session-token';
 import { MAX_PASSWORD, MAX_USERNAME, connectToMoodle, resolveMoodleUrl } from '@/lib/moodle';
 import { decideLogin } from '@/lib/login-flow';
 import { loginStore } from '@/lib/login-store';
@@ -25,7 +26,7 @@ export async function login(_prev: LoginState, formData: FormData): Promise<Logi
   const inviteCode = String(formData.get('inviteCode') ?? '').trim();
   const echo = { username, inviteCode };
 
-  if (!process.env.SESSION_SECRET) return { ...echo, error: 'El servidor no está configurado (SESSION_SECRET).' };
+  if (!(await resolveSessionSecret())) return { ...echo, error: 'El servidor no está configurado (SESSION_SECRET o MOODLE_DB_JWT).' };
   if (!username || !password) return { ...echo, error: 'Ingresa tu correo o usuario de la UTM y tu contraseña.' };
   if (username.length > MAX_USERNAME || password.length > MAX_PASSWORD || inviteCode.length > MAX_INVITE) {
     return { ...echo, error: 'Alguno de los datos es demasiado largo.' };

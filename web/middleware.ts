@@ -1,5 +1,5 @@
 import { NextResponse, type NextRequest } from 'next/server';
-import { SESSION_COOKIE, verifySession } from '@/lib/session-token';
+import { SESSION_COOKIE, resolveSessionSecret, verifySession } from '@/lib/session-token';
 
 /**
  * Cheap gate: checks the cookie signature and expiry only (no database access).
@@ -7,7 +7,7 @@ import { SESSION_COOKIE, verifySession } from '@/lib/session-token';
  */
 export async function middleware(request: NextRequest) {
   if (request.nextUrl.pathname === '/login') return NextResponse.next();
-  const userId = await verifySession(process.env.SESSION_SECRET, request.cookies.get(SESSION_COOKIE)?.value);
+  const userId = await verifySession(await resolveSessionSecret(), request.cookies.get(SESSION_COOKIE)?.value);
   if (userId) return NextResponse.next();
   return NextResponse.redirect(new URL('/login', request.url));
 }

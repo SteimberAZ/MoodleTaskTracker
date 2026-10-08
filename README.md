@@ -114,8 +114,8 @@ El worker recorre a todos los usuarios activos de `moodle_users`, sincroniza sus
 ### 3. Vercel
 - **Framework Preset:** Next.js. **Root Directory:** `web`.
 - **Environment Variables:**
-  - Obligatorias: `SESSION_SECRET` (por ejemplo `openssl rand -hex 32`), `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `MOODLE_DB_JWT` y `ADMIN_MOODLE_USERNAME` (tu usuario de la UTM).
-  - Opcionales: `ADMIN_NTFY_TOPIC` (tu tema actual de ntfy; si falta, se genera uno aleatorio), `MOODLE_URL` y `NTFY_SERVER`.
+  - Obligatorias: `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `MOODLE_DB_JWT` y `ADMIN_MOODLE_USERNAME` (tu usuario de la UTM).
+  - Opcionales: `ADMIN_NTFY_TOPIC` (tu tema actual de ntfy; si falta, se genera uno aleatorio), `MOODLE_URL`, `NTFY_SERVER` y `SESSION_SECRET`. Si `SESSION_SECRET` no está definida, se deriva automáticamente de `MOODLE_DB_JWT`; definirla solo sirve para cerrar todas las sesiones sin cambiar el JWT.
   - `APP_PASSWORD` ya no se usa. No uses el prefijo `NEXT_PUBLIC_` en ninguna.
 
 ### 4. Usuarios e invitaciones
