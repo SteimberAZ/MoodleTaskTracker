@@ -123,10 +123,15 @@ export default function PushSetup({ vapidPublicKey, activar = false, focusedNoti
       setNotice(
         outcome === 'delivered'
           ? { tone: 'ok', text: 'Entregada ✓ La prueba llegó al servicio de notificaciones de este dispositivo.' }
-          : {
-              tone: 'warning',
-              text: 'El servidor de avisos no respondió. Si la prueba no aparece, inténtalo de nuevo más tarde.',
-            },
+          : outcome === 'rejected'
+            ? {
+                tone: 'error',
+                text: 'El servicio de notificaciones de este dispositivo rechazó la prueba. Desactiva y vuelve a activar las notificaciones.',
+              }
+            : {
+                tone: 'warning',
+                text: 'El servidor de avisos no respondió. Si la prueba no aparece, inténtalo de nuevo más tarde.',
+              },
       );
       // The client router cache keeps pages for a while: refresh so the history shows the test entry.
       router.refresh();

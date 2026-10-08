@@ -334,6 +334,24 @@ describe('waitForTestDelivery', () => {
     expect(sleep).toHaveBeenCalledWith(10_000);
   });
 
+  it('reports a rejection recorded after the request', async () => {
+    vi.mocked(fetch).mockImplementation(
+      async () =>
+        ({
+          ok: true,
+          status: 200,
+          json: async () => ({
+            ...REGISTERED,
+            last_success_at: '2026-10-08T11:00:00.000Z',
+            last_failure_at: '2026-10-08T12:00:20.000Z',
+            failure_count: 0,
+          }),
+        }) as Response,
+    );
+    expect(await waitForTestDelivery(ENDPOINT, REQUESTED, { sleep })).toBe('rejected');
+    expect(sleep).toHaveBeenCalledTimes(1);
+  });
+
   it('gives up after 90 s', async () => {
     expect(await waitForTestDelivery(ENDPOINT, REQUESTED, { sleep })).toBe('timeout');
     expect(sleep).toHaveBeenCalledTimes(9);
@@ -424,7 +442,10 @@ describe('server status helpers', () => {
     expect(deliveryFailing({ failure_count: 2, last_failure_at: at(13), last_success_at: at(12) })).toBe(true);
     expect(deliveryFailing({ failure_count: 2, last_failure_at: at(11), last_success_at: at(12) })).toBe(false);
     expect(deliveryFailing({ failure_count: 1, last_failure_at: at(11), last_success_at: null })).toBe(true);
-    expect(deliveryFailing({ failure_count: 0, last_failure_at: at(13), last_success_at: at(12) })).toBe(false);
+    // Uncounted rejections (401/403/413, 429/5xx) only move last_failure_at: they still mean failing.
+    expect(deliveryFailing({ failure_count: 0, last_failure_at: at(13), last_success_at: at(12) })).toBe(true);
+    expect(deliveryFailing({ failure_count: 0, last_failure_at: at(13), last_success_at: null })).toBe(true);
+    expect(deliveryFailing({ failure_count: 0, last_failure_at: null, last_success_at: at(12) })).toBe(false);
     expect(testDelivered({ last_success_at: at(12) }, Date.parse(at(11)))).toBe(true);
     expect(testDelivered({ last_success_at: at(10) }, Date.parse(at(11)))).toBe(false);
     expect(testDelivered(null, Date.parse(at(11)))).toBe(false);

@@ -32,11 +32,10 @@ function DeviceLine({ device }: { device: PushDeviceHealth }) {
       {' · último aviso entregado: '}
       {formatGuayaquil(device.last_success_at)}
       {(device.failure_count ?? 0) > 0 && (
-        <>
-          {` · ${device.failure_count} ${device.failure_count === 1 ? 'fallo' : 'fallos'}, el último ${formatGuayaquil(device.last_failure_at)}`}
-          {device.last_failure_reason ? ` (${device.last_failure_reason})` : ''}
-        </>
+        <>{` · ${device.failure_count} ${device.failure_count === 1 ? 'fallo' : 'fallos'}, el último ${formatGuayaquil(device.last_failure_at)}`}</>
       )}
+      {failing && (device.failure_count ?? 0) <= 0 && <>{` · último fallo ${formatGuayaquil(device.last_failure_at)}`}</>}
+      {(failing || (device.failure_count ?? 0) > 0) && device.last_failure_reason ? ` (${device.last_failure_reason})` : ''}
       {failing && (
         <>
           {' '}

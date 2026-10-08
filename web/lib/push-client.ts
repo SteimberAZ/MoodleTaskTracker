@@ -6,6 +6,7 @@ import {
   sameApplicationServerKey,
   subscriptionKeyMismatch,
   testDelivered,
+  testRejected,
   urlBase64ToUint8Array,
   type PushServerStatus,
   type PushState,
@@ -274,19 +275,23 @@ const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(r
 
 /**
  * After a test request: asks `/api/push/status` every 10 s, for up to 90 s, whether the device got a push
- * after `requestedAtMs`. 'aborted' when the signal fires (the card unmounted or another action started).
+ * after `requestedAtMs`. 'rejected' when the newest event recorded after the request is a failure (the
+ * worker answered but the push service refused the push). 'aborted' when the signal fires (the card
+ * unmounted or another action started).
  */
 export async function waitForTestDelivery(
   endpoint: string,
   requestedAtMs: number,
   { intervalMs = 10_000, timeoutMs = 90_000, signal, sleep = defaultSleep }: WaitOptions = {},
-): Promise<'delivered' | 'timeout' | 'aborted'> {
+): Promise<'delivered' | 'rejected' | 'timeout' | 'aborted'> {
   for (let waited = 0; waited < timeoutMs; ) {
     const step = Math.min(intervalMs, timeoutMs - waited);
     await sleep(step);
     waited += step;
     if (signal?.aborted) return 'aborted';
-    if (testDelivered(await fetchPushStatus(endpoint), requestedAtMs)) return 'delivered';
+    const status = await fetchPushStatus(endpoint);
+    if (testDelivered(status, requestedAtMs)) return 'delivered';
+    if (testRejected(status, requestedAtMs)) return 'rejected';
     if (signal?.aborted) return 'aborted';
   }
   return 'timeout';

@@ -265,11 +265,26 @@ export function parsePushServerStatus(data: unknown): PushServerStatus | null {
   };
 }
 
-/** The latest pushes to this device failed: there are failures and the newest one is after the last success. */
-export function deliveryFailing(status: Pick<PushServerStatus, 'failure_count' | 'last_failure_at' | 'last_success_at'>): boolean {
-  if (status.failure_count <= 0 || !status.last_failure_at) return false;
-  if (!status.last_success_at) return true;
-  return Date.parse(status.last_failure_at) > Date.parse(status.last_success_at);
+/**
+ * The latest push to this device failed: the newest failure is after the last success (or nothing ever
+ * succeeded). Based on timestamps, not on `failure_count`: the worker records a rejection it does not
+ * count against the device (401/403/413, 429/5xx) only in `last_failure_at`, and that must still show.
+ */
+export function deliveryFailing(status: Pick<PushServerStatus, 'last_failure_at' | 'last_success_at'>): boolean {
+  const failedAt = status.last_failure_at ? Date.parse(status.last_failure_at) : Number.NaN;
+  if (!Number.isFinite(failedAt)) return false;
+  const succeededAt = status.last_success_at ? Date.parse(status.last_success_at) : Number.NaN;
+  if (!Number.isFinite(succeededAt)) return true;
+  return failedAt > succeededAt;
+}
+
+/** A test push requested at `requestedAtMs` was rejected: the newest event is a failure recorded after the request. */
+export function testRejected(
+  status: Pick<PushServerStatus, 'last_failure_at' | 'last_success_at'> | null,
+  requestedAtMs: number,
+): boolean {
+  if (!status?.last_failure_at || !Number.isFinite(requestedAtMs)) return false;
+  return Date.parse(status.last_failure_at) >= requestedAtMs && deliveryFailing(status);
 }
 
 /** A test push requested at `requestedAtMs` was delivered: the last success is newer than the request. */

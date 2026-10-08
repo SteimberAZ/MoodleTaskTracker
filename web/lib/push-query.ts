@@ -20,7 +20,8 @@ export const MAX_DEVICES_PER_USER = 10;
 /**
  * Upsert by endpoint: a device that logs in as another user is moved to that user, and re-posting an
  * unchanged subscription only refreshes `updated_at`. `failure_count` and the worker's timestamps are not
- * touched, except that an explicit activation (`resetFailures`) starts the device over at `failure_count = 0`.
+ * touched, except that an explicit activation (`resetFailures`) starts the device over at `failure_count = 0`
+ * with no `last_failure_at`, so an old rejection does not keep the fresh device flagged as failing.
  */
 export function pushUpsertRequest(
   userId: string,
@@ -38,7 +39,10 @@ export function pushUpsertRequest(
     platform: meta.platform,
     updated_at: meta.nowIso,
   };
-  if (options.resetFailures) body.failure_count = 0;
+  if (options.resetFailures) {
+    body.failure_count = 0;
+    body.last_failure_at = null;
+  }
   return {
     path: `${PUSH_TABLE}?on_conflict=endpoint`,
     headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
@@ -124,9 +128,8 @@ export function devicePlatformLabel(platform: string | null | undefined): string
 }
 
 /** True when the newest event of a device is a failure (same rule as the device card on /notificaciones). */
-export function deviceFailing(device: Pick<PushDeviceHealth, 'failure_count' | 'last_failure_at' | 'last_success_at'>): boolean {
+export function deviceFailing(device: Pick<PushDeviceHealth, 'last_failure_at' | 'last_success_at'>): boolean {
   return deliveryFailing({
-    failure_count: device.failure_count ?? 0,
     last_failure_at: device.last_failure_at,
     last_success_at: device.last_success_at,
   });

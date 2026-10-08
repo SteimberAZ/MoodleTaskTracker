@@ -188,6 +188,8 @@ describe('resetFailures', () => {
     expect(pushUpsertRequest(USER, SUB, META).body).not.toHaveProperty('failure_count');
     expect(pushUpsertRequest(USER, SUB, META, { resetFailures: false }).body).not.toHaveProperty('failure_count');
     expect(pushUpsertRequest(USER, SUB, META, { resetFailures: true }).body.failure_count).toBe(0);
+    expect(pushUpsertRequest(USER, SUB, META, { resetFailures: true }).body).toHaveProperty('last_failure_at', null);
+    expect(pushUpsertRequest(USER, SUB, META).body).not.toHaveProperty('last_failure_at');
   });
 
   it('is parsed from the subscribe body only when it is exactly true', () => {
@@ -264,6 +266,8 @@ describe('admin device health labels', () => {
     const at = (h: number) => `2026-10-08T${String(h).padStart(2, '0')}:00:00.000Z`;
     expect(deviceFailing({ failure_count: 3, last_failure_at: at(13), last_success_at: at(12) })).toBe(true);
     expect(deviceFailing({ failure_count: 3, last_failure_at: at(11), last_success_at: at(12) })).toBe(false);
-    expect(deviceFailing({ failure_count: null, last_failure_at: at(13), last_success_at: null })).toBe(false);
+    expect(deviceFailing({ failure_count: null, last_failure_at: at(13), last_success_at: null })).toBe(true);
+    expect(deviceFailing({ failure_count: 0, last_failure_at: at(13), last_success_at: at(12) })).toBe(true);
+    expect(deviceFailing({ failure_count: 0, last_failure_at: null, last_success_at: null })).toBe(false);
   });
 });
