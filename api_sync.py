@@ -6,9 +6,12 @@
 Two modes share one implementation:
   * legacy single-user: ``creds`` from ``resolve_credentials``, alerts to the env ntfy topic;
   * multi-user (``user=`` row from ``moodle_users``): per-user task ids, first-sync guard and
-    token-alert dedup state, errors recorded on the user row, notifications to the user's topic.
+    token-alert dedup state, errors recorded on the user row, notifications to the user's topic or,
+    when the worker passes ``deliver`` (delivery.deliver_to_user), to every channel of the user
+    (Web Push first, ntfy optional).
 """
 from datetime import datetime, timezone
+from functools import partial
 from typing import Any, Callable, Dict, List, Optional
 
 from moodle_api import Credentials, MoodleApiClient, MoodleApiError, MoodleTokenInvalid
@@ -90,6 +93,15 @@ def _apply_web_mutes(storage, supabase: Any, user_id: str, tasks: List[Dict], la
     return True
 
 
+def _user_alert(deliver: Callable, user: Dict) -> Callable:
+    """An ``alert`` callable (the ``send_system_alert`` keywords) that reaches every channel of ``user``."""
+
+    def alert(title, message, priority="default", tags="", topic=None, click_url="", **_unused):
+        return deliver(user, title, message, url="/", tag="moodle-status", priority=priority, ntfy_tags=tags or "bell")
+
+    return alert
+
+
 def sync_tasks_via_api(
     storage,
     creds: Credentials,
@@ -98,9 +110,11 @@ def sync_tasks_via_api(
     process: Optional[Callable] = None,
     alert: Optional[Callable] = None,
     user: Optional[Dict] = None,
+    deliver: Optional[Callable] = None,
 ) -> str:
     process = process or TaskNotificationManager.process_milestones
-    alert = alert or send_system_alert
+    if alert is None:
+        alert = _user_alert(deliver, user) if (deliver is not None and user) else send_system_alert
     user_id = str(user["id"]) if user else None
     # Per-user mode: everything is addressed to this user's own topic, never to the env owner topic.
     route: Dict[str, Any] = {"topic": user["ntfy_topic"]} if user else {}
@@ -114,14 +128,15 @@ def sync_tasks_via_api(
         print(f"{label} token rejected ({e.code}): {e}")
         _report_error(supabase, creds, f"{e.code or 'invalidtoken'}: {e}", user)
         if storage.get_setting(alert_key, "") != creds.fingerprint:
-            alert(
+            sent = alert(
                 title=DISCONNECTED_TITLE,
                 message=USER_DISCONNECTED_MESSAGE if user else DISCONNECTED_MESSAGE,
                 priority="urgent",
                 tags="warning,rotating_light",
                 **route,
             )
-            storage.set_setting(alert_key, creds.fingerprint)
+            if sent is not False:  # False = no channel got through: leave it unrecorded, retry next sync
+                storage.set_setting(alert_key, creds.fingerprint)
         return "invalid"
     except MoodleApiError as e:
         print(f"{label} Moodle API error ({e.code}): {e}")
@@ -145,7 +160,8 @@ def sync_tasks_via_api(
         print(f"{label} {len(tasks)} tasks fetched, {len(new_tasks)} new (supabase mirror: {mirror}).")
         if user_id:
             if notify:
-                process(tasks, storage, new_tasks=new_tasks, topic=route["topic"], desktop=False)
+                extra = {"deliver": partial(deliver, user)} if deliver is not None else {}
+                process(tasks, storage, new_tasks=new_tasks, topic=route["topic"], desktop=False, **extra)
             else:
                 print(f"{label} notifications skipped this round (muted tasks unknown).")
         else:
@@ -175,11 +191,14 @@ def sync_user_via_api(
     client: Optional[MoodleApiClient] = None,
     process: Optional[Callable] = None,
     alert: Optional[Callable] = None,
+    deliver: Optional[Callable] = None,
 ) -> str:
     """Sync one ``moodle_users`` row (needs id, moodle_url, token, ntfy_topic). Never raises."""
     try:
         creds = Credentials(str(user["token"]).strip(), str(user["moodle_url"]), "user")
-        return sync_tasks_via_api(storage, creds, supabase, client=client, process=process, alert=alert, user=user)
+        return sync_tasks_via_api(
+            storage, creds, supabase, client=client, process=process, alert=alert, user=user, deliver=deliver
+        )
     except Exception as e:
         print(f"[ApiSync] user sync failed: {e}")
         return "error"

@@ -2,6 +2,7 @@ import os
 import sys
 import time
 from datetime import datetime
+from functools import partial
 from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import urlparse
 
@@ -10,13 +11,15 @@ if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
 from moodle_client import MoodleClient
-from notifier import TaskNotificationManager, mask_topic, ntfy_base_url, post_ntfy, send_system_alert
+from notifier import TaskNotificationManager, mask_topic, ntfy_base_url, send_system_alert
 from storage import Storage
 from class_schedule import check_and_notify_upcoming_classes
 from custom_reminders import process_due_reminders
+from delivery import deliver_to_user, process_push_tests
 from supabase_client import SupabaseClient
 from moodle_api import resolve_credentials
 from api_sync import sync_tasks_via_api, sync_user_via_api
+from webpush_sender import TTL_REMINDER, WebPushSender
 
 
 def _read_env_cookie():
@@ -53,11 +56,13 @@ def sync_all_users(
     client_factory: Optional[Callable[[Dict], Any]] = None,
     process: Optional[Callable] = None,
     alert: Optional[Callable] = None,
+    deliver: Optional[Callable] = None,
 ) -> Dict[str, str]:
     """Sync every user in isolation: one user's failure never blocks the others.
 
     Returns {user_id: "ok" | "invalid" | "error" | "skipped"}. Notifications of a user only go to
-    that user's own ntfy topic; a user without a topic is skipped (never falls back to the owner's).
+    that user's own channels (``deliver``: Web Push + their ntfy topic; without it, ntfy only); a user
+    without a topic is skipped (never falls back to the owner's).
     """
     outcomes: Dict[str, str] = {}
     for user in users:
@@ -71,7 +76,7 @@ def sync_all_users(
         try:
             client = client_factory(user) if client_factory else None
             outcomes[user_id] = sync_user_via_api(
-                storage, user, supabase, client=client, process=process, alert=alert
+                storage, user, supabase, client=client, process=process, alert=alert, deliver=deliver
             )
         except Exception as err:  # sync_user_via_api never raises; belt and braces
             print(f"[Worker] {tag}: unexpected error: {err}")
@@ -107,6 +112,7 @@ def run_task_tick(
     process: Optional[Callable] = None,
     alert: Optional[Callable] = None,
     seen_logins: Optional[Dict[str, str]] = None,
+    deliver: Optional[Callable] = None,
 ) -> str:
     """One task-sync round. Returns which path ran: "users", "legacy" or "skipped".
 
@@ -122,7 +128,9 @@ def run_task_tick(
         return "skipped"
     if users:
         print(f"[Worker] 👥 Usuarios activos: {len(users)}")
-        sync_all_users(storage, supabase, users, client_factory=client_factory, process=process, alert=alert)
+        sync_all_users(
+            storage, supabase, users, client_factory=client_factory, process=process, alert=alert, deliver=deliver
+        )
         if seen_logins is not None:
             remember_logins(users, seen_logins)
         return "users"
@@ -210,9 +218,26 @@ def legacy_keep_alive(state: LegacyState, base_url: str, session_cookie: str, no
         print(f"[{now_str}] [!] Error en Keep-Alive: {err}")
 
 
-def deliver_reminder(title: str, body: str, topic: str) -> bool:
-    """Send one custom reminder to its owner's own ntfy topic."""
-    return post_ntfy(title, body, priority="high", tags="alarm_clock,bell", topic=topic)
+def reminder_deliverer(deliver: Callable) -> Callable[[Dict, Dict, str, str], bool]:
+    """Adapter for ``process_due_reminders``: one reminder -> every channel of its owner.
+
+    The tag is per reminder, so a repeating reminder replaces its previous notification instead of
+    stacking a new one every few minutes.
+    """
+
+    def send(owner: Dict, reminder: Dict, title: str, body: str) -> bool:
+        return deliver(
+            owner,
+            title,
+            body,
+            url="/",
+            tag=f"reminder-{reminder.get('id')}",
+            priority="high",
+            ttl=TTL_REMINDER,
+            ntfy_tags="alarm_clock,bell",
+        )
+
+    return send
 
 
 def run_worker():
@@ -234,18 +259,24 @@ def run_worker():
         tasks_check_mins = 30
     tasks_check_seconds = tasks_check_mins * 60
 
+    supabase = SupabaseClient.for_worker()
+    # Web Push is the primary channel; without pywebpush or a VAPID key it is disabled and only ntfy is used.
+    sender = WebPushSender.from_env(supabase)
+    deliver = partial(deliver_to_user, supabase=supabase, sender=sender)
+
     print("=" * 60)
     print("  🚀 MOODLE TRACKER - HEADLESS WORKER (MULTIUSUARIO)")
     print(f"  🌐 URL por defecto: {base_url}")
     db_host = urlparse(storage.supabase.url).netloc if storage.supabase.is_configured else ""
     print(f"  🗄️ Base de datos: {db_host or 'Desactivada (solo SQLite local)'}")
-    print(f"  🔔 ntfy: {ntfy_base_url()}")
+    print(f"  📲 {sender.status}")
+    if sender.warning:
+        print(f"  ⚠️ {sender.warning}")
+    print(f"  🔔 ntfy (canal opcional por usuario): {ntfy_base_url()}")
     print(f"  💓 Keep-Alive (modo legacy): cada {keep_alive_seconds // 60} minutos")
     print(f"  📋 Revisión de tareas: cada {tasks_check_mins} minutos")
     print("  🎓 Alertas de clases (solo dueño): 30 minutos antes de cada materia")
     print("=" * 60)
-
-    supabase = SupabaseClient.for_worker()
 
     last_tasks_check = 0.0
     last_keep_alive = 0.0
@@ -257,17 +288,23 @@ def run_worker():
         now_ts = time.time()
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        # 1. Monitoreo del horario de clases universitarias (owner only, env NTFY_TOPIC)
+        # 1. Monitoreo del horario de clases universitarias (owner only: admin users; env NTFY_TOPIC as fallback)
         try:
-            check_and_notify_upcoming_classes(storage)
+            check_and_notify_upcoming_classes(storage, supabase=supabase, deliver=deliver)
         except Exception as err:
             print(f"[{now_str}] [!] Error en recordatorio de clases: {err}")
 
-        # 1b. Custom reminders (Supabase -> each owner's ntfy topic)
+        # 1b. Custom reminders (Supabase -> every channel of each owner)
         try:
-            process_due_reminders(supabase, deliver_reminder)
+            process_due_reminders(supabase, deliver=reminder_deliverer(deliver))
         except Exception as err:
             print(f"[{now_str}] [!] Error en recordatorios personalizados: {err}")
+
+        # 1c. Web Push test requests: the web only sets test_requested_at, the worker sends the push
+        try:
+            process_push_tests(supabase, sender)
+        except Exception as err:
+            print(f"[{now_str}] [!] Error en pruebas de Web Push: {err}")
 
         # 2. Recargar cookie fresca desde .env si fue modificada en disco (legacy path)
         current_cookie = _read_env_cookie() or storage.get_setting("moodle_session", "")
@@ -288,6 +325,7 @@ def run_worker():
                 supabase,
                 legacy_check=lambda: legacy_check_tasks(storage, supabase, legacy, base_url, session_cookie, now_str),
                 seen_logins=seen_logins,
+                deliver=deliver,
             )
         else:
             # New logins/registrations are synced right away instead of waiting for the next round.
@@ -298,7 +336,7 @@ def run_worker():
                 print(f"[{now_str}] [!] No se pudo revisar inicios de sesión nuevos: {err}")
             if fresh:
                 print(f"\n[{now_str}] 🆕 Sincronizando {len(fresh)} usuario(s) con inicio de sesión reciente...")
-                sync_all_users(storage, supabase, fresh)
+                sync_all_users(storage, supabase, fresh, deliver=deliver)
                 remember_logins(fresh, seen_logins)
                 mode = "users"
 

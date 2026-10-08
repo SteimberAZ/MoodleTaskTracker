@@ -1,7 +1,7 @@
 import os
 import subprocess
 import sys
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 
 def ntfy_base_url() -> str:
@@ -151,6 +151,37 @@ def post_ntfy(
     return False
 
 
+def milestone_message(title: str, course: str, due_date: str, milestone: str = "new") -> Dict:
+    """Header, ntfy priority/tags and body lines of one task alert (shared by ntfy and Web Push)."""
+    priority = "default"
+    tags = "mortarboard,books"
+    header = "Nueva tarea en Moodle UTM"
+
+    if milestone == "8h":
+        priority = "urgent"
+        tags = "rotating_light,warning,books"
+        header = "URGENTE: Faltan menos de 8 horas"
+    elif milestone == "1d":
+        priority = "high"
+        tags = "warning,books"
+        header = "Recordatorio: Falta 1 dia"
+    elif milestone == "2d":
+        priority = "default"
+        tags = "hourglass,books"
+        header = "Recordatorio: Faltan 2 dias"
+    elif milestone == "3d":
+        priority = "default"
+        tags = "calendar,books"
+        header = "Recordatorio: Faltan 3 dias"
+
+    lines = [
+        f"📚 Materia: {course or 'General'}",
+        f"📝 Tarea: {title}",
+        f"📅 Límite: {due_date or 'Sin fecha'}",
+    ]
+    return {"header": header, "priority": priority, "tags": tags, "lines": lines}
+
+
 def send_whatsapp_alert(
     title: str,
     course: str,
@@ -171,40 +202,16 @@ def send_whatsapp_alert(
         if not topic:
             return
 
-        priority = "default"
-        tags = "mortarboard,books"
-        header = "Nueva tarea en Moodle UTM"
-
-        if milestone == "8h":
-            priority = "urgent"
-            tags = "rotating_light,warning,books"
-            header = "URGENTE: Faltan menos de 8 horas"
-        elif milestone == "1d":
-            priority = "high"
-            tags = "warning,books"
-            header = "Recordatorio: Falta 1 dia"
-        elif milestone == "2d":
-            priority = "default"
-            tags = "hourglass,books"
-            header = "Recordatorio: Faltan 2 dias"
-        elif milestone == "3d":
-            priority = "default"
-            tags = "calendar,books"
-            header = "Recordatorio: Faltan 3 dias"
-
-        msg_lines = [
-            f"📚 Materia: {course or 'General'}",
-            f"📝 Tarea: {title}",
-            f"📅 Límite: {due_date or 'Sin fecha'}",
-        ]
+        msg = milestone_message(title, course, due_date, milestone)
+        msg_lines = list(msg["lines"])
         if task_url:
             msg_lines.append(f"🔗 {task_url}")
         body = "\n".join(msg_lines)
 
         headers = {
-            "Title": header,
-            "Priority": priority,
-            "Tags": tags,
+            "Title": msg["header"],
+            "Priority": msg["priority"],
+            "Tags": msg["tags"],
             "Content-Type": "text/plain; charset=utf-8",
         }
 
@@ -237,11 +244,16 @@ class TaskNotificationManager:
         new_tasks: Optional[List[Dict]] = None,
         topic: Optional[str] = None,
         desktop: bool = True,
+        deliver: Optional[Callable[..., bool]] = None,
     ):
         """
         ``topic``: ntfy topic that receives the pushes (None = env NTFY_TOPIC, the legacy owner).
         ``desktop``: also show a Windows toast; multi-user sync passes False because the machine
         running the worker belongs to the owner, not to the user whose tasks are processed.
+        ``deliver``: per-user delivery (Web Push + optional ntfy), already bound to its user, called as
+        ``deliver(title=, body=, url=, tag=, priority=, ntfy_tags=, ntfy_link=) -> bool``. When given it
+        replaces the ntfy-only ``topic`` path, and a milestone is recorded only if it reports success, so
+        a total delivery failure is retried on the next sync.
 
         Evalúa y envía los recordatorios para los 5 hitos:
         1. 'new': Tarea recién descubierta
@@ -257,8 +269,23 @@ class TaskNotificationManager:
             if desktop:
                 send_windows_notification(**kwargs)
 
-        def _push(**kwargs):
-            send_whatsapp_alert(topic=topic, **kwargs)
+        def _push(task_id: str, **kwargs) -> bool:
+            """Send one alert; False only when a per-user deliverer reported that nothing got through."""
+            if deliver is None:
+                send_whatsapp_alert(topic=topic, **kwargs)  # fire-and-forget on a thread: assume sent
+                return True
+            msg = milestone_message(kwargs["title"], kwargs["course"], kwargs["due_date"], kwargs["milestone"])
+            return bool(
+                deliver(
+                    title=msg["header"],
+                    body="\n".join(msg["lines"]),
+                    url=f"/tareas/{task_id}",
+                    tag=f"task-{task_id}",
+                    priority=msg["priority"],
+                    ntfy_tags=msg["tags"],
+                    ntfy_link=kwargs.get("task_url", ""),
+                )
+            )
 
         # 1. Hito 'new' para tareas recién detectadas
         if new_tasks:
@@ -271,14 +298,15 @@ class TaskNotificationManager:
                         title="🔔 ¡Nueva tarea agregada en Moodle!",
                         message=f"{t.get('title', 'Sin título')}\n📚 {t.get('course', 'Materia')}\n📅 {t.get('due_date_str', 'Sin fecha')}",
                     )
-                    _push(
+                    if _push(
+                        task_id,
                         title=t.get("title", ""),
                         course=t.get("course", ""),
                         due_date=t.get("due_date_str", ""),
                         task_url=t.get("task_url", ""),
                         milestone="new",
-                    )
-                    storage.record_milestone(task_id, "new")
+                    ):
+                        storage.record_milestone(task_id, "new")
 
         # 2. Hitos por tiempo restante (8h, 1d, 2d, 3d)
         for t in tasks:
@@ -299,15 +327,16 @@ class TaskNotificationManager:
                         title="🚨 ¡URGENTE Moodle! (Menos de 8 horas)",
                         message=f"¡Faltan menos de 8 horas para entregar!\n{t.get('title', '')}\n📚 {t.get('course', '')}\n📅 {t.get('due_date_str', '')}",
                     )
-                    _push(
+                    if _push(
+                        task_id,
                         title=t.get("title", ""),
                         course=t.get("course", ""),
                         due_date=t.get("due_date_str", ""),
                         task_url=t.get("task_url", ""),
                         milestone="8h",
                         is_urgent=True,
-                    )
-                    storage.record_milestone(task_id, "8h")
+                    ):
+                        storage.record_milestone(task_id, "8h")
                 # Prevenir disparos retroactivos de hitos mayores
                 storage.record_milestone(task_id, "1d")
                 storage.record_milestone(task_id, "2d")
@@ -320,15 +349,16 @@ class TaskNotificationManager:
                         title="⚠️ Recordatorio Moodle (¡Falta 1 día!)",
                         message=f"¡Atención! Falta 1 día para entregar:\n{t.get('title', '')}\n📚 {t.get('course', '')}\n📅 {t.get('due_date_str', '')}",
                     )
-                    _push(
+                    if _push(
+                        task_id,
                         title=t.get("title", ""),
                         course=t.get("course", ""),
                         due_date=t.get("due_date_str", ""),
                         task_url=t.get("task_url", ""),
                         milestone="1d",
                         is_urgent=True,
-                    )
-                    storage.record_milestone(task_id, "1d")
+                    ):
+                        storage.record_milestone(task_id, "1d")
                 storage.record_milestone(task_id, "2d")
                 storage.record_milestone(task_id, "3d")
 
@@ -339,14 +369,15 @@ class TaskNotificationManager:
                         title="⏳ Recordatorio Moodle (Faltan 2 días)",
                         message=f"Quedan 2 días para entregar:\n{t.get('title', '')}\n📚 {t.get('course', '')}\n📅 {t.get('due_date_str', '')}",
                     )
-                    _push(
+                    if _push(
+                        task_id,
                         title=t.get("title", ""),
                         course=t.get("course", ""),
                         due_date=t.get("due_date_str", ""),
                         task_url=t.get("task_url", ""),
                         milestone="2d",
-                    )
-                    storage.record_milestone(task_id, "2d")
+                    ):
+                        storage.record_milestone(task_id, "2d")
                 storage.record_milestone(task_id, "3d")
 
             # Hito 3 días (<= 72 * 3600 segundos = 259200s)
@@ -356,14 +387,15 @@ class TaskNotificationManager:
                         title="📅 Recordatorio Moodle (Faltan 3 días)",
                         message=f"Quedan 3 días para entregar:\n{t.get('title', '')}\n📚 {t.get('course', '')}\n📅 {t.get('due_date_str', '')}",
                     )
-                    _push(
+                    if _push(
+                        task_id,
                         title=t.get("title", ""),
                         course=t.get("course", ""),
                         due_date=t.get("due_date_str", ""),
                         task_url=t.get("task_url", ""),
                         milestone="3d",
-                    )
-                    storage.record_milestone(task_id, "3d")
+                    ):
+                        storage.record_milestone(task_id, "3d")
 
     @staticmethod
     def notify_new_tasks(new_tasks: List[Dict], storage=None):

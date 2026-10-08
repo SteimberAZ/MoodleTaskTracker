@@ -301,3 +301,49 @@ ALTER TABLE public.moodle_tasks ADD COLUMN IF NOT EXISTS details_updated_at time
 
 -- Set by the web when a user confirms the test notification arrived (the worker never reads it).
 ALTER TABLE public.moodle_users ADD COLUMN IF NOT EXISTS notify_confirmed_at timestamptz;
+
+-- ==========================================================
+-- 8. Native Web Push (installed PWA) with ntfy as an optional channel.
+--    The web stores each browser's push subscription here; only the worker, which alone holds the
+--    VAPID private key, sends pushes. "Enviar prueba" sets test_requested_at and the worker answers
+--    it. Health columns belong to the worker: a successful send resets failure_count, HTTP 404/410
+--    deletes the row and so does the 10th consecutive failure.
+--    moodle_users.ntfy_enabled lets a user switch the ntfy copy of every notification off.
+-- ==========================================================
+CREATE TABLE IF NOT EXISTS public.moodle_push_subscriptions (
+    id                uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id           uuid NOT NULL REFERENCES public.moodle_users(id) ON DELETE CASCADE,
+    endpoint          text NOT NULL UNIQUE,
+    p256dh            text NOT NULL,
+    auth              text NOT NULL,
+    user_agent        text,
+    platform          text,
+    created_at        timestamptz NOT NULL DEFAULT now(),
+    updated_at        timestamptz NOT NULL DEFAULT now(),
+    last_success_at   timestamptz,
+    last_failure_at   timestamptz,
+    failure_count     integer NOT NULL DEFAULT 0,
+    test_requested_at timestamptz
+);
+
+CREATE INDEX IF NOT EXISTS idx_moodle_push_subscriptions_user
+    ON public.moodle_push_subscriptions (user_id);
+CREATE INDEX IF NOT EXISTS idx_moodle_push_subscriptions_test
+    ON public.moodle_push_subscriptions (test_requested_at)
+    WHERE test_requested_at IS NOT NULL;
+
+ALTER TABLE public.moodle_users ADD COLUMN IF NOT EXISTS ntfy_enabled boolean NOT NULL DEFAULT true;
+
+-- Privileges + RLS (same model as above): moodle_app only.
+ALTER TABLE public.moodle_push_subscriptions ENABLE ROW LEVEL SECURITY;
+
+REVOKE ALL ON public.moodle_push_subscriptions FROM anon, authenticated;
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.moodle_push_subscriptions TO moodle_app;
+
+DROP POLICY IF EXISTS moodle_app_all ON public.moodle_push_subscriptions;
+CREATE POLICY moodle_app_all ON public.moodle_push_subscriptions
+    FOR ALL TO moodle_app USING (true) WITH CHECK (true);
+
+-- Ask PostgREST to reload its schema cache so the new table and column are served right away.
+NOTIFY pgrst, 'reload schema';

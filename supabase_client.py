@@ -59,6 +59,10 @@ class SupabaseClient:
                 or anon
             )
             self.apikey = self.key
+        # moodle_users.ntfy_enabled arrives with the Web Push migration. Until supabase_schema.sql has
+        # been re-run the server rejects any select of it, so the reads below drop it once and ntfy
+        # stays on for everybody.
+        self._ntfy_enabled_supported = True
 
     @classmethod
     def for_worker(cls) -> "SupabaseClient":
@@ -199,6 +203,27 @@ class SupabaseClient:
             pass
         return []
 
+    def _ntfy_enabled_rejected(self, r) -> bool:
+        """True (remembered) when the server refused ntfy_enabled because the column does not exist yet."""
+        if (
+            self._ntfy_enabled_supported
+            and r.status_code == 400
+            and "ntfy_enabled" in str(getattr(r, "text", "") or "")
+        ):
+            self._ntfy_enabled_supported = False
+            print("[Supabase] moodle_users.ntfy_enabled does not exist yet (re-run supabase_schema.sql); ntfy stays on for everyone.")
+            return True
+        return False
+
+    def _get_users(self, filters: Dict[str, str], select: str):
+        """GET moodle_users with ``select`` plus ntfy_enabled, repeating without it if the column is missing."""
+        url = f"{self.url}/rest/v1/moodle_users"
+        wanted = f"{select},ntfy_enabled" if self._ntfy_enabled_supported else select
+        r = requests.get(url, params={**filters, "select": wanted}, headers=self._headers(), timeout=10)
+        if self._ntfy_enabled_rejected(r):
+            r = requests.get(url, params={**filters, "select": select}, headers=self._headers(), timeout=10)
+        return r
+
     def fetch_active_users(self) -> List[Dict]:
         """Active users that have a Moodle token (the worker's sync set).
 
@@ -207,15 +232,24 @@ class SupabaseClient:
         """
         if not self.is_configured:
             return []
-        params = {
-            "active": "eq.true",
-            "token": "not.is.null",
-            "select": "id,moodle_url,site_userid,username,fullname,token,ntfy_topic,is_admin,last_error,last_error_at,last_login_at",
-        }
-        r = requests.get(f"{self.url}/rest/v1/moodle_users", params=params, headers=self._headers(), timeout=10)
+        select = "id,moodle_url,site_userid,username,fullname,token,ntfy_topic,is_admin,last_error,last_error_at,last_login_at"
+        r = self._get_users({"active": "eq.true", "token": "not.is.null"}, select)
         if r.status_code != 200:
             raise RuntimeError(f"HTTP {r.status_code}")
         return [u for u in r.json() if str(u.get("token") or "").strip()]
+
+    def fetch_admin_users(self) -> List[Dict]:
+        """Active admin users (``id``, ``ntfy_topic``, ``ntfy_enabled``): the recipients of owner-only alerts.
+
+        Returns [] when Supabase is not configured. RAISES on any transport/HTTP failure so the
+        caller can tell "no admin" apart from "could not read the admins".
+        """
+        if not self.is_configured:
+            return []
+        r = self._get_users({"is_admin": "eq.true", "active": "eq.true"}, "id,ntfy_topic")
+        if r.status_code != 200:
+            raise RuntimeError(f"HTTP {r.status_code}")
+        return [u for u in r.json() if isinstance(u, dict) and u.get("id")]
 
     def fetch_muted_task_ids(self, user_id: str) -> set:
         """Ids of the tasks this user muted from the web (``is_dismissed = 1``).
@@ -283,20 +317,25 @@ class SupabaseClient:
     def fetch_due_reminders(self, now_iso: str) -> List[Dict]:
         """Active, owned custom reminders whose next_fire_at is due (synchronous).
 
-        Each row embeds its owner as ``moodle_users: {ntfy_topic, active}`` (the delivery topic).
+        Each row embeds its owner as ``moodle_users: {ntfy_topic, active, ntfy_enabled}`` (the delivery
+        targets; ntfy_enabled is left out until the column exists).
         """
         if not self.is_configured:
             return []
         try:
             endpoint = f"{self.url}/rest/v1/moodle_custom_reminders"
+            owner = "ntfy_topic,active,ntfy_enabled" if self._ntfy_enabled_supported else "ntfy_topic,active"
             params = {
-                "select": "*,moodle_users(ntfy_topic,active)",
+                "select": f"*,moodle_users({owner})",
                 "active": "eq.true",
                 "next_fire_at": f"lte.{now_iso}",
                 "user_id": "not.is.null",
                 "order": "next_fire_at.asc",
             }
             r = requests.get(endpoint, params=params, headers=self._headers(), timeout=10)
+            if self._ntfy_enabled_rejected(r):
+                params["select"] = "*,moodle_users(ntfy_topic,active)"
+                r = requests.get(endpoint, params=params, headers=self._headers(), timeout=10)
             if r.status_code == 200:
                 return r.json()
             print(f"[Supabase] fetch_due_reminders HTTP {r.status_code}: {r.text[:200]}")
@@ -321,3 +360,76 @@ class SupabaseClient:
         except Exception as e:
             print(f"[Supabase] update_reminder error: {e}")
         return False
+
+    # ---- Web Push subscriptions (moodle_push_subscriptions) ------------------------------------------
+
+    def fetch_push_subscriptions(self, user_id: str) -> List[Dict]:
+        """Web Push subscriptions of one user (``id, endpoint, p256dh, auth, failure_count``).
+
+        Returns [] when Supabase is not configured. RAISES on any transport/HTTP failure so the
+        caller can tell "no subscriptions" apart from "could not read them".
+        """
+        if not self.is_configured:
+            return []
+        params = {"user_id": f"eq.{user_id}", "select": "id,endpoint,p256dh,auth,failure_count"}
+        r = requests.get(
+            f"{self.url}/rest/v1/moodle_push_subscriptions", params=params, headers=self._headers(), timeout=10
+        )
+        if r.status_code != 200:
+            raise RuntimeError(f"HTTP {r.status_code}")
+        return [row for row in r.json() if isinstance(row, dict) and row.get("endpoint")]
+
+    def fetch_push_test_requests(self) -> List[Dict]:
+        """Subscriptions whose owner pressed "Enviar prueba" (``test_requested_at`` set by the web).
+
+        Same contract as ``fetch_push_subscriptions``: [] when unconfigured, RAISES on failure.
+        """
+        if not self.is_configured:
+            return []
+        params = {
+            "test_requested_at": "not.is.null",
+            "select": "id,user_id,endpoint,p256dh,auth,failure_count",
+        }
+        r = requests.get(
+            f"{self.url}/rest/v1/moodle_push_subscriptions", params=params, headers=self._headers(), timeout=10
+        )
+        if r.status_code != 200:
+            raise RuntimeError(f"HTTP {r.status_code}")
+        return [row for row in r.json() if isinstance(row, dict) and row.get("endpoint")]
+
+    def update_push_subscription(self, sub_id: str, fields: Dict) -> bool:
+        """PATCH one subscription row (health fields, ``test_requested_at``)."""
+        if not self.is_configured:
+            return False
+        try:
+            headers = dict(self._headers())
+            headers["Prefer"] = "return=minimal"
+            r = requests.patch(
+                f"{self.url}/rest/v1/moodle_push_subscriptions",
+                params={"id": f"eq.{sub_id}"},
+                json=fields,
+                headers=headers,
+                timeout=10,
+            )
+            return r.status_code in (200, 204)
+        except Exception as e:
+            print(f"[Supabase] update_push_subscription error: {type(e).__name__}")
+            return False
+
+    def delete_push_subscription(self, sub_id: str) -> bool:
+        """DELETE one subscription row (the browser unsubscribed or the row kept failing)."""
+        if not self.is_configured:
+            return False
+        try:
+            headers = dict(self._headers())
+            headers["Prefer"] = "return=minimal"
+            r = requests.delete(
+                f"{self.url}/rest/v1/moodle_push_subscriptions",
+                params={"id": f"eq.{sub_id}"},
+                headers=headers,
+                timeout=10,
+            )
+            return r.status_code in (200, 204)
+        except Exception as e:
+            print(f"[Supabase] delete_push_subscription error: {type(e).__name__}")
+            return False

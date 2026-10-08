@@ -1,4 +1,4 @@
-"""Delivery of custom reminders stored in Supabase (table moodle_custom_reminders) via ntfy."""
+"""Delivery of custom reminders stored in Supabase (table moodle_custom_reminders) to their owners."""
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Dict, Optional
@@ -81,11 +81,13 @@ def decide_action(reminder: Dict, now: datetime) -> Dict:
     return {"action": "send", "patch": patch}
 
 
-def owner_topic(reminder: Dict) -> Optional[str]:
-    """ntfy topic of the reminder's owner, or None when it must not be delivered.
+def owner_user(reminder: Dict) -> Optional[Dict]:
+    """The reminder's owner as a delivery target, or None when it must not be delivered.
 
-    The row embeds its owner as ``moodle_users: {ntfy_topic, active}`` (PostgREST join). A row with
-    no user_id, no joined user, an inactive user or an empty topic is skipped, never sent anywhere.
+    The row embeds its owner as ``moodle_users: {ntfy_topic, active, ntfy_enabled}`` (PostgREST
+    join). A row with no user_id, no joined user, an inactive user or an empty topic is skipped, never
+    sent anywhere. The result has the shape of the user rows the worker syncs:
+    ``{"id", "ntfy_topic", "ntfy_enabled"}`` (a missing ntfy_enabled means on).
     """
     if not reminder.get("user_id"):
         return None
@@ -95,24 +97,43 @@ def owner_topic(reminder: Dict) -> Optional[str]:
     if not isinstance(user, dict) or user.get("active") is not True:
         return None
     topic = str(user.get("ntfy_topic") or "").strip()
-    return topic or None
+    if not topic:
+        return None
+    return {
+        "id": str(reminder["user_id"]),
+        "ntfy_topic": topic,
+        "ntfy_enabled": user.get("ntfy_enabled") is not False,
+    }
+
+
+def owner_topic(reminder: Dict) -> Optional[str]:
+    """ntfy topic of the reminder's owner, or None when it must not be delivered."""
+    owner = owner_user(reminder)
+    return owner["ntfy_topic"] if owner else None
 
 
 def process_due_reminders(
-    client, send: Callable[[str, str, str], bool], now: Optional[datetime] = None
+    client,
+    send: Optional[Callable[[str, str, str], bool]] = None,
+    now: Optional[datetime] = None,
+    deliver: Optional[Callable[[Dict, Dict, str, str], bool]] = None,
 ) -> int:
     """Fetch due reminders, notify their owners and update them. Returns the number sent.
 
-    ``send(title, body, topic)`` delivers to the owner's own ntfy topic. Rows without an active
-    owner are left untouched.
+    ``deliver(owner, reminder, title, body)`` reaches every channel of the owner (Web Push and ntfy,
+    see delivery.deliver_to_user); ``send(title, body, topic)`` is the ntfy-only alternative. Either
+    returns True when the reminder got through; otherwise the row stays untouched and the next tick
+    retries. Rows without an active owner are left untouched.
     """
+    if send is None and deliver is None:
+        raise ValueError("process_due_reminders needs send or deliver")
     if not client.is_configured:
         return 0
     now = now or datetime.now(timezone.utc)
     sent = 0
     for reminder in client.fetch_due_reminders(to_iso(now)):
-        topic = owner_topic(reminder)
-        if topic is None:
+        owner = owner_user(reminder)
+        if owner is None:
             continue
         decision = decide_action(reminder, now)
         if decision["action"] == "skip":
@@ -120,7 +141,11 @@ def process_due_reminders(
         if decision["action"] == "send":
             title = reminder.get("title") or "Recordatorio"
             body = reminder.get("message") or title
-            if not send(title, body, topic):
+            if deliver is not None:
+                delivered = deliver(owner, reminder, title, body)
+            else:
+                delivered = send(title, body, owner["ntfy_topic"])
+            if not delivered:
                 # Leave the row untouched so the next tick retries.
                 continue
             sent += 1

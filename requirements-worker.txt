@@ -1,0 +1,5 @@
+# Headless worker on the VPS (worker.py and scripts/generate_vapid.py): no desktop UI dependencies.
+# pywebpush brings cryptography, py-vapid and http-ece with it.
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+pywebpush>=2.0

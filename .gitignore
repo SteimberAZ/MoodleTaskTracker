@@ -13,6 +13,10 @@ moodle_tasks.db
 .env.*
 !.env.example
 
+# Web Push VAPID private key: lives only on the VPS, never in git
+vapid_private.pem
+*.pem
+
 # WhatsApp Session y dependencias
 whatsapp_bot/node_modules/
 whatsapp_bot/auth_session/

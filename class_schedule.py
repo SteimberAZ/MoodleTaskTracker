@@ -1,8 +1,10 @@
 import os
 import time
 from datetime import datetime, timezone, timedelta
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 import requests
+
+from webpush_sender import TTL_CLASS
 
 # Zona horaria de Ecuador (UTM - Portoviejo / Guayaquil: UTC-5)
 ECUADOR_TZ = timezone(timedelta(hours=-5))
@@ -113,12 +115,8 @@ CLASS_SCHEDULE: List[Dict] = [
 ]
 
 
-def send_class_notification(c: Dict, minutes_left: int = 30):
-    """Envía un recordatorio estético y detallado a ntfy para la próxima clase universitaria."""
-    topic = os.environ.get("NTFY_TOPIC", "utm-tareas-randy-az")
-    if not topic:
-        return
-
+def class_notification_content(c: Dict, minutes_left: int = 30) -> Tuple[str, str]:
+    """Title and body of the reminder for an upcoming class."""
     title = f"Proxima clase en {minutes_left} min: {c['subject'][:35]}"
     body = (
         f"🔔 ¡Tu clase empieza en {minutes_left} minutos!\n\n"
@@ -129,6 +127,16 @@ def send_class_notification(c: Dict, minutes_left: int = 30):
         f"👥 Paralelo: {c['parallel']}\n"
         f"👨‍🏫 Docente: {c['teacher']}"
     )
+    return title, body
+
+
+def send_class_notification(c: Dict, minutes_left: int = 30):
+    """Post the class reminder to ntfy (env NTFY_TOPIC): the fallback when no admin user can be reached."""
+    topic = os.environ.get("NTFY_TOPIC", "utm-tareas-randy-az")
+    if not topic:
+        return
+
+    title, body = class_notification_content(c, minutes_left)
 
     headers = {
         "Title": title,
@@ -152,7 +160,47 @@ def send_class_notification(c: Dict, minutes_left: int = 30):
         print(f"[ClassSchedule] Excepción al enviar alerta de clase: {e}")
 
 
-def check_and_notify_upcoming_classes(storage):
+def _active_admins(supabase) -> Optional[List[Dict]]:
+    """Active admin users, or None when they cannot be read (the caller then uses the env topic)."""
+    if supabase is None or not getattr(supabase, "is_configured", False):
+        return None
+    try:
+        return supabase.fetch_admin_users()
+    except Exception as err:
+        print(f"[ClassSchedule] Could not read the admin users ({err}); falling back to NTFY_TOPIC.")
+        return None
+
+
+def notify_class(c: Dict, minutes_left: int, supabase=None, deliver: Optional[Callable] = None) -> bool:
+    """Send one class reminder to the admin users (Web Push + ntfy); True when it got through.
+
+    The schedule belongs to the owner, so the reminder goes to every active ``is_admin`` user through
+    ``deliver`` (delivery.deliver_to_user). Without an admin user, without a readable database or
+    without ``deliver`` it falls back to the legacy ntfy topic from env NTFY_TOPIC.
+    """
+    admins = _active_admins(supabase) if deliver is not None else None
+    if not admins:
+        send_class_notification(c, minutes_left)
+        return True
+    title, body = class_notification_content(c, minutes_left)
+    results = []
+    for admin in admins:
+        results.append(
+            deliver(
+                admin,
+                title,
+                body,
+                url="/",
+                tag=f"class-{c['id']}",
+                priority="high",
+                ttl=TTL_CLASS,
+                ntfy_tags="alarm_clock,mortarboard,books",
+            )
+        )
+    return any(results)
+
+
+def check_and_notify_upcoming_classes(storage, supabase=None, deliver: Optional[Callable] = None):
     """
     Evalúa si alguna clase del día de hoy comienza en aproximadamente 30 minutos
     (ventana de 25 a 35 minutos antes). Si no ha sido notificada hoy, envía el push.
@@ -176,8 +224,9 @@ def check_and_notify_upcoming_classes(storage):
                 task_id = f"class_{c['id']}_{today_str}"
                 if not storage.has_notified_milestone(task_id, "30m"):
                     print(f"[{now_ec.strftime('%Y-%m-%d %H:%M:%S')}] 🎓 Clase próxima detectada ({int(diff_mins)} min): {c['subject']}")
-                    send_class_notification(c, minutes_left=int(diff_mins))
-                    storage.record_milestone(task_id, "30m")
+                    if notify_class(c, int(diff_mins), supabase, deliver):
+                        storage.record_milestone(task_id, "30m")
+                    # else: nothing got through; not recorded, so the next tick retries inside the window
         except Exception as e:
             print(f"[ClassSchedule] Error evaluando clase {c.get('id')}: {e}")
 
