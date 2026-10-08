@@ -81,7 +81,7 @@ La plantilla completa, con un comentario por variable, está en `.env.example`.
 | `NTFY_SERVER` | opcional | Por defecto `https://ntfy.sh`. |
 | `NTFY_TOPIC` | opcional | Sin valor por defecto. Se usa solo para el horario de clases integrado cuando no existe ningún usuario admin. |
 | `WEB_APP_URL` | opcional | URL pública de la web, sin barra final. Permite que tocar un aviso de ntfy abra la página correspondiente. |
-| `HEALTHCHECK_URL` | opcional | Dead-man switch: el worker la consulta al final de cada ciclo y agrega `/fail` cuando algo falló (por ejemplo, un check de healthchecks.io). |
+| `HEALTHCHECK_URL` | opcional | Dead-man switch: el worker la consulta al final de cada ciclo (y como máximo una vez por minuto durante una revisión larga de Moodle) y agrega `/fail` cuando algo falló, incluido no poder escribir su estado en Supabase (por ejemplo, un check de healthchecks.io con un periodo de 2 a 5 minutos). |
 | `WORKER_STRICT` | opcional | Con `1`, el worker se detiene al arrancar si falta la base de datos o Web Push. Sin ella, sigue funcionando en modo degradado y lo muestra en `/admin`. |
 
 Variables antiguas que hay que **quitar** del `.env`: `MOODLE_SESSION`, `MOODLE_TOKEN`, `SUPABASE_SERVICE_ROLE_KEY` y `SUPABASE_KEY`. Los tokens de Moodle se leen de la base, y la key de servicio no debe usarse en una instancia compartida.
@@ -185,7 +185,7 @@ Los cambios de `supabase_schema.sql` agregan columnas y funciones (`IF NOT EXIST
 
 ## Si los avisos dejan de llegar
 
-1. Abre `/admin` y revisa **Estado del servicio**. Ahí ves si el worker sigue vivo (late cada ciclo), si Web Push está activo y por qué no, y si la clave VAPID coincide con la de la web.
+1. Abre `/admin` y revisa **Estado del servicio**. Ahí ves si el worker sigue vivo (late cada ciclo y al menos una vez por minuto durante una revisión larga), si Web Push está activo y por qué no, y si la clave VAPID coincide con la de la web.
 2. En el VPS, revisa el proceso:
    ```
    pm2 status
