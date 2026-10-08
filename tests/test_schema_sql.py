@@ -186,6 +186,12 @@ def test_login_throttle_window_and_block():
     assert "COALESCE(" in gate
 
 
+def test_the_schedule_replace_is_serialized_per_user():
+    body = _ws(_function_body("moodle_replace_class_schedule"))
+    lock = body.index("pg_advisory_xact_lock(")
+    assert lock < body.index("DELETE FROM public.moodle_class_schedule")
+
+
 def test_triggers_are_recreated_and_fire_stamp_first():
     for trigger in ("moodle_tasks_a_keep_details_stamp", "moodle_tasks_z_skip_noop"):
         drop = SQL.index(f"DROP TRIGGER IF EXISTS {trigger} ON public.moodle_tasks;")

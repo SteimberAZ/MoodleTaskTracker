@@ -812,6 +812,11 @@ BEGIN
         RAISE EXCEPTION 'p_rows must be a JSON array' USING ERRCODE = '22023';
     END IF;
 
+    -- Two overlapping calls for one user (two tabs, a retried request) run one after the other:
+    -- under READ COMMITTED the second DELETE would not see the first call's inserted rows and the
+    -- user would end up with every class twice.
+    PERFORM pg_advisory_xact_lock(hashtextextended('moodle_replace_class_schedule:' || p_user_id::text, 0));
+
     DELETE FROM public.moodle_class_schedule WHERE user_id = p_user_id;
 
     INSERT INTO public.moodle_class_schedule (
