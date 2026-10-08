@@ -260,9 +260,13 @@ def test_no_usable_channel_with_the_sender_off_records_disabled(clock):
 def test_stale_state_is_pruned_after_24_hours(clock):
     _send(user=_user(ntfy=False), db=SubsDb(1), sender=Sender(ALL_FAIL))
     assert delivery._ATTEMPTS
+    _send(user=_user(ntfy=False), db=SubsDb(1), sender=Sender(ALL_FAIL))  # inside the backoff wait
+    stale = f"backoff {(UID, 'task', 'task-t1')}"
+    assert stale in delivery._last_logged
     clock.t += 24 * 3600 + 1
     _send(user={"id": "other", "ntfy_enabled": False}, db=SubsDb(1), sender=Sender())
     assert (UID, "task", "task-t1") not in delivery._ATTEMPTS
+    assert stale not in delivery._last_logged  # its log marker goes with it
 
 
 def test_forget_starts_the_key_fresh(clock):

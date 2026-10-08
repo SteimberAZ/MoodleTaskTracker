@@ -31,7 +31,7 @@ PRUNE_INTERVAL_SECONDS = 24 * 3600
 PRUNE_SETTING = "notification_log_pruned_at"  # local only (storage.LOCAL_ONLY_SETTINGS)
 FLUSH_CHUNK = 200  # rows per bulk insert request
 MAX_FLUSH_ATTEMPTS = 3  # flushes a row may fail before it is dropped
-MAX_BUFFERED_ROWS = 1000  # oldest rows are dropped beyond this during a long outage
+MAX_BUFFERED_ROWS = 2000  # oldest rows are dropped beyond this during a long outage
 
 _INSERT_KEY = "history-insert"
 _PRUNE_KEY = "history-prune"

@@ -154,6 +154,9 @@ def _prune_state(now: float) -> None:
     for key, state in list(_ATTEMPTS.items()):
         if now - float(state.get("updated_at", 0)) > STATE_MAX_AGE_SECONDS:
             _ATTEMPTS.pop(key, None)
+            # Their "waiting" / "no channel" log markers would otherwise stay forever (e.g. a class tag).
+            _last_logged.pop(f"backoff {key}", None)
+            _last_logged.pop(f"nochannel {key}", None)
 
 
 def is_exhausted(user_id: Any, kind: Any, tag: Any) -> bool:

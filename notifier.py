@@ -225,8 +225,7 @@ def send_whatsapp_alert(
         if not topic:
             return
 
-        msg = milestone_message(
-title, course, due_date, milestone)
+        msg = milestone_message(title, course, due_date, milestone)
         msg_lines = list(msg["lines"])
         if task_url:
             msg_lines.append(f"🔗 {task_url}")
