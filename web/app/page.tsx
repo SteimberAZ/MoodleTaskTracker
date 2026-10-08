@@ -8,6 +8,7 @@ import { reconnectMoodle } from '@/app/actions';
 import FirstSyncRefresher from '@/components/FirstSyncRefresher';
 import NotifyBanner from '@/components/NotifyBanner';
 import Pagination from '@/components/Pagination';
+import { ListPendingSkeleton } from '@/components/Skeletons';
 import SubmitButton from '@/components/SubmitButton';
 import TaskCard from '@/components/TaskCard';
 import TaskFilters from '@/components/TaskFilters';
@@ -72,7 +73,7 @@ export default async function HomePage({ searchParams }: { searchParams: SearchP
       <section
         aria-labelledby="tasks-title"
         id="tareas"
-        className="section"
+        className="section pending-scope"
         data-status-id="task-status"
         data-fallback-id="tasks-title"
       >
@@ -80,43 +81,46 @@ export default async function HomePage({ searchParams }: { searchParams: SearchP
           <h1 id="tasks-title" tabIndex={-1}>Tareas</h1>
         </div>
         <TaskFilters active={filter} counts={counts?.byFilter ?? null} />
-        {filter === 'sinfecha' && (
-          <p className="muted small">Actividades de Moodle sin fecha límite: solo reciben el aviso de tarea nueva.</p>
-        )}
+        <ListPendingSkeleton variant="tasks" />
         {/* Always mounted: mute results are announced here (text set by MuteButton). */}
         <p id="task-status" role="status" className="sr-only" />
-        {!taskResult && <p className="alert" role="alert">No se pudieron cargar las tareas de Moodle.</p>}
-        {syncing && (
-          <>
-            <p className="card muted empty" role="status">{SYNCING}</p>
-            <FirstSyncRefresher />
-          </>
-        )}
-        {taskResult && tasks.length === 0 && !syncing && <p className="card muted empty">{EMPTY_TASKS[filter]}</p>}
-        {groups ? (
-          groups.map((group) => (
-            <div key={group.key} className="task-group">
-              <h2 id={`grupo-${group.key}`} className="task-group-heading">{group.label}</h2>
-              <ul className="list" aria-labelledby={`grupo-${group.key}`}>
-                {group.items.map((t) => (
-                  <TaskCard key={t.id} task={t} nowSeconds={nowSeconds} listState={listState} headingLevel={3} />
-                ))}
-              </ul>
-            </div>
-          ))
-        ) : (
-          <ul className="list">
-            {tasks.map((t) => (
-              <TaskCard
-                key={t.id}
-                task={t}
-                nowSeconds={nowSeconds}
-                listState={listState}
-                overdue={filter === 'atrasadas'}
-              />
-            ))}
-          </ul>
-        )}
+        <div className="list-results">
+          {filter === 'sinfecha' && (
+            <p className="muted small">Actividades de Moodle sin fecha límite: solo reciben el aviso de tarea nueva.</p>
+          )}
+          {!taskResult && <p className="alert" role="alert">No se pudieron cargar las tareas de Moodle.</p>}
+          {syncing && (
+            <>
+              <p className="card muted empty" role="status">{SYNCING}</p>
+              <FirstSyncRefresher />
+            </>
+          )}
+          {taskResult && tasks.length === 0 && !syncing && <p className="card muted empty">{EMPTY_TASKS[filter]}</p>}
+          {groups ? (
+            groups.map((group) => (
+              <div key={group.key} className="task-group">
+                <h2 id={`grupo-${group.key}`} className="task-group-heading">{group.label}</h2>
+                <ul className="list" aria-labelledby={`grupo-${group.key}`}>
+                  {group.items.map((t) => (
+                    <TaskCard key={t.id} task={t} nowSeconds={nowSeconds} listState={listState} headingLevel={3} />
+                  ))}
+                </ul>
+              </div>
+            ))
+          ) : (
+            <ul className="list">
+              {tasks.map((t) => (
+                <TaskCard
+                  key={t.id}
+                  task={t}
+                  nowSeconds={nowSeconds}
+                  listState={listState}
+                  overdue={filter === 'atrasadas'}
+                />
+              ))}
+            </ul>
+          )}
+        </div>
         <Pagination
           page={taskPage}
           pages={taskPages}

@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import LinkPending from './LinkPending';
 import { HISTORY_FILTERS, notificationsHref, type HistoryFilter } from '@/lib/notification-log';
 
 /** Filter chips above the notification history (`?hk=`). Switching a chip resets the history page. */
@@ -14,6 +15,7 @@ export default function HistoryFilters({ active }: { active: HistoryFilter }) {
           scroll={false}
         >
           {label}
+          <LinkPending />
         </Link>
       ))}
     </nav>

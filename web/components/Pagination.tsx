@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { ChevronLeftIcon, ChevronRightIcon } from './Icons';
+import LinkPending from './LinkPending';
 
 interface Props {
   page: number;
@@ -21,6 +22,7 @@ export default function Pagination({ page, pages, hrefFor, label }: Props) {
         <Link href={hrefFor(page - 1)} className="btn" rel="prev">
           <ChevronLeftIcon />
           <span>Anterior</span>
+          <LinkPending />
         </Link>
       ) : (
         <span className="btn is-disabled" aria-disabled="true">
@@ -35,6 +37,7 @@ export default function Pagination({ page, pages, hrefFor, label }: Props) {
         <Link href={hrefFor(page + 1)} className="btn" rel="next">
           <span>Siguiente</span>
           <ChevronRightIcon />
+          <LinkPending />
         </Link>
       ) : (
         <span className="btn is-disabled" aria-disabled="true">

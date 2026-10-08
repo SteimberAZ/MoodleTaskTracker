@@ -135,3 +135,10 @@
    The short delay keeps instant (prefetched) navigations from flickering. */
 .nav-pending { display: none; }
 .nav-item:has(.nav-pending[data-pending='true']) { opacity: 0.55; transition: opacity 0.2s ease 0.12s; }
+
+/* Filter chips and pagers (LinkPending): while their navigation is in flight the list swaps for its skeleton. */
+.link-pending { display: none; }
+.list-pending { display: none; }
+.pending-scope:has(.link-pending[data-pending='true']) .list-pending { display: block; }
+.pending-scope:has(.link-pending[data-pending='true']) .list-results { display: none; }
+a:has(> .link-pending[data-pending='true']) { opacity: 0.6; }

@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { homeHref } from '@/lib/pagination';
+import LinkPending from './LinkPending';
 import { TASK_FILTERS, type TaskFilter } from '@/lib/task-query';
 
 interface Props {
@@ -21,6 +22,7 @@ export default function TaskFilters({ active, counts }: Props) {
         >
           {label}
           {counts && <span className="filter-count">{counts[value]}</span>}
+          <LinkPending />
         </Link>
       ))}
     </nav>

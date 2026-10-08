@@ -118,6 +118,29 @@ function RemindersTabsSkeleton() {
 
 /* ------------------------------ Pages ------------------------------ */
 
+/**
+ * Stands in for a list while a filter chip or pager link is in flight (see LinkPending and skeleton.css).
+ * Shown only through CSS: the real list is hidden at the same time, so the sizes need no further sync.
+ */
+export function ListPendingSkeleton({ variant }: { variant: 'tasks' | 'history' }) {
+  return (
+    <div className="list-pending" aria-hidden="true">
+      {variant === 'tasks' ? (
+        <ul className="list">
+          <Repeat times={4}>{(i) => <TaskCardSkeleton key={i} />}</Repeat>
+        </ul>
+      ) : (
+        <div className="hist-day">
+          <Sk className="sk-text-sm sk-w-30" />
+          <ul className="hist-list">
+            <Repeat times={4}>{(i) => <HistoryItemSkeleton key={i} />}</Repeat>
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** `/` Tareas: title, three filter chips, task cards, pager. */
 export function HomeSkeleton() {
   return (

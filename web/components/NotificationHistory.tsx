@@ -12,6 +12,7 @@ import FocusedNotification from './FocusedNotification';
 import HistoryFilters from './HistoryFilters';
 import NotificationItem from './NotificationItem';
 import Pagination from './Pagination';
+import { ListPendingSkeleton } from './Skeletons';
 
 interface Props {
   filter: HistoryFilter;
@@ -32,7 +33,7 @@ export default function NotificationHistory({ filter, result, now, focus = null 
   const pages = pageCount(result?.total ?? 0, HISTORY_PAGE_SIZE);
 
   return (
-    <section aria-labelledby="historial-title" id="historial" className="section">
+    <section aria-labelledby="historial-title" id="historial" className="section pending-scope">
       <div className="section-head">
         <h2 id="historial-title">Historial de avisos</h2>
         {result?.available && result.total > 0 && <ClearHistoryButton />}
@@ -49,23 +50,26 @@ export default function NotificationHistory({ filter, result, now, focus = null 
       {result?.available && (
         <>
           <HistoryFilters active={filter} />
-          {result.total === 0 && (
-            <p className="card muted empty">
-              {filter === 'todos'
-                ? 'Aún no hay avisos. Aquí verás cada notificación que te enviemos.'
-                : 'No hay avisos de este tipo.'}
-            </p>
-          )}
-          {groups.map((group) => (
-            <div key={group.key} className="hist-day">
-              <h3 className="hist-day-title">{group.label}</h3>
-              <ul className="hist-list">
-                {group.items.map((row) => (
-                  <NotificationItem key={row.id} row={row} now={now} focused={row.id === focus?.id} />
-                ))}
-              </ul>
-            </div>
-          ))}
+          <ListPendingSkeleton variant="history" />
+          <div className="list-results">
+            {result.total === 0 && (
+              <p className="card muted empty">
+                {filter === 'todos'
+                  ? 'Aún no hay avisos. Aquí verás cada notificación que te enviemos.'
+                  : 'No hay avisos de este tipo.'}
+              </p>
+            )}
+            {groups.map((group) => (
+              <div key={group.key} className="hist-day">
+                <h3 className="hist-day-title">{group.label}</h3>
+                <ul className="hist-list">
+                  {group.items.map((row) => (
+                    <NotificationItem key={row.id} row={row} now={now} focused={row.id === focus?.id} />
+                  ))}
+                </ul>
+              </div>
+            ))}
+          </div>
           <Pagination
             page={page}
             pages={pages}
