@@ -17,9 +17,40 @@ def test_key_prefers_service_role_then_supabase_key(monkeypatch):
     monkeypatch.setenv("SUPABASE_URL", "https://sb.example")
     monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "service")
     monkeypatch.setenv("SUPABASE_KEY", "legacy")
-    assert SupabaseClient.for_service_role().key == "service"
+    assert SupabaseClient.for_worker().key == "service"
     monkeypatch.delenv("SUPABASE_SERVICE_ROLE_KEY")
-    assert SupabaseClient.for_service_role().key == "legacy"
+    assert SupabaseClient.for_worker().key == "legacy"
+
+
+def _clear(monkeypatch):
+    for k in ("SUPABASE_SERVICE_ROLE_KEY", "SUPABASE_KEY", "SUPABASE_ANON_KEY", "MOODLE_DB_JWT"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("SUPABASE_URL", "https://sb.example")
+
+
+def test_jwt_mode_sends_anon_apikey_and_jwt_bearer(monkeypatch):
+    _clear(monkeypatch)
+    monkeypatch.setenv("MOODLE_DB_JWT", "the.jwt.token")
+    monkeypatch.setenv("SUPABASE_ANON_KEY", "anon")
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "service")
+    h = SupabaseClient.for_worker()._headers()
+    assert h["apikey"] == "anon"
+    assert h["Authorization"] == "Bearer the.jwt.token"
+
+
+def test_jwt_mode_without_anon_uses_jwt_for_both(monkeypatch):
+    _clear(monkeypatch)
+    monkeypatch.setenv("MOODLE_DB_JWT", "the.jwt.token")
+    h = SupabaseClient.for_worker()._headers()
+    assert h["apikey"] == "the.jwt.token"
+    assert h["Authorization"] == "Bearer the.jwt.token"
+
+
+def test_legacy_alias_still_works(monkeypatch):
+    _clear(monkeypatch)
+    monkeypatch.setenv("SUPABASE_KEY", "legacy")
+    c = SupabaseClient.for_service_role()
+    assert c._headers()["apikey"] == "legacy"
 
 
 def test_reminders_use_prefixed_table(monkeypatch):

@@ -33,19 +33,41 @@ class SupabaseClient:
 
     def __init__(self, url: Optional[str] = None, key: Optional[str] = None):
         self.url = (url or os.environ.get("SUPABASE_URL", "")).rstrip("/")
-        # All moodle_* tables have RLS enabled with no policies, so only the service-role key
-        # works. SUPABASE_KEY is kept as a fallback (it may itself hold the service-role key).
-        self.key = (
-            key
-            or os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip()
-            or os.environ.get("SUPABASE_KEY", "")
-            or os.environ.get("SUPABASE_ANON_KEY", "")
-        )
+        # `key` is the bearer token sent in Authorization; `apikey` is the gateway key.
+        #
+        # Recommended setup: MOODLE_DB_JWT is a long-lived JWT with claim role=moodle_app
+        # (see scripts/make_moodle_jwt.py). The gateway validates the `apikey` header against
+        # the instance keys, so it carries the public ANON key; PostgREST then switches to the
+        # moodle_app role from the bearer JWT. If no anon key is set, the JWT is used for both.
+        #
+        # Legacy fallback (no MOODLE_DB_JWT): service-role key, then SUPABASE_KEY, then anon.
+        jwt = os.environ.get("MOODLE_DB_JWT", "").strip()
+        anon = os.environ.get("SUPABASE_ANON_KEY", "").strip()
+        if key:
+            self.key = key
+            self.apikey = key
+        elif jwt:
+            self.key = jwt
+            self.apikey = anon or jwt
+        else:
+            self.key = (
+                os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+                or os.environ.get("SUPABASE_KEY", "")
+                or anon
+            )
+            self.apikey = self.key
 
     @classmethod
-    def for_service_role(cls) -> "SupabaseClient":
-        """Client using SUPABASE_SERVICE_ROLE_KEY, falling back to SUPABASE_KEY."""
+    def for_worker(cls) -> "SupabaseClient":
+        """Client for server-side processes (VPS worker, storage mirror).
+
+        Uses MOODLE_DB_JWT (+ SUPABASE_ANON_KEY) when set, otherwise the legacy
+        service-role/SUPABASE_KEY chain.
+        """
         return cls()
+
+    # Backwards-compatible alias for the previous name.
+    for_service_role = for_worker
 
     @property
     def is_configured(self) -> bool:
@@ -53,7 +75,7 @@ class SupabaseClient:
 
     def _headers(self) -> Dict[str, str]:
         return {
-            "apikey": self.key,
+            "apikey": self.apikey,
             "Authorization": f"Bearer {self.key}",
             "Content-Type": "application/json",
             "Prefer": "resolution=merge-duplicates",

@@ -17,7 +17,7 @@ class Storage:
             db_path = os.path.join(base_dir, "moodle_tasks.db")
         self.db_path = db_path
         self._init_db()
-        self.supabase = SupabaseClient.for_service_role()
+        self.supabase = SupabaseClient.for_worker()
 
     @contextlib.contextmanager
     def _get_conn(self):

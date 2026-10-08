@@ -64,7 +64,7 @@ def run_worker():
     print("  🎓 Alertas de clases: 30 minutos antes de cada materia")
     print("=" * 60)
 
-    reminders_client = SupabaseClient.for_service_role()
+    reminders_client = SupabaseClient.for_worker()
 
     last_tasks_check = 0.0
     last_keep_alive = 0.0

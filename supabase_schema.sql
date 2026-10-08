@@ -1,21 +1,40 @@
 -- ==========================================================
 -- Supabase schema - Moodle Task Tracker
 --
--- Run this whole file once in the SQL Editor of the (self-hosted, shared)
--- Supabase database. It is idempotent: running it again is safe.
---
--- All project tables use the "moodle_" prefix because the database is shared
--- with other projects.
+-- Run this whole file ONCE as an admin (the postgres role) in the SQL editor
+-- or with psql. It is idempotent: running it again is safe. It only creates
+-- or alters the moodle_* tables and the moodle_app role; no other object of
+-- the shared database is touched.
 --
 -- SECURITY MODEL
---   Row Level Security is ENABLED on every table and NO policies are created.
---   The anon / authenticated roles therefore have no access at all; only the
---   service-role key (which bypasses RLS) can read or write these tables.
---   Keep that key server-side only (Vercel server env + VPS .env), never in
---   browser code. moodle_credentials holds the Moodle web-service token, so
---   this matters: with the old permissive policies anyone with the anon key
---   could read it.
+--   The database is shared with another production project, so its
+--   service_role key must NOT be used here. Instead:
+--     * A dedicated NOLOGIN role "moodle_app" can read/write only the five
+--       moodle_* tables (GRANTs below).
+--     * PostgREST connects as "authenticator" and switches to the role named
+--       in the request JWT, hence "GRANT moodle_app TO authenticator".
+--     * The app sends a long-lived JWT with claim role=moodle_app (see
+--       scripts/make_moodle_jwt.py), signed with the instance JWT secret, as
+--       "Authorization: Bearer <jwt>", plus the public anon key as "apikey"
+--       so the API gateway accepts the request.
+--     * RLS is ENABLED on every table. The only policy is "moodle_app_all",
+--       for moodle_app. anon/authenticated have no grants and no policies, so
+--       the public anon key cannot read moodle_credentials (it holds the
+--       Moodle web-service token). service_role bypasses RLS by design.
 -- ==========================================================
+
+-- 0. Dedicated role
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'moodle_app') THEN
+        CREATE ROLE moodle_app NOLOGIN NOINHERIT;
+    END IF;
+END
+$$;
+
+-- PostgREST connects as "authenticator" and needs membership to SET ROLE.
+GRANT moodle_app TO authenticator;
+GRANT USAGE ON SCHEMA public TO moodle_app;
 
 -- 1. Settings (key/value)
 CREATE TABLE IF NOT EXISTS public.moodle_settings (
@@ -97,7 +116,8 @@ CREATE TABLE IF NOT EXISTS public.moodle_credentials (
 );
 
 -- ==========================================================
--- Lock everything down: RLS on, no policies.
+-- Privileges + RLS: moodle_app only.
+-- (No sequences are used: primary keys are TEXT, UUID or constant.)
 -- ==========================================================
 ALTER TABLE public.moodle_settings         ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.moodle_tasks            ENABLE ROW LEVEL SECURITY;
@@ -105,34 +125,26 @@ ALTER TABLE public.moodle_task_milestones  ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.moodle_custom_reminders ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.moodle_credentials      ENABLE ROW LEVEL SECURITY;
 
--- Remove every policy that may exist on the new tables (for example the old
--- permissive "USING (true)" ones) and on the legacy unprefixed tables, if
--- those still exist. Dropping a policy never touches table data.
+-- Supabase default privileges grant new public tables to anon/authenticated.
+REVOKE ALL ON public.moodle_settings         FROM anon, authenticated;
+REVOKE ALL ON public.moodle_tasks            FROM anon, authenticated;
+REVOKE ALL ON public.moodle_task_milestones  FROM anon, authenticated;
+REVOKE ALL ON public.moodle_custom_reminders FROM anon, authenticated;
+REVOKE ALL ON public.moodle_credentials      FROM anon, authenticated;
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.moodle_settings         TO moodle_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.moodle_tasks            TO moodle_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.moodle_task_milestones  TO moodle_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.moodle_custom_reminders TO moodle_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.moodle_credentials      TO moodle_app;
+
+-- Replace any older policy on the project tables (for example the old permissive
+-- "USING (true)" ones for anon) with a single policy for moodle_app.
+-- Dropping a policy never touches table data.
 DO $$
 DECLARE
     pol RECORD;
 BEGIN
-    -- Legacy permissive policies by their old names (guarded: tables may not exist).
-    IF to_regclass('public.settings') IS NOT NULL THEN
-        DROP POLICY IF EXISTS "Permitir acceso settings" ON public.settings;
-    END IF;
-    IF to_regclass('public.tasks') IS NOT NULL THEN
-        DROP POLICY IF EXISTS "Permitir acceso tasks" ON public.tasks;
-    END IF;
-    IF to_regclass('public.task_milestones') IS NOT NULL THEN
-        DROP POLICY IF EXISTS "Permitir acceso milestones" ON public.task_milestones;
-    END IF;
-    IF to_regclass('public.moodle_settings') IS NOT NULL THEN
-        DROP POLICY IF EXISTS "Permitir acceso settings" ON public.moodle_settings;
-    END IF;
-    IF to_regclass('public.moodle_tasks') IS NOT NULL THEN
-        DROP POLICY IF EXISTS "Permitir acceso tasks" ON public.moodle_tasks;
-    END IF;
-    IF to_regclass('public.moodle_task_milestones') IS NOT NULL THEN
-        DROP POLICY IF EXISTS "Permitir acceso milestones" ON public.moodle_task_milestones;
-    END IF;
-
-    -- Catch-all: any other policy attached to the five project tables.
     FOR pol IN
         SELECT schemaname, tablename, policyname
         FROM pg_policies
@@ -146,3 +158,14 @@ BEGIN
     END LOOP;
 END
 $$;
+
+CREATE POLICY moodle_app_all ON public.moodle_settings
+    FOR ALL TO moodle_app USING (true) WITH CHECK (true);
+CREATE POLICY moodle_app_all ON public.moodle_tasks
+    FOR ALL TO moodle_app USING (true) WITH CHECK (true);
+CREATE POLICY moodle_app_all ON public.moodle_task_milestones
+    FOR ALL TO moodle_app USING (true) WITH CHECK (true);
+CREATE POLICY moodle_app_all ON public.moodle_custom_reminders
+    FOR ALL TO moodle_app USING (true) WITH CHECK (true);
+CREATE POLICY moodle_app_all ON public.moodle_credentials
+    FOR ALL TO moodle_app USING (true) WITH CHECK (true);
