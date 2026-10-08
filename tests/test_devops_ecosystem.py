@@ -36,7 +36,8 @@ def test_only_sets_unbuffered_output_in_the_environment(app):
 def test_logging_and_shutdown_settings(app):
     assert app["time"] is True
     assert app["log_date_format"] == "YYYY-MM-DDTHH:mm:ssZ"
-    assert app["kill_timeout"] == 10000
+    # Covers the worst-case user sync plus the final flush and heartbeat, not just one request.
+    assert app["kill_timeout"] >= 60000
     assert app["autorestart"] is True
     assert app["exp_backoff_restart_delay"] == 5000
     assert "max_restarts" not in app

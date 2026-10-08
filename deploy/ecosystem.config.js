@@ -22,8 +22,10 @@ module.exports = {
       // Timestamped logs (rotate them with pm2-logrotate).
       time: true,
       log_date_format: 'YYYY-MM-DDTHH:mm:ssZ',
-      // Give a tick time to finish writing history before pm2 sends SIGKILL.
-      kill_timeout: 10000,
+      // A stop is honoured at a step boundary: give the in-flight user sync (Moodle calls with 15 s
+      // timeouts, a bulk upsert) plus the final history flush and heartbeat time to finish before
+      // pm2 sends SIGKILL.
+      kill_timeout: 90000,
       // Restart forever, backing off from 5 s when it keeps crashing (no max_restarts on purpose).
       autorestart: true,
       exp_backoff_restart_delay: 5000,
