@@ -106,8 +106,17 @@ SUPABASE_ANON_KEY=<anon key de la instancia>
 MOODLE_DB_JWT=<JWT generado en el paso anterior>
 NTFY_TOPIC=<tu topic>
 MOODLE_URL=https://evirtual.utm.edu.ec
+VAPID_SUBJECT=mailto:<tu correo>
+# VAPID_PRIVATE_KEY_FILE=./vapid_private.pem   (valor por defecto)
 ```
-El worker recorre a todos los usuarios activos de `moodle_users`, sincroniza sus tareas con su token de Moodle y le envía a cada uno sus avisos a su propio tema de ntfy. `NTFY_TOPIC` se usa solo para los avisos del horario de clases del dueño. `MOODLE_SESSION` (la cookie) queda como respaldo y solo se usa cuando no hay ningún usuario registrado.
+El worker recorre a todos los usuarios activos de `moodle_users`, sincroniza sus tareas con su token de Moodle y les envía los avisos como **notificaciones nativas (Web Push)** a cada dispositivo donde las activaron, y también a su tema de ntfy si el usuario lo dejó encendido en **Mi cuenta**. `NTFY_TOPIC` solo se usa como respaldo para el horario de clases cuando no existe ningún usuario admin. `MOODLE_SESSION` (la cookie) queda como respaldo y solo se usa cuando no hay ningún usuario registrado.
+
+**Notificaciones nativas (Web Push):** la clave privada VAPID se genera una sola vez en el VPS y nunca sale de ahí:
+```
+python3 -m venv venv && venv/bin/pip install -r requirements-worker.txt
+venv/bin/python scripts/generate_vapid.py   # crea ./vapid_private.pem (600) e imprime la clave pública
+```
+La clave pública impresa va a Vercel como `NEXT_PUBLIC_VAPID_PUBLIC_KEY`. Guarda una copia de `vapid_private.pem` fuera de git: si se pierde, todos los usuarios tienen que volver a activar las notificaciones. Ejecuta el worker con el Python del venv (`pm2 start worker.py --name utm-moodle-tracker --interpreter "$PWD/venv/bin/python"`).
 
 > Orden de despliegue: detén el worker, ejecuta `supabase_schema.sql` y recién después inicia la versión nueva.
 
@@ -116,12 +125,14 @@ El worker recorre a todos los usuarios activos de `moodle_users`, sincroniza sus
 - **Environment Variables:**
   - Obligatorias: `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `MOODLE_DB_JWT` y `ADMIN_MOODLE_USERNAME` (tu usuario de la UTM).
   - Opcionales: `ADMIN_NTFY_TOPIC` (tu tema actual de ntfy; si falta, se genera uno aleatorio), `MOODLE_URL`, `NTFY_SERVER` y `SESSION_SECRET`. Si `SESSION_SECRET` no está definida, se deriva automáticamente de `MOODLE_DB_JWT`; definirla solo sirve para cerrar todas las sesiones sin cambiar el JWT.
-  - `APP_PASSWORD` ya no se usa. No uses el prefijo `NEXT_PUBLIC_` en ninguna.
+  - Para las notificaciones nativas: `NEXT_PUBLIC_VAPID_PUBLIC_KEY` (la clave **pública** que imprime `generate_vapid.py`; se incrusta al compilar, así que hay que redesplegar después de cargarla).
+  - `APP_PASSWORD` ya no se usa. Fuera de `NEXT_PUBLIC_VAPID_PUBLIC_KEY`, ninguna variable lleva el prefijo `NEXT_PUBLIC_`.
 
 ### 4. Usuarios e invitaciones
 - La primera vez que entras con la cuenta de `ADMIN_MOODLE_USERNAME`, quedas como administrador sin necesidad de código, y tus recordatorios anteriores pasan a tu cuenta.
 - En **Admin** creas códigos de invitación de un solo uso, con vencimiento opcional. Cada invitado entra con su usuario de la UTM y su código.
-- En **Mi cuenta** cada usuario ve su tema de ntfy, el enlace para suscribirse desde la app y un botón para enviarse una notificación de prueba.
+- En **Notificaciones** cada usuario activa los avisos nativos en su celular o computadora. En iPhone (iOS 16.4 o superior) primero hay que añadir la web a la pantalla de inicio desde Safari.
+- En **Mi cuenta** sigue el tema de ntfy como canal opcional, con un interruptor para apagarlo y evitar avisos duplicados.
 - La contraseña de la UTM nunca se guarda: solo se guarda el token de la API de Moodle de cada usuario.
 
 ### Desarrollo local
