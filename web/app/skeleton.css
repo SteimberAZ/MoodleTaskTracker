@@ -67,11 +67,22 @@
 .sk-btn-sm { width: 84px; }                              /* "Nuevo" */
 .sk-btn-md { width: 140px; }
 .sk-btn-lg { width: 180px; }
+.sk-btn-xl { width: 240px; }
 .sk-pill { width: 96px; height: 44px; border-radius: 100px; } /* history filter chip */
 .sk-input { height: 48px; border-radius: 12px; }
 .sk-textarea { height: 96px; border-radius: 12px; }
 .sk-icon { width: 28px; height: 28px; border-radius: 50%; }
 .sk-back { width: 170px; height: 18px; margin: 13px 0; } /* sits in the 44px back-link row */
+
+/* Mi cuenta (.card-title 16px/1.15 + 8px margin, .muted paragraph 15px/1.55, .meta dt 11px/1.55, .small 12.5px/1.55,
+   the 60x44 switch row). Heights are the real line boxes, so the loaded cards are the same size. */
+.sk-lines { display: grid; } /* grid, not block: the line blocks' vertical margins must not collapse */
+.sk-card-title { height: 18px; margin: 0 0 8px; }
+.sk-para { height: 14px; margin: 4.6px 0; }
+.sk-dt { height: 11px; margin: 3px 0; }
+.sk-note { height: 12px; margin: 3.7px 0; }
+.sk-toggle-row { height: 44px; border-radius: 12px; }
+.sk-switch { width: 60px; height: 44px; border-radius: 100px; }
 
 /* ============================== Page structure ============================== */
 /* Filter chips (Tareas, Notificaciones): same grid as .chips, with chip-sized blocks. */

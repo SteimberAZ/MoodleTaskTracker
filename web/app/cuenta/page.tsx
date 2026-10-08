@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { requireUser } from '@/lib/auth';
+import { ACTIVATE_NOTIFICATIONS_HREF } from '@/lib/push-setup';
 import { resolveNtfyServer } from '@/lib/random';
 import { getNtfyEnabled } from '@/lib/users';
 import { regenerateTopic } from './actions';
@@ -32,7 +33,7 @@ export default async function AccountPage() {
         <h2 id="push-title" className="card-title">Notificaciones en este dispositivo</h2>
         <p className="muted">Recibe los avisos de tus tareas en el teléfono o la computadora, aunque la app esté cerrada.</p>
         <div className="actions">
-          <Link href="/notificaciones" className="btn primary">Configurar notificaciones</Link>
+          <Link href={ACTIVATE_NOTIFICATIONS_HREF} className="btn primary">Configurar notificaciones</Link>
         </div>
       </section>
 

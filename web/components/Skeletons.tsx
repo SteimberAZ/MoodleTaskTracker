@@ -230,13 +230,9 @@ export function NotificationsSkeleton() {
   return (
     <SkeletonShell>
       <PageHeadSkeleton lines={2} />
-      <section className="card push-card">
-        <Sk className="sk-h2 sk-w-70" />
-        <Sk className="sk-text sk-w-100" />
-        <Sk className="sk-text sk-w-80" />
-        <div className="actions">
-          <Sk className="sk-btn sk-btn-md" />
-        </div>
+      {/* The push setup card starts collapsed: one 44px header row (.push-toggle: title, status pill, chevron). */}
+      <section className="card push-card push-collapsible">
+        <Sk className="sk-toggle-row" />
       </section>
       <section className="section">
         <div className="section-head">
@@ -257,26 +253,66 @@ export function NotificationsSkeleton() {
   );
 }
 
-/** `/cuenta`: header and the profile / push / ntfy cards. */
+/**
+ * `/cuenta`: header and the profile / push / ntfy cards. Every block is sized from the real page (see the `sk-card-title`,
+ * `sk-para`, `sk-dt` and `sk-note` rules in skeleton.css) so the cards keep their height, and the page its scrollability,
+ * when the content swaps in. The ntfy card in particular is the tallest one; it must not be a short placeholder.
+ */
 export function AccountSkeleton() {
   return (
     <SkeletonShell>
       <PageHeadSkeleton />
       <section className="card item">
-        <Sk className="sk-h2 sk-w-30" />
+        <Sk className="sk-card-title sk-w-30" />
         <div className="meta">
-          <div className="sk-meta-row">
-            <Sk className="sk-text-sm" />
-            <Sk className="sk-text" />
+          <div className="sk-lines">
+            <Sk className="sk-dt sk-w-60" />
+            <Repeat times={2}>{(i) => <Sk key={i} className="sk-text sk-w-90" />}</Repeat>
           </div>
-          <div className="sk-meta-row">
-            <Sk className="sk-text-sm" />
-            <Sk className="sk-text" />
+          <div className="sk-lines">
+            <Sk className="sk-dt sk-w-60" />
+            <Sk className="sk-text sk-w-90" />
           </div>
         </div>
       </section>
-      <InfoCardSkeleton lines={2} />
-      <InfoCardSkeleton lines={3} />
+      <section className="card item">
+        <Sk className="sk-card-title sk-w-70" />
+        <div className="sk-lines">
+          <Sk className="sk-para sk-w-100" />
+          <Sk className="sk-para sk-w-60" />
+        </div>
+        <div className="actions">
+          <Sk className="sk-btn sk-btn-xl" />
+        </div>
+      </section>
+      <section className="card item">
+        <Sk className="sk-card-title sk-w-50" />
+        <div className="sk-lines">
+          <Sk className="sk-para sk-w-100" />
+          <Sk className="sk-para sk-w-70" />
+        </div>
+        <Sk className="sk-switch" />
+        <div className="meta">
+          <div className="sk-lines">
+            <Sk className="sk-dt sk-w-50" />
+            <Repeat times={3}>{(i) => <Sk key={i} className="sk-text sk-w-100" />}</Repeat>
+          </div>
+          <div className="sk-lines">
+            <Repeat times={2}>{(i) => <Sk key={i} className="sk-dt sk-w-70" />}</Repeat>
+            <Repeat times={4}>{(i) => <Sk key={i} className="sk-text sk-w-100" />}</Repeat>
+          </div>
+        </div>
+        <div className="actions">
+          <Sk className="sk-btn sk-btn-xl" />
+        </div>
+        <div className="actions">
+          <Sk className="sk-btn sk-btn-lg" />
+        </div>
+        <div className="sk-lines">
+          <Sk className="sk-note sk-w-100" />
+          <Sk className="sk-note sk-w-60" />
+        </div>
+      </section>
     </SkeletonShell>
   );
 }

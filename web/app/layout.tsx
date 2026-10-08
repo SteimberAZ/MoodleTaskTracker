@@ -52,8 +52,9 @@ export const viewport: Viewport = {
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
+  // data-scroll-behavior lets Next.js skip the smooth scroll on route changes (no scroll jump between tabs).
   return (
-    <html lang="es" className={`${syne.variable} ${manrope.variable}`}>
+    <html lang="es" className={`${syne.variable} ${manrope.variable}`} data-scroll-behavior="smooth">
       <body>
         <a className="skip-link" href="#main">Saltar al contenido</a>
         <SiteHeader />
