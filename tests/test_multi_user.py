@@ -442,7 +442,7 @@ def test_fetch_active_users_query_and_filtering(monkeypatch):
     assert seen["params"] == {
         "active": "eq.true",
         "token": "not.is.null",
-        "select": "id,moodle_url,site_userid,username,fullname,token,ntfy_topic,is_admin,last_error,last_error_at",
+        "select": "id,moodle_url,site_userid,username,fullname,token,ntfy_topic,is_admin,last_error,last_error_at,last_login_at",
     }
 
 

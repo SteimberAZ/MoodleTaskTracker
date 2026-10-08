@@ -80,6 +80,25 @@ def sync_all_users(
     return outcomes
 
 
+def users_needing_immediate_sync(users: List[Dict], seen_logins: Dict[str, str]) -> List[Dict]:
+    """Users that logged in (or registered) since the worker last synced them.
+
+    A login refreshes the Moodle token, so a new user or a new ``last_login_at`` gets synced on the
+    next tick instead of waiting for the regular round.
+    """
+    return [
+        u
+        for u in users
+        if str(u.get("id") or "") and seen_logins.get(str(u.get("id"))) != str(u.get("last_login_at") or "")
+    ]
+
+
+def remember_logins(users: List[Dict], seen_logins: Dict[str, str]) -> None:
+    for u in users:
+        if u.get("id"):
+            seen_logins[str(u["id"])] = str(u.get("last_login_at") or "")
+
+
 def run_task_tick(
     storage,
     supabase,
@@ -87,6 +106,7 @@ def run_task_tick(
     client_factory: Optional[Callable[[Dict], Any]] = None,
     process: Optional[Callable] = None,
     alert: Optional[Callable] = None,
+    seen_logins: Optional[Dict[str, str]] = None,
 ) -> str:
     """One task-sync round. Returns which path ran: "users", "legacy" or "skipped".
 
@@ -103,6 +123,8 @@ def run_task_tick(
     if users:
         print(f"[Worker] 👥 Usuarios activos: {len(users)}")
         sync_all_users(storage, supabase, users, client_factory=client_factory, process=process, alert=alert)
+        if seen_logins is not None:
+            remember_logins(users, seen_logins)
         return "users"
     legacy_check()
     return "legacy"
@@ -229,6 +251,7 @@ def run_worker():
     last_keep_alive = 0.0
     legacy = LegacyState()
     mode = "skipped"  # which path the last task round took: "users" | "legacy" | "skipped"
+    seen_logins: Dict[str, str] = {}  # user id -> last_login_at already synced
 
     while True:
         now_ts = time.time()
@@ -264,8 +287,22 @@ def run_worker():
                 storage,
                 supabase,
                 legacy_check=lambda: legacy_check_tasks(storage, supabase, legacy, base_url, session_cookie, now_str),
+                seen_logins=seen_logins,
             )
-        elif should_keep_alive and mode == "legacy" and session_cookie:
+        else:
+            # New logins/registrations are synced right away instead of waiting for the next round.
+            try:
+                fresh = users_needing_immediate_sync(supabase.fetch_active_users(), seen_logins)
+            except Exception as err:
+                fresh = []
+                print(f"[{now_str}] [!] No se pudo revisar inicios de sesión nuevos: {err}")
+            if fresh:
+                print(f"\n[{now_str}] 🆕 Sincronizando {len(fresh)} usuario(s) con inicio de sesión reciente...")
+                sync_all_users(storage, supabase, fresh)
+                remember_logins(fresh, seen_logins)
+                mode = "users"
+
+        if not should_check_tasks and should_keep_alive and mode == "legacy" and session_cookie:
             last_keep_alive = time.time()
             legacy_keep_alive(legacy, base_url, session_cookie, now_str)
 

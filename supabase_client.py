@@ -188,7 +188,7 @@ class SupabaseClient:
         params = {
             "active": "eq.true",
             "token": "not.is.null",
-            "select": "id,moodle_url,site_userid,username,fullname,token,ntfy_topic,is_admin,last_error,last_error_at",
+            "select": "id,moodle_url,site_userid,username,fullname,token,ntfy_topic,is_admin,last_error,last_error_at,last_login_at",
         }
         r = requests.get(f"{self.url}/rest/v1/moodle_users", params=params, headers=self._headers(), timeout=10)
         if r.status_code != 200:
