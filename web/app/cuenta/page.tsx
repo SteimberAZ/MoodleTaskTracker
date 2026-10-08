@@ -1,19 +1,19 @@
 import Link from 'next/link';
 import { requireUser } from '@/lib/auth';
+import { getNtfyStatus } from '@/lib/ntfy-status';
 import { ACTIVATE_NOTIFICATIONS_HREF } from '@/lib/push-setup';
 import { resolveNtfyServer } from '@/lib/random';
-import { getNtfyEnabled } from '@/lib/users';
-import { regenerateTopic } from './actions';
-import ConfirmButton from '@/components/ConfirmButton';
-import NtfyToggle from '@/components/NtfyToggle';
+import NtfyToggle, { NtfyConfirm, RegenerateTopicForm } from '@/components/NtfyToggle';
 import TestPushForm from '@/components/TestPushForm';
 
 export const dynamic = 'force-dynamic';
 
+export const metadata = { title: 'Mi cuenta' };
+
 export default async function AccountPage() {
   const user = await requireUser();
   const subscribeUrl = `${resolveNtfyServer(process.env.NTFY_SERVER)}/${encodeURIComponent(user.ntfy_topic)}`;
-  const ntfyEnabled = await getNtfyEnabled(user.id);
+  const ntfy = await getNtfyStatus(user.id);
 
   return (
     <>
@@ -37,32 +37,32 @@ export default async function AccountPage() {
         </div>
       </section>
 
-      <section className="card item" aria-labelledby="ntfy-title">
-        <h2 id="ntfy-title" className="card-title">Notificaciones (ntfy)</h2>
-        <p className="muted">
-          Instala la app ntfy, toca + y suscríbete a este tema. Es privado: no lo compartas.
-        </p>
-        <NtfyToggle enabled={ntfyEnabled} />
-        <dl className="meta">
-          <div><dt>Tu tema</dt><dd className="mono">{user.ntfy_topic}</dd></div>
-          <div>
-            <dt>Enlace para suscribirte</dt>
-            <dd>
-              <a href={subscribeUrl} target="_blank" rel="noopener noreferrer" className="mono">{subscribeUrl}</a>
-            </dd>
-          </div>
-        </dl>
-        <TestPushForm />
-        <div className="actions">
-          <ConfirmButton
-            action={regenerateTopic}
-            label="Regenerar tema"
-            message="¿Regenerar tu tema? Dejarás de recibir avisos en el tema actual y tendrás que volver a suscribirte al nuevo."
-            danger
-          />
-        </div>
-        <p className="muted small">Al regenerar el tema debes volver a suscribirte con el nuevo enlace.</p>
-      </section>
+      <details className="help-box">
+        <summary>Avanzado</summary>
+        <section className="card item" aria-labelledby="ntfy-title">
+          <h2 id="ntfy-title" className="card-title">Notificaciones (ntfy)</h2>
+          <p className="muted">
+            Instala la app ntfy, toca + y suscríbete a este tema. Es privado: no lo compartas.
+          </p>
+          <NtfyToggle enabled={ntfy.enabled} />
+          {ntfy.confirmationSupported && <NtfyConfirm confirmedAt={ntfy.confirmedAt} />}
+          <dl className="meta">
+            <div><dt>Tu tema</dt><dd className="mono">{user.ntfy_topic}</dd></div>
+            <div>
+              <dt>Enlace para suscribirte</dt>
+              <dd>
+                <a href={subscribeUrl} target="_blank" rel="noopener noreferrer" className="mono">
+                  {subscribeUrl}
+                  <span className="sr-only"> (se abre en otra pestaña)</span>
+                </a>
+              </dd>
+            </div>
+          </dl>
+          <TestPushForm />
+          <RegenerateTopicForm />
+          <p className="muted small">Al regenerar el tema debes volver a suscribirte con el nuevo enlace.</p>
+        </section>
+      </details>
     </>
   );
 }
