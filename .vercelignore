@@ -1,0 +1,40 @@
+# Files the Vercel CLI must not upload. The Vercel project is linked at the repository root
+# (.vercel/ lives here) with Root Directory = web, so only web/ is needed to build the site.
+# Everything below is the VPS worker, its data and secrets, or the legacy desktop app.
+
+# Python worker, its tests and deploy files
+/*.py
+/requirements*.txt
+/supabase_schema.sql
+/tests/
+/deploy/
+/scripts/
+/odd/
+/.github/
+__pycache__/
+.pytest_cache/
+venv/
+env/
+
+# Worker data and secrets (never uploaded anywhere)
+*.db
+*.db-journal
+*.bak
+*.pem
+.env
+.env.*
+
+# Legacy desktop app and WhatsApp bot
+*.exe
+/*.bat
+/icon.ico
+/icon.png
+/whatsapp_bot/
+/build/
+/dist/
+*.spec
+
+# Local web build output (Vercel builds from source)
+/web/node_modules/
+/web/.next/
+/web/out/
