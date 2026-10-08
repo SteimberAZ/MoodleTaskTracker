@@ -114,7 +114,9 @@ def sync_tasks_via_api(
         new_tasks, _ = storage.save_tasks(tasks)
         if apply_migration_guard(storage, tasks, user_id):
             print(f"{label} first sync: {len(tasks)} existing tasks marked as already announced.")
-        print(f"{label} {len(tasks)} tasks fetched, {len(new_tasks)} new.")
+        mirror_ok = getattr(storage, "last_task_mirror_ok", None)
+        mirror = {True: "ok", False: "FAILED"}.get(mirror_ok, "n/a")
+        print(f"{label} {len(tasks)} tasks fetched, {len(new_tasks)} new (supabase mirror: {mirror}).")
         if user_id:
             process(tasks, storage, new_tasks=new_tasks, topic=route["topic"], desktop=False)
         else:
@@ -130,6 +132,10 @@ def sync_tasks_via_api(
               priority="default", tags="white_check_mark,mortarboard", **route)
     elif user and user.get("last_error"):
         _report_error(supabase, creds, None, user)  # error recorded elsewhere (e.g. web), now healthy
+    if mirror_ok is False:
+        # Moodle and the local store are fine, but the cloud copy is stale: do not report a clean "ok".
+        print(f"{label} tasks were NOT mirrored to Supabase this round (see [Supabase] log above).")
+        return "error"
     return "ok"
 
 

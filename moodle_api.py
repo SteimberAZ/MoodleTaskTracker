@@ -23,6 +23,12 @@ TOKEN_ERROR_CODES = frozenset({"invalidtoken", "accessexception"})
 
 _CMID_RE = re.compile(r"[?&]id=(\d+)")
 
+# (base_url, course module id) -> assign instance id, shared by every client for the process.
+_ASSIGN_INSTANCE_CACHE: Dict[tuple, int] = {}
+
+# Max characters of a Moodle error message written to the logs.
+_LOG_MSG_MAX = 200
+
 
 class MoodleApiError(Exception):
     """A Moodle web-service call failed."""
@@ -102,9 +108,55 @@ class MoodleApiClient:
             after = last_id
         return events
 
-    def fetch_assign_status(self, assign_id: int) -> Optional[str]:
-        payload = self.call("mod_assign_get_submission_status", assignid=assign_id)
-        return parse_assign_submission_status(payload)
+    def resolve_assign_instance(self, cmid: int) -> Optional[int]:
+        """Real ``assign`` instance id of a course module, or None when it cannot be resolved.
+
+        Calendar events do not always carry the assign instance Moodle expects; the course module
+        (the ``?id=`` of the activity URL) is authoritative. Results are cached for the process.
+        """
+        key = (self.base_url, int(cmid))
+        if key in _ASSIGN_INSTANCE_CACHE:
+            return _ASSIGN_INSTANCE_CACHE[key]
+        try:
+            payload = self.call("core_course_get_course_module", cmid=int(cmid))
+        except MoodleApiError as e:
+            if e.code == "invalidtoken":
+                raise
+            print(f"[MoodleApi] could not resolve course module {cmid}: {e.code}: {str(e)[:_LOG_MSG_MAX]}")
+            return None
+        cm = payload.get("cm") if isinstance(payload, dict) else None
+        if not isinstance(cm, dict) or str(cm.get("modname") or "").lower() != "assign" or not cm.get("instance"):
+            print(f"[MoodleApi] course module {cmid} is not a resolvable assign")
+            return None
+        instance = int(cm["instance"])
+        _ASSIGN_INSTANCE_CACHE[key] = instance
+        return instance
+
+    def _assign_status(self, assign_id: Optional[int], cmid: Optional[int] = None):
+        """(status, assign_id actually used). Falls back to the course module on ``invalidrecord``."""
+        if cmid:
+            cached = _ASSIGN_INSTANCE_CACHE.get((self.base_url, int(cmid)))
+            if cached:
+                assign_id = cached
+            elif not assign_id:
+                assign_id = self.resolve_assign_instance(cmid)
+        if not assign_id:
+            return None, None
+        try:
+            payload = self.call("mod_assign_get_submission_status", assignid=assign_id)
+            return parse_assign_submission_status(payload), assign_id
+        except MoodleApiError as e:
+            if e.code != "invalidrecord" or not cmid:
+                raise
+            instance = self.resolve_assign_instance(cmid)
+            if not instance or instance == assign_id:
+                raise
+            print(f"[MoodleApi] assign {assign_id} is invalid; retrying with instance {instance} of module {cmid}")
+        payload = self.call("mod_assign_get_submission_status", assignid=instance)
+        return parse_assign_submission_status(payload), instance
+
+    def fetch_assign_status(self, assign_id: Optional[int], course_module_id: Optional[int] = None) -> Optional[str]:
+        return self._assign_status(assign_id, course_module_id)[0]
 
     def fetch_tasks(self, now: Optional[float] = None, delay: float = 0.2) -> List[Dict]:
         """Fetch events, map them to task dicts and resolve submission status.
@@ -120,18 +172,23 @@ class MoodleApiClient:
                 tasks.append(task)
         checked = 0
         for task in tasks:
-            if task["status"] == "submitted" or not task.get("assign_id"):
+            cmid = task.get("course_module_id")
+            is_assign = bool(task.get("assign_id")) or (bool(cmid) and "/mod/assign/" in str(task.get("task_url")))
+            if task["status"] == "submitted" or not is_assign:
                 continue
             if checked and delay:
                 time.sleep(delay)
             checked += 1
             try:
-                detected = self.fetch_assign_status(task["assign_id"])
+                detected, used_id = self._assign_status(task.get("assign_id"), cmid)
             except MoodleApiError as e:
                 if e.code == "invalidtoken":
                     raise
-                print(f"[MoodleApi] assign status failed for {task['assign_id']}: {e.code or e}")
+                ref = task.get("assign_id") or f"cmid {cmid}"
+                print(f"[MoodleApi] assign status failed for {ref}: {e.code or 'error'}: {str(e)[:_LOG_MSG_MAX]}")
                 continue
+            if used_id:
+                task["assign_id"] = used_id  # the instance Moodle actually accepted
             if detected:
                 task["status"] = detected
                 task["status_source"] = "api"

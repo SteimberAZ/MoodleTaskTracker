@@ -404,7 +404,7 @@ class MoodleTrackerApp(ctk.CTk):
         now_str = datetime.now().strftime("%H:%M:%S")
 
         if success:
-            new_tasks, _ = self.storage.save_tasks(tasks)
+            new_tasks, _ = self.storage.save_tasks(tasks, mirror_async=True)
             self.storage.set_setting("last_checked", now_str)
 
             self.status_badge.configure(

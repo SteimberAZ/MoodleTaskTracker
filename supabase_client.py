@@ -27,6 +27,9 @@ def _load_env_file():
 
 _load_env_file()
 
+# Max characters of a Supabase response body / exception text written to the logs.
+_LOG_BODY_MAX = 300
+
 
 class SupabaseClient:
     """Cliente ligero para sincronizar datos con Supabase vía REST API."""
@@ -81,88 +84,98 @@ class SupabaseClient:
             "Prefer": "resolution=merge-duplicates",
         }
 
-    def upsert_tasks(self, tasks: List[Dict], async_call: bool = True):
-        """Inserta o actualiza tareas en la tabla moodle_tasks de Supabase."""
+    def _post(self, op: str, path: str, payload) -> bool:
+        """POST a write and report success. Logs the status and a truncated body on non-2xx.
+
+        Never logs headers or tokens. Never raises: a failed mirror must not break a sync round.
+        """
+        try:
+            r = requests.post(f"{self.url}/rest/v1/{path}", json=payload, headers=self._headers(), timeout=5)
+        except Exception as e:
+            print(f"[Supabase] {op} error: {type(e).__name__}: {str(e)[:_LOG_BODY_MAX]}")
+            return False
+        status = getattr(r, "status_code", 0)
+        if isinstance(status, int) and 200 <= status < 300:
+            return True
+        body = str(getattr(r, "text", "") or "")[:_LOG_BODY_MAX]
+        print(f"[Supabase] {op} HTTP {status}: {body}")
+        return False
+
+    def _run(self, work, async_call: bool) -> Optional[bool]:
+        """Run ``work`` inline (returns its bool result) or on a daemon thread (returns None)."""
+        if async_call:
+            threading.Thread(target=work, daemon=True).start()
+            return None
+        return work()
+
+    @staticmethod
+    def _task_row(t: Dict) -> Dict:
+        """One moodle_tasks row. Every row carries the same keys.
+
+        PostgREST rejects a bulk insert whose rows have different key sets (PGRST102), so the
+        optional web-service columns are always present and null when unknown.
+        """
+        return {
+            "id": str(t["id"]),
+            "title": t["title"],
+            "course": t.get("course", "Materia no especificada"),
+            "due_date_str": t.get("due_date_str", ""),
+            "due_timestamp": t.get("due_timestamp", 0),
+            "task_url": t.get("task_url", ""),
+            "status": t.get("status", "pending"),
+            "first_seen": t.get("first_seen", 0),
+            "last_updated": t.get("last_updated", 0),
+            "is_notified": t.get("is_notified", 0),
+            "is_dismissed": t.get("is_dismissed", 0),
+            # Every row needs an owner (moodle_tasks.user_id is NOT NULL).
+            "user_id": t["user_id"],
+            "assign_id": t.get("assign_id"),
+            "course_module_id": t.get("course_module_id"),
+        }
+
+    def upsert_tasks(self, tasks: List[Dict], async_call: bool = True) -> Optional[bool]:
+        """Upsert tasks into moodle_tasks.
+
+        Returns True when Supabase accepted the batch (or there was nothing to send), False when the
+        request failed (the reason is logged), and None for ``async_call=True`` (outcome unknown).
+        """
         # Rows without an owner (legacy single-user path) would be rejected by the
         # NOT NULL user_id column and take the whole batch with them: mirror only owned rows.
         tasks = [t for t in (tasks or []) if t.get("user_id")]
         if not self.is_configured or not tasks:
-            return
+            return True
 
-        def _do_upsert():
+        def _do_upsert() -> bool:
             try:
-                payload = []
-                for t in tasks:
-                    row = {
-                        "id": str(t["id"]),
-                        "title": t["title"],
-                        "course": t.get("course", "Materia no especificada"),
-                        "due_date_str": t.get("due_date_str", ""),
-                        "due_timestamp": t.get("due_timestamp", 0),
-                        "task_url": t.get("task_url", ""),
-                        "status": t.get("status", "pending"),
-                        "first_seen": t.get("first_seen", 0),
-                        "last_updated": t.get("last_updated", 0),
-                        "is_notified": t.get("is_notified", 0),
-                        "is_dismissed": t.get("is_dismissed", 0),
-                    }
-                    # Every row needs an owner (moodle_tasks.user_id is NOT NULL).
-                    row["user_id"] = t["user_id"]
-                    # Only sent by the web-service sync; keeps cookie-based rows unchanged.
-                    for extra in ("assign_id", "course_module_id"):
-                        if t.get(extra) is not None:
-                            row[extra] = t[extra]
-                    payload.append(row)
+                # One row per id: a duplicate inside a single upsert makes Postgres fail the batch.
+                rows = {str(t["id"]): self._task_row(t) for t in tasks}
+                return self._post("upsert_tasks", "moodle_tasks?on_conflict=id", list(rows.values()))
+            except Exception as e:
+                print(f"[Supabase] upsert_tasks error: {type(e).__name__}: {str(e)[:_LOG_BODY_MAX]}")
+                return False
 
-                endpoint = f"{self.url}/rest/v1/moodle_tasks"
-                requests.post(endpoint, json=payload, headers=self._headers(), timeout=5)
-            except Exception:
-                pass
+        return self._run(_do_upsert, async_call)
 
-        if async_call:
-            threading.Thread(target=_do_upsert, daemon=True).start()
-        else:
-            _do_upsert()
-
-    def upsert_milestone(self, task_id: str, milestone: str, sent_at: int, async_call: bool = True):
-        """Registra un hito en la tabla moodle_task_milestones de Supabase."""
+    def upsert_milestone(self, task_id: str, milestone: str, sent_at: int, async_call: bool = True) -> Optional[bool]:
+        """Registra un hito en la tabla moodle_task_milestones de Supabase (bool as upsert_tasks)."""
         if not self.is_configured:
-            return
+            return True
 
-        def _do_upsert():
-            try:
-                endpoint = f"{self.url}/rest/v1/moodle_task_milestones"
-                payload = {
-                    "task_id": str(task_id),
-                    "milestone": str(milestone),
-                    "sent_at": sent_at,
-                }
-                requests.post(endpoint, json=payload, headers=self._headers(), timeout=5)
-            except Exception:
-                pass
+        def _do_upsert() -> bool:
+            payload = {"task_id": str(task_id), "milestone": str(milestone), "sent_at": sent_at}
+            return self._post("upsert_milestone", "moodle_task_milestones", payload)
 
-        if async_call:
-            threading.Thread(target=_do_upsert, daemon=True).start()
-        else:
-            _do_upsert()
+        return self._run(_do_upsert, async_call)
 
-    def upsert_setting(self, key: str, value: str, async_call: bool = True):
-        """Sincroniza un ajuste en moodle_settings."""
+    def upsert_setting(self, key: str, value: str, async_call: bool = True) -> Optional[bool]:
+        """Sincroniza un ajuste en moodle_settings (bool as upsert_tasks)."""
         if not self.is_configured:
-            return
+            return True
 
-        def _do_upsert():
-            try:
-                endpoint = f"{self.url}/rest/v1/moodle_settings"
-                payload = {"key": str(key), "value": str(value)}
-                requests.post(endpoint, json=payload, headers=self._headers(), timeout=5)
-            except Exception:
-                pass
+        def _do_upsert() -> bool:
+            return self._post("upsert_setting", "moodle_settings", {"key": str(key), "value": str(value)})
 
-        if async_call:
-            threading.Thread(target=_do_upsert, daemon=True).start()
-        else:
-            _do_upsert()
+        return self._run(_do_upsert, async_call)
 
     def fetch_tasks(self) -> List[Dict]:
         """Recupera todas las tareas registradas en la nube."""

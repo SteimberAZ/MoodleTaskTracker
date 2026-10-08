@@ -1,3 +1,4 @@
+import collections
 import contextlib
 import os
 import sqlite3
@@ -9,6 +10,9 @@ from supabase_client import SupabaseClient
 # Settings that must never be mirrored to Supabase.
 LOCAL_ONLY_SETTINGS = frozenset({"moodle_session"})
 
+# Upper bound of milestones kept in memory while their task could not be mirrored.
+_MAX_DEFERRED_MILESTONES = 1000
+
 
 class Storage:
     def __init__(self, db_path: Optional[str] = None):
@@ -18,6 +22,11 @@ class Storage:
         self.db_path = db_path
         self._init_db()
         self.supabase = SupabaseClient.for_worker()
+        # Supabase mirror bookkeeping. moodle_task_milestones has a FK to moodle_tasks, so a
+        # milestone is only mirrored once its task row is known to exist remotely.
+        self.last_task_mirror_ok: Optional[bool] = None  # outcome of the latest tasks upsert
+        self._unmirrored_tasks: set = set()  # ids of tasks whose last upsert failed
+        self._deferred_milestones = collections.deque(maxlen=_MAX_DEFERRED_MILESTONES)
 
     @contextlib.contextmanager
     def _get_conn(self):
@@ -104,10 +113,14 @@ class Storage:
         if self.supabase.is_configured and key not in LOCAL_ONLY_SETTINGS:
             self.supabase.upsert_setting(key, value)
 
-    def save_tasks(self, tasks: List[Dict]) -> Tuple[List[Dict], List[Dict]]:
+    def save_tasks(self, tasks: List[Dict], mirror_async: bool = False) -> Tuple[List[Dict], List[Dict]]:
         """
         Inserta o actualiza las tareas recolectadas.
         Retorna: (tareas_nuevas, tareas_actualizadas)
+
+        The Supabase mirror runs inline by default so ``last_task_mirror_ok`` is known (and
+        milestones can be ordered after their tasks) when this returns; ``mirror_async=True``
+        (UI thread) fires it in the background and leaves the outcome unknown.
         """
         new_tasks = []
         updated_tasks = []
@@ -177,9 +190,33 @@ class Storage:
             conn.commit()
 
         if self.supabase.is_configured and tasks:
-            self.supabase.upsert_tasks(tasks)
+            self._mirror_tasks(tasks, mirror_async)
 
         return new_tasks, updated_tasks
+
+    def _mirror_tasks(self, tasks: List[Dict], mirror_async: bool):
+        ok = self.supabase.upsert_tasks(tasks, async_call=mirror_async)
+        self.last_task_mirror_ok = ok
+        ids = {str(t["id"]) for t in tasks}
+        if ok is False:
+            self._unmirrored_tasks |= ids
+            print(f"[Storage] Supabase task mirror FAILED for {len(ids)} tasks; milestones are deferred.")
+        elif ok is True:
+            self._unmirrored_tasks -= ids
+            self._flush_deferred_milestones()
+
+    def _flush_deferred_milestones(self):
+        """Mirror milestones that waited for their task row, once that row exists remotely."""
+        sent = 0
+        for _ in range(len(self._deferred_milestones)):
+            task_id, milestone, sent_at = self._deferred_milestones.popleft()
+            if task_id in self._unmirrored_tasks:
+                self._deferred_milestones.append((task_id, milestone, sent_at))
+            else:
+                self.supabase.upsert_milestone(task_id, milestone, sent_at)
+                sent += 1
+        if sent:
+            print(f"[Storage] Mirrored {sent} deferred milestones to Supabase.")
 
     def get_all_tasks(self, order_by_due: bool = True, user_id: Optional[str] = None) -> List[Dict]:
         """Visible tasks; with ``user_id`` only that user's rows, otherwise every row (desktop app)."""
@@ -229,4 +266,10 @@ class Storage:
             )
             conn.commit()
         if self.supabase.is_configured:
-            self.supabase.upsert_milestone(task_id, milestone, now)
+            if task_id in self._unmirrored_tasks:
+                # Its task row is missing remotely: the insert would only fail (FK 409).
+                if not self._deferred_milestones:
+                    print("[Storage] Skipping Supabase milestone mirror: task upsert failed this round.")
+                self._deferred_milestones.append((task_id, milestone, now))
+            else:
+                self.supabase.upsert_milestone(task_id, milestone, now)

@@ -491,7 +491,7 @@ def test_task_upsert_includes_user_id_and_drops_ownerless_rows(monkeypatch):
     owned = {"id": "t1", "title": "T", "user_id": "ua"}
     legacy = {"id": "t2", "title": "L"}
     c.upsert_tasks([owned, legacy], async_call=False)
-    assert len(sent) == 1 and sent[0][0] == "https://sb.example/rest/v1/moodle_tasks"
+    assert len(sent) == 1 and sent[0][0] == "https://sb.example/rest/v1/moodle_tasks?on_conflict=id"
     assert [r["id"] for r in sent[0][1]] == ["t1"] and sent[0][1][0]["user_id"] == "ua"
     c.upsert_tasks([legacy], async_call=False)
     assert len(sent) == 1  # nothing owned -> no request
