@@ -63,14 +63,15 @@ const C = [
 // D: weights, passed
 const D = [
   row({ course_id: 13, course_name: 'Arte', item_id: 800, item_type: 'course', item_instance: 31, category_id: null, grade_raw: 85 }),
-  row({ course_id: 13, course_name: 'Arte', item_id: 801, item_type: 'manual', weight_raw: 0.5, grade_raw: 9, grade_max: 10 }),
-  row({ course_id: 13, course_name: 'Arte', item_id: 802, item_type: 'mod', weight_raw: 0.5, grade_raw: 8, grade_max: 10 }),
+  row({ course_id: 13, course_name: 'Arte', item_id: 801, item_type: 'manual', weight_raw: 0.5, grade_raw: 45, grade_max: 50 }),
+  row({ course_id: 13, course_name: 'Arte', item_id: 802, item_type: 'mod', weight_raw: 0.5, grade_raw: 40, grade_max: 50 }),
 ];
 // E: estimate from the course total
 const E = [
   row({ course_id: 14, course_name: 'Bio', item_id: 900, item_type: 'course', grade_raw: 8, grade_max: 20 }),
-  row({ course_id: 14, course_name: 'Bio', item_id: 901, item_type: 'mod', grade_max: 10, grade_raw: 8 }),
-  row({ course_id: 14, course_name: 'Bio', item_id: 902, item_type: 'mod', grade_max: 10 }),
+  // Maxima add up to 120, so they are not direct points and the weights are missing.
+  row({ course_id: 14, course_name: 'Bio', item_id: 901, item_type: 'mod', grade_max: 60, grade_raw: 8 }),
+  row({ course_id: 14, course_name: 'Bio', item_id: 902, item_type: 'mod', grade_max: 60 }),
 ];
 // F: nothing graded yet
 const F = [
@@ -88,11 +89,11 @@ const G = [
 ];
 
 describe('computeCourseStanding', () => {
-  it('uses the Moodle weights when they are complete (A)', () => {
+  it('counts each activity as its share of the 100 points (A)', () => {
     const s = computeCourseStanding(A);
     expect(s).toMatchObject({
       courseId: 10,
-      method: 'weights',
+      method: 'points',
       estimate: false,
       earned: 17,
       spent: 20,
@@ -140,7 +141,7 @@ describe('computeCourseStanding', () => {
 
   it('marks a course with 70 or more as passed (D)', () => {
     expect(computeCourseStanding(D)).toMatchObject({
-      method: 'weights',
+      method: 'points',
       earned: 85,
       spent: 100,
       available: 0,
@@ -170,7 +171,7 @@ describe('computeCourseStanding', () => {
 
   it('reports no_grades while nothing is graded (F)', () => {
     expect(computeCourseStanding(F)).toMatchObject({
-      method: 'weights',
+      method: 'points',
       earned: 0,
       spent: 0,
       available: 100,
@@ -199,13 +200,14 @@ describe('computeCourseStanding', () => {
     expect(computeCourseStanding(deep)).toMatchObject({ method: 'estimate', earned: 30 });
   });
 
-  it('does not trust the weights when an ungraded item has a zero weight (renormalized)', () => {
+  it('skips the renormalized weights when an ungraded item has a zero weight', () => {
     const rows = [
       row({ course_id: 20, item_id: 1, item_type: 'course', item_instance: 31, category_id: null }),
       row({ course_id: 20, item_id: 2, item_type: 'mod', weight_raw: 1, grade_raw: 8, grade_max: 10, graded_at: 5 }),
       row({ course_id: 20, item_id: 3, item_type: 'mod', weight_raw: 0, grade_max: 10 }),
     ];
-    expect(computeCourseStanding(rows)).toMatchObject({ method: 'none', status: 'unknown' });
+    // Maxima add up to 20: direct points apply, the weights are not used.
+    expect(computeCourseStanding(rows)).toMatchObject({ method: 'points', earned: 8, spent: 10, available: 90, status: 'on_track' });
   });
 
   it('does not mark an estimate as passed while activities are still pending (renormalized course total)', () => {
@@ -213,8 +215,9 @@ describe('computeCourseStanding', () => {
     const rows = [
       row({ course_id: 21, item_id: 1, item_type: 'course', item_instance: 31, category_id: null, grade_raw: 90, grade_max: 100 }),
       row({ course_id: 21, item_id: 2, item_type: 'mod', weight_raw: 1, grade_raw: 9, grade_max: 10, graded_at: 5 }),
-      row({ course_id: 21, item_id: 3, item_type: 'mod', weight_raw: 0, grade_max: 10 }),
-      row({ course_id: 21, item_id: 4, item_type: 'mod', weight_raw: 0, grade_max: 10 }),
+      // Maxima add up to 130: not direct points, so the course total is the estimate.
+      row({ course_id: 21, item_id: 3, item_type: 'mod', weight_raw: 0, grade_max: 60 }),
+      row({ course_id: 21, item_id: 4, item_type: 'mod', weight_raw: 0, grade_max: 60 }),
     ];
     const s = computeCourseStanding(rows);
     expect(s).toMatchObject({
@@ -232,9 +235,9 @@ describe('computeCourseStanding', () => {
   it('allows an estimate to pass once nothing is pending', () => {
     const rows = [
       row({ course_id: 22, item_id: 1, item_type: 'course', item_instance: 31, category_id: null, grade_raw: 90, grade_max: 100 }),
-      // Weights add up to 0.7 and the maxima to 20, so neither the weights nor the points method applies.
-      row({ course_id: 22, item_id: 2, item_type: 'mod', weight_raw: 0.5, grade_raw: 9, grade_max: 10, graded_at: 5 }),
-      row({ course_id: 22, item_id: 3, item_type: 'mod', weight_raw: 0.2, grade_raw: 9, grade_max: 10, graded_at: 6 }),
+      // Weights add up to 0.7 and the maxima to 120, so neither the weights nor the direct points method applies.
+      row({ course_id: 22, item_id: 2, item_type: 'mod', weight_raw: 0.5, grade_raw: 9, grade_max: 60, graded_at: 5 }),
+      row({ course_id: 22, item_id: 3, item_type: 'mod', weight_raw: 0.2, grade_raw: 9, grade_max: 60, graded_at: 6 }),
     ];
     expect(computeCourseStanding(rows)).toMatchObject({ method: 'estimate', passed: true, status: 'passed', pendingItems: 0 });
   });
@@ -314,6 +317,61 @@ describe('parseGradeRows', () => {
   });
 });
 
+describe('direct points (activities are worth their maximum)', () => {
+  it('a course with few activities so far is not shown as a percentage', () => {
+    const rows = [
+      row({ course_id: 30, course_name: 'Estadística', item_id: 1, item_type: 'course', item_instance: 31, category_id: null, grade_raw: 80 }),
+      row({ course_id: 30, course_name: 'Estadística', item_id: 2, item_type: 'mod', item_name: 'Evaluación # 1', grade_raw: 4, grade_max: 5, graded_at: 1 }),
+      row({ course_id: 30, course_name: 'Estadística', item_id: 3, item_type: 'mod', grade_max: 10 }),
+      row({ course_id: 30, course_name: 'Estadística', item_id: 4, item_type: 'mod', grade_max: 10 }),
+    ];
+    expect(computeCourseStanding(rows)).toMatchObject({
+      method: 'points',
+      estimate: false,
+      earned: 4,
+      spent: 5,
+      available: 95,
+      needed: 66,
+      status: 'on_track',
+      pendingItems: 2,
+    });
+  });
+
+  it('a course whose Moodle total is missing still counts its graded activities', () => {
+    const rows = [
+      row({ course_id: 31, course_name: 'Redes', item_id: 1, item_type: 'course', item_instance: 31, category_id: null, grade_raw: null }),
+      row({ course_id: 31, course_name: 'Redes', item_id: 2, item_type: 'mod', grade_raw: 10, grade_max: 10, graded_at: 1 }),
+      row({ course_id: 31, course_name: 'Redes', item_id: 3, item_type: 'mod', grade_raw: 0, grade_max: 10, graded_at: 2 }),
+      row({ course_id: 31, course_name: 'Redes', item_id: 4, item_type: 'mod', grade_max: 10 }),
+      row({ course_id: 31, course_name: 'Redes', item_id: 5, item_type: 'mod', grade_max: 10 }),
+    ];
+    expect(computeCourseStanding(rows)).toMatchObject({
+      method: 'points',
+      earned: 10,
+      spent: 20,
+      available: 80,
+      needed: 60,
+      status: 'at_risk',
+    });
+  });
+
+  it('maxima above 100 fall back to the next method', () => {
+    const rows = [
+      row({ course_id: 32, course_name: 'Química II', item_id: 1, item_type: 'course', item_instance: 31, category_id: null, grade_raw: 50 }),
+      row({ course_id: 32, course_name: 'Química II', item_id: 2, item_type: 'mod', weight_raw: 0.5, grade_raw: 40, grade_max: 100, graded_at: 1 }),
+      row({ course_id: 32, course_name: 'Química II', item_id: 3, item_type: 'mod', weight_raw: 0.5, grade_max: 50 }),
+    ];
+    expect(computeCourseStanding(rows)).toMatchObject({ method: 'weights' });
+    // Without weights the same maxima fall back to the course total.
+    expect(computeCourseStanding(rows.map((r) => ({ ...r, weight_raw: null })))).toMatchObject({ method: 'estimate', earned: 50 });
+  });
+
+  it('an unlinked exam adds its points directly', () => {
+    const s = computeCourseStanding(A, [{ course_id: 10, kind: 'final', grade: 15, max_points: 15, linked_item_id: null }]);
+    expect(s).toMatchObject({ method: 'points', earned: 32, spent: 35, available: 65 });
+  });
+});
+
 describe('manual exam grades', () => {
   const exam = (o: Partial<ManualGradeRow> & Pick<ManualGradeRow, 'kind'>): ManualGradeRow => ({
     course_id: 10,
@@ -335,7 +393,7 @@ describe('manual exam grades', () => {
   it('a grade linked to an ungraded Moodle activity replaces it with the same weight', () => {
     const s = computeCourseStanding(A, [exam({ kind: 'midterm', grade: 12, linked_item_id: 502 })]);
     // 12/15 = 0.8 of the 30-point activity.
-    expect(s).toMatchObject({ method: 'weights', earned: 41, spent: 50, available: 50, needed: 29 });
+    expect(s).toMatchObject({ method: 'points', earned: 41, spent: 50, available: 50, needed: 29 });
     expect(s.exams[0]).toMatchObject({ state: 'manual', linkedItemId: 502, linkedItemName: 'Examen parcial' });
     const item = s.graded.find((g) => g.itemId === 502);
     expect(item).toMatchObject({ manual: true, contribution: 24 });
@@ -351,10 +409,10 @@ describe('manual exam grades', () => {
 
   it('an unlinked grade is a fixed block and the Moodle part fills the remaining points', () => {
     const s = computeCourseStanding(A, [exam({ kind: 'final', grade: 15 })]);
-    // Moodle part scaled to 85: 17 * 0.85 + 15 = 29.45; spent 20 * 0.85 + 15 = 32.
-    expect(s).toMatchObject({ earned: 29.45, spent: 32, available: 68, status: 'on_track' });
+    // Direct points: the block adds its 15 points as they are; spent 20 + 15 = 35.
+    expect(s).toMatchObject({ earned: 32, spent: 35, available: 65, status: 'on_track' });
     expect(s.graded[0]).toMatchObject({ itemId: -1, name: 'Examen de fin de ciclo', manual: true, contribution: 15 });
-    expect(s.graded.find((g) => g.itemId === 501)?.contribution).toBe(14.45);
+    expect(s.graded.find((g) => g.itemId === 501)?.contribution).toBe(17);
     expect(s.exams[1].state).toBe('manual');
   });
 
@@ -369,7 +427,7 @@ describe('manual exam grades', () => {
 
   it('a link to an activity that no longer exists counts as an unlinked block', () => {
     const s = computeCourseStanding(A, [exam({ kind: 'midterm', grade: 15, linked_item_id: 999 })]);
-    expect(s.earned).toBe(29.45);
+    expect(s.earned).toBe(32);
     expect(s.exams[0]).toMatchObject({ state: 'manual', linkedItemId: null });
   });
 

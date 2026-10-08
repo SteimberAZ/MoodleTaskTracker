@@ -236,7 +236,10 @@ interface Computation {
   contributions: Map<number, number>;
 }
 
-/** Method 1: Moodle weights, only while they are complete and were not renormalized over the graded items. */
+/**
+ * Method 2: Moodle weights, only while they are complete and were not renormalized over the graded items;
+ * fallback when the maxima add up to more than 100.
+ */
 function byWeights(rows: GradeItemRow[], leaves: GradeItemRow[], courseRow: GradeItemRow | undefined): Computation | null {
   if (leaves.length === 0) return null;
   if (rows.some((r) => r.report_depth !== null && r.report_depth > 3)) return null;
@@ -279,22 +282,24 @@ function byWeights(rows: GradeItemRow[], leaves: GradeItemRow[], courseRow: Grad
   return { method: 'weights', earned, spent: spentR, available: Math.max(0, round2(COURSE_POINTS - spentR)), contributions };
 }
 
-/** Method 2: the activity maxima add up to about 100, so each grade point is one course point. */
-function byPoints(leaves: GradeItemRow[]): Computation | null {
+/**
+ * Method 1: each activity's maximum is its direct share of the course's 100 points (the user's Moodle setup);
+ * activities not created yet are the points still available.
+ */
+function byDirectPoints(leaves: GradeItemRow[]): Computation | null {
   if (leaves.length === 0 || leaves.some((l) => !(range(l) > 0))) return null;
   const total = leaves.reduce((acc, l) => acc + range(l), 0);
-  if (Math.abs(total - COURSE_POINTS) > 1) return null;
-  const scale = COURSE_POINTS / total;
+  if (total > COURSE_POINTS + 0.5) return null;
 
   const contributions = new Map<number, number>();
   let earned = 0;
   let spent = 0;
   for (const leaf of leaves) {
     if (!isGraded(leaf)) continue;
-    const c = Math.max(0, (leaf.grade_raw as number) - (leaf.grade_min ?? 0)) * scale;
+    const c = Math.max(0, (leaf.grade_raw as number) - (leaf.grade_min ?? 0));
     contributions.set(leaf.item_id, c);
     earned += c;
-    spent += range(leaf) * scale;
+    spent += range(leaf);
   }
   const spentR = round2(spent);
   return { method: 'points', earned, spent: spentR, available: Math.max(0, round2(COURSE_POINTS - spentR)), contributions };
@@ -337,8 +342,8 @@ export function latestFetch(rows: GradeItemRow[]): string | null {
  * Applies the student's exam entries to the Moodle rows.
  * - A grade linked to a Moodle activity that Moodle has not graded replaces that activity's grade (same weight,
  *   no double counting). When Moodle already graded it, Moodle wins and the entry is ignored.
- * - A grade without a (valid) link is a fixed block of `max_points` course points: the Moodle part is scaled to
- *   the remaining 100 - blocks points, so the total stays on 100.
+ * - A grade without a (valid) link is a fixed block of `max_points` course points. Under weights or estimate the
+ *   Moodle part is scaled to the remaining 100 - blocks points, so the total stays on 100; direct points add it as is.
  */
 function applyExams(rows: GradeItemRow[], manual: ManualGradeRow[]) {
   const leafById = new Map(rows.filter(isLeaf).map((r) => [r.item_id, r]));
@@ -386,16 +391,25 @@ export function computeCourseStanding(moodleRows: GradeItemRow[], manual: Manual
   const courseRow = rows.find((r) => r.item_type === 'course');
   const gradedLeaves = leaves.filter(isGraded);
 
-  const moodle: Computation = byWeights(rows, leaves, courseRow) ??
-    byPoints(leaves) ??
+  const moodle: Computation = byDirectPoints(leaves) ??
+    byWeights(rows, leaves, courseRow) ??
     byEstimate(courseRow) ?? { method: 'none', earned: 0, spent: null, available: null, contributions: new Map() };
 
-  // Unlinked exam blocks take their points off the top; the Moodle part fills the rest of the 100.
+  // Unlinked exam blocks take their points off the top. Direct points add them as they are; the other methods
+  // scale their Moodle part down so the blocks and the Moodle part still fill the 100.
   const blockMax = Math.min(COURSE_POINTS, blocks.reduce((acc, b) => acc + b.max_points, 0));
   const blockEarned = blocks.reduce((acc, b) => acc + Math.min(b.grade as number, b.max_points), 0);
-  const scale = (COURSE_POINTS - blockMax) / COURSE_POINTS;
   let computation: Computation = moodle;
-  if (blocks.length > 0) {
+  if (blocks.length > 0 && moodle.method === 'points') {
+    const spent = round2((moodle.spent ?? 0) + blockMax);
+    computation = {
+      ...moodle,
+      earned: moodle.earned + blockEarned,
+      spent,
+      available: Math.max(0, round2(COURSE_POINTS - spent)),
+    };
+  } else if (blocks.length > 0) {
+    const scale = (COURSE_POINTS - blockMax) / COURSE_POINTS;
     const base = moodle.method === 'none' ? { ...moodle, method: 'manual' as const, spent: 0 } : moodle;
     const spent = base.spent === null ? null : round2(base.spent * scale + blockMax);
     computation = {

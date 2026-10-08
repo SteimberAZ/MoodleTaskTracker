@@ -37,8 +37,8 @@ const onTrack = [
 ];
 const passed = [
   row({ course_id: 13, item_id: 800, item_type: 'course', item_instance: 31, category_id: null, grade_raw: 85 }),
-  row({ course_id: 13, item_id: 801, item_type: 'mod', weight_raw: 0.5, grade_raw: 9, grade_max: 10 }),
-  row({ course_id: 13, item_id: 802, item_type: 'mod', weight_raw: 0.5, grade_raw: 8, grade_max: 10 }),
+  row({ course_id: 13, item_id: 801, item_type: 'mod', weight_raw: 0.5, grade_raw: 45, grade_max: 50 }),
+  row({ course_id: 13, item_id: 802, item_type: 'mod', weight_raw: 0.5, grade_raw: 40, grade_max: 50 }),
 ];
 const lost = [
   row({ course_id: 12, item_id: 700, item_type: 'course', grade_raw: 20 }),
@@ -48,15 +48,16 @@ const lost = [
 ];
 const estimate = [
   row({ course_id: 14, item_id: 900, item_type: 'course', grade_raw: 8, grade_max: 20 }),
-  row({ course_id: 14, item_id: 901, item_type: 'mod', grade_max: 10, grade_raw: 8 }),
-  row({ course_id: 14, item_id: 902, item_type: 'mod', grade_max: 10 }),
+  // Maxima add up to 120: not direct points, so the course total is the estimate.
+  row({ course_id: 14, item_id: 901, item_type: 'mod', grade_max: 60, grade_raw: 8 }),
+  row({ course_id: 14, item_id: 902, item_type: 'mod', grade_max: 60 }),
 ];
 // Course total renormalized over the graded items (9/10 graded, rest open): the estimate reads 90/100.
 const renormalized = [
   row({ course_id: 21, item_id: 1, item_type: 'course', item_instance: 31, category_id: null, grade_raw: 90, grade_max: 100 }),
   row({ course_id: 21, item_id: 2, item_type: 'mod', weight_raw: 1, grade_raw: 9, grade_max: 10, graded_at: 5 }),
-  row({ course_id: 21, item_id: 3, item_type: 'mod', weight_raw: 0, grade_max: 10 }),
-  row({ course_id: 21, item_id: 4, item_type: 'mod', weight_raw: 0, grade_max: 10 }),
+  row({ course_id: 21, item_id: 3, item_type: 'mod', weight_raw: 0, grade_max: 60 }),
+  row({ course_id: 21, item_id: 4, item_type: 'mod', weight_raw: 0, grade_max: 60 }),
 ];
 const empty = [
   row({ course_id: 15, item_id: 1000, item_type: 'course', item_instance: 31, category_id: null }),
