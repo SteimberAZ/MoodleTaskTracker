@@ -1,4 +1,7 @@
 import Link from 'next/link';
+import { cookies } from 'next/headers';
+import { AVATAR_VERSION_COOKIE, avatarSrc } from '@/lib/avatar';
+import AvatarForm from '@/components/AvatarForm';
 import { requireUser } from '@/lib/auth';
 import { getNtfyStatus } from '@/lib/ntfy-status';
 import { ACTIVATE_NOTIFICATIONS_HREF } from '@/lib/push-setup';
@@ -14,6 +17,7 @@ export default async function AccountPage() {
   const user = await requireUser();
   const subscribeUrl = `${resolveNtfyServer(process.env.NTFY_SERVER)}/${encodeURIComponent(user.ntfy_topic)}`;
   const ntfy = await getNtfyStatus(user.id);
+  const version = (await cookies()).get(AVATAR_VERSION_COOKIE)?.value;
 
   return (
     <>
@@ -23,6 +27,7 @@ export default async function AccountPage() {
 
       <section className="card item" aria-labelledby="profile-title">
         <h2 id="profile-title" className="card-title">Perfil</h2>
+        <AvatarForm src={avatarSrc(user.id, version)} />
         <dl className="meta">
           {user.fullname && <div><dt>Nombre</dt><dd>{user.fullname}</dd></div>}
           <div><dt>Usuario de Moodle</dt><dd>{user.username}</dd></div>

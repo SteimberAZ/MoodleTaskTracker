@@ -25,9 +25,9 @@ function PendingMark() {
 }
 
 /**
- * The app navigation: Tareas / Estadísticas / Recordatorios / Notificaciones / Mi cuenta / Admin (admins only).
- * Short phone labels keep six tabs (admins) within 320px.
- * Logout is not a tab; it sits at the right end of the header (see LogoutButton).
+ * The app navigation: Tareas / Estadísticas / Recordatorios / Notificaciones. Short phone labels keep the four
+ * tabs within 320px. Mi cuenta, Admin and logout are in the account menu at the right end of the header
+ * (see AccountMenu).
  * Rendered twice by SiteHeader: `inline` inside the header (wide screens only) and `bar` as a bottom tab bar
  * (phones only). The bar must live OUTSIDE the sticky header: iOS WebKit mispositions `position: fixed`
  * descendants of a sticky ancestor, which made the bar float up on short pages.

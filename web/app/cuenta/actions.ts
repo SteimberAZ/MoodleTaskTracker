@@ -1,12 +1,15 @@
 'use server';
 
 import { revalidatePath } from 'next/cache';
+import { cookies } from 'next/headers';
 import { requireUser } from '@/lib/auth';
 import { setNtfyEnabled, setUserTopic } from '@/lib/users';
 import { checkCooldown } from '@/lib/rate-limit';
 import { generateNtfyTopic, resolveNtfyServer } from '@/lib/random';
 import { confirmNtfy } from '@/lib/ntfy-status';
 import { countUserPushDevices } from '@/lib/push-subscriptions';
+import { AVATAR_VERSION_COOKIE, parseAvatarDataUrl } from '@/lib/avatar';
+import { AVATAR_SAVE_FAILURE, deleteAvatar, saveAvatar } from '@/lib/avatar-store';
 
 export interface TestPushState {
   ok?: boolean;
@@ -110,4 +113,51 @@ export async function setNtfyDelivery(_prev: NtfyToggleState, formData: FormData
     };
   }
   return { enabled };
+}
+
+export interface AvatarState {
+  error?: string;
+  saved?: number;
+}
+
+/** Bumps this device's photo version, so the header asks for the new image instead of a cached one. */
+async function bumpAvatarVersion(now: number): Promise<void> {
+  const store = await cookies();
+  store.set(AVATAR_VERSION_COOKIE, String(now), {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    path: '/',
+    maxAge: 60 * 60 * 24 * 365,
+  });
+}
+
+/** "Cambiar foto": the browser sends the photo already resized to a small square; it is validated again here. */
+export async function uploadAvatar(_prev: AvatarState, formData: FormData): Promise<AvatarState> {
+  const user = await requireUser();
+  const photo = parseAvatarDataUrl(formData.get('image'));
+  if (!photo) return { error: 'Esa imagen no se puede usar. Prueba con una foto JPG o PNG.' };
+  try {
+    await saveAvatar(user.id, photo.dataUrl);
+  } catch {
+    return { error: AVATAR_SAVE_FAILURE };
+  }
+  const now = Date.now();
+  await bumpAvatarVersion(now);
+  revalidatePath('/', 'layout');
+  return { saved: now };
+}
+
+/** "Quitar foto": back to the default image. */
+export async function removeAvatar(_prev: AvatarState, _formData: FormData): Promise<AvatarState> {
+  const user = await requireUser();
+  try {
+    await deleteAvatar(user.id);
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : 'No se pudo quitar la foto.' };
+  }
+  const now = Date.now();
+  await bumpAvatarVersion(now);
+  revalidatePath('/', 'layout');
+  return { saved: now };
 }

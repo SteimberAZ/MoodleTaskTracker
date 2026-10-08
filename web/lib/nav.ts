@@ -5,6 +5,8 @@ export const REMINDERS_PATH = '/recordatorios';
 export const STATS_PATH = '/estadisticas';
 /** The class schedule lives inside Recordatorios (a segment at the top of both pages), so it gets no tab of its own. */
 export const SCHEDULE_PATH = '/horario';
+export const ACCOUNT_PATH = '/cuenta';
+export const ADMIN_PATH = '/admin';
 /** The only page without the app navigation (logged out). */
 export const LOGIN_PATH = '/login';
 
@@ -35,8 +37,8 @@ export function isNavActive(href: string, pathname: string): boolean {
 }
 
 /**
- * Tabs of the main navigation, in display order. Logout is deliberately not a tab: it lives at the
- * right end of the header. Admin appears for admins only: five tabs for users, six for admins.
+ * Tabs of the main navigation, in display order: four for everyone. Mi cuenta, Admin and logout are not tabs:
+ * they live in the account menu behind the profile photo at the right end of the header (see AccountMenu).
  */
 export function buildNavItems(isAdmin: boolean, pathname: string): NavItem[] {
   const items: Omit<NavItem, 'current'>[] = [
@@ -44,8 +46,13 @@ export function buildNavItems(isAdmin: boolean, pathname: string): NavItem[] {
     { href: STATS_PATH, label: 'Estadísticas', shortLabel: 'Notas', icon: 'chart' },
     { href: REMINDERS_PATH, label: 'Recordatorios', shortLabel: 'Recordar', icon: 'reminders' },
     { href: '/notificaciones', label: 'Notificaciones', shortLabel: 'Avisos', icon: 'bell' },
-    { href: '/cuenta', label: 'Mi cuenta', shortLabel: 'Cuenta', icon: 'user' },
   ];
-  if (isAdmin) items.push({ href: '/admin', label: 'Admin', icon: 'shield' });
+  return items.map((item) => ({ ...item, current: isNavActive(item.href, pathname) }));
+}
+
+/** Links of the account menu, in display order; "Cerrar sesión" is appended by the menu itself, always last. */
+export function buildAccountLinks(isAdmin: boolean, pathname: string): NavItem[] {
+  const items: Omit<NavItem, 'current'>[] = [{ href: ACCOUNT_PATH, label: 'Mi cuenta', icon: 'user' }];
+  if (isAdmin) items.push({ href: ADMIN_PATH, label: 'Admin', icon: 'shield' });
   return items.map((item) => ({ ...item, current: isNavActive(item.href, pathname) }));
 }

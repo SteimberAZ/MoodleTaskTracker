@@ -1,7 +1,9 @@
 import { Suspense } from 'react';
 import Link from 'next/link';
+import { cookies } from 'next/headers';
 import { getCurrentUser } from '@/lib/auth';
-import LogoutButton from './LogoutButton';
+import { AVATAR_VERSION_COOKIE, avatarSrc } from '@/lib/avatar';
+import AccountMenu from './AccountMenu';
 import NavLinks, { NavPlaceholder } from './NavLinks';
 
 /** Logo plus the "mineral / tareas" wordmark. Swaps the cap colour in dark mode. */
@@ -20,14 +22,15 @@ export default function Brand() {
   );
 }
 
-/** Navigation and logout of the signed-in user. Resolves after the session lookup; the header does not wait for it. */
+/** Navigation and account menu of the signed-in user. Resolves after the session lookup; the header does not wait for it. */
 async function HeaderUserNav() {
   const user = await getCurrentUser().catch(() => null);
   if (!user) return null;
+  const version = (await cookies()).get(AVATAR_VERSION_COOKIE)?.value;
   return (
     <>
       <NavLinks isAdmin={user.is_admin} variant="inline" />
-      <LogoutButton />
+      <AccountMenu isAdmin={user.is_admin} avatarSrc={avatarSrc(user.id, version)} name={user.fullname || user.username} />
     </>
   );
 }
@@ -39,7 +42,7 @@ async function BottomUserNav() {
 }
 
 /**
- * Sticky header shared by every page: logo on the left, navigation, logout at the right end.
+ * Sticky header shared by every page: logo on the left, navigation, the account menu (profile photo) at the right end.
  * The header and the logo render synchronously, so a cold open paints the shell before the session query
  * returns; the user-dependent parts stream in behind placeholders that reserve their space (see NavPlaceholder).
  * Logged out (or when the session cannot be resolved) it shows just the logo.

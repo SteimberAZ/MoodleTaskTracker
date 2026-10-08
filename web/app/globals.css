@@ -238,29 +238,70 @@ body:has(.site-nav) .container {
 /* Two instances of the nav: the bottom bar on phones, the inline header nav on wide screens. */
 .site-nav--inline { display: none; }
 
-/* Logout: right end of the header. Phones show an icon-only 44px button, wide screens icon plus "Salir". */
-.logout-form { display: flex; flex-shrink: 0; margin: 0; }
-.logout-btn {
+/* Account menu: the profile photo at the right end of the header opens Mi cuenta / Admin / Cerrar sesión. */
+.account { position: relative; flex-shrink: 0; }
+.account-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
   width: 44px;
   height: 44px;
-  margin-right: -8px; /* the 20px glyph sits on the gutter line, the tap target stays 44px */
+  margin-right: -4px;
   padding: 0;
   border: 0;
   border-radius: 50%;
   background: transparent;
-  color: var(--text);
-  font: 700 13px/1 var(--font);
   cursor: pointer;
 }
-.logout-label { display: none; }
+.account-avatar { width: 36px; height: 36px; border-radius: 50%; object-fit: cover; border: 2px solid var(--header-border); background: var(--border); }
+.account-btn[aria-expanded='true'] .account-avatar { border-color: var(--clay); }
+.account-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 40;
+  min-width: 220px;
+  max-width: calc(100vw - 2 * var(--gutter));
+  padding: 6px;
+  border: 1px solid var(--header-border);
+  border-radius: 16px;
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18);
+}
+.account-menu[hidden] { display: none; }
+.account-name { margin: 0; padding: 8px 12px 6px; font-size: 13px; font-weight: 700; color: var(--muted); overflow-wrap: anywhere; }
+.account-menu form { margin: 0; }
+.account-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 44px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 10px;
+  background: none;
+  color: var(--text);
+  font: 700 14px/1.2 var(--font);
+  text-align: left;
+  cursor: pointer;
+}
+.account-menu-item:hover, .account-menu-item[aria-current='page'] { background: var(--border); }
+.account-menu-last { margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--border); }
+
+/* Profile photo on Mi cuenta. The file input is visually hidden inside its button-styled label. */
+.avatar-form { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px; margin-bottom: 12px; }
+.avatar-preview { width: 96px; height: 96px; border-radius: 50%; object-fit: cover; border: 2px solid var(--border); background: var(--border); }
+.avatar-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.avatar-actions form { margin: 0; }
+.avatar-actions label { cursor: pointer; }
+.avatar-actions label:focus-within { outline: 3px solid var(--focus); outline-offset: 2px; }
+.avatar-form .alert { flex-basis: 100%; }
 
 /* Stand-ins while the user navigation streams in (NavPlaceholder): same boxes, nothing visible inside. */
 .site-nav--bar.nav-placeholder { min-height: calc(var(--nav-h) + env(safe-area-inset-bottom)); }
-.logout-placeholder { display: block; flex-shrink: 0; width: 44px; height: 44px; margin-right: -8px; }
+.logout-placeholder { display: block; flex-shrink: 0; width: 44px; height: 44px; margin-right: -4px; }
 
 @media (min-width: 720px) {
   :root { --gutter: 24px; }
@@ -307,24 +348,16 @@ body:has(.site-nav) .container {
   .nav-item[aria-current='page'] { background: var(--btn-bg); color: var(--btn-text); }
   .nav-item:not([aria-current='page']):hover { background: var(--border); }
 
-  .logout-btn {
-    width: auto;
-    margin-right: 0;
-    padding: 0 16px;
-    border: 1px solid var(--line);
-    border-radius: 100px;
-  }
-  .logout-label { display: inline; }
-  .logout-btn:hover { background: var(--border); }
+  .account-btn { margin-right: 0; }
   .site-nav--inline.nav-placeholder { min-height: 44px; }
-  .logout-placeholder { width: 92px; margin-right: 0; }
+  .logout-placeholder { margin-right: 0; }
 
   .container { padding-top: 32px; }
   body:has(.site-nav) .container { padding-bottom: 80px; }
 }
 
-/* Mid widths: six inline tabs only fit with the short labels and tighter padding. */
-@media (min-width: 720px) and (max-width: 1099px) {
+/* Mid widths: the four inline tabs only fit with the short labels and tighter padding. */
+@media (min-width: 720px) and (max-width: 959px) {
   .site-nav--inline .nav-item { padding: 0 12px; }
   .site-nav--inline .nav-item .nav-label-short { display: inline; }
   .site-nav--inline .nav-item .nav-label-long { display: none; }

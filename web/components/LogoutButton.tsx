@@ -6,11 +6,10 @@ import { pushLogoutCleanup } from '@/lib/push-client';
 import { LogOutIcon } from './Icons';
 
 /**
- * Logout control at the right end of the header. A POST form bound to the `logout` server action
+ * "Cerrar sesión", the last entry of the account menu (AccountMenu). A POST form bound to the `logout` server action
  * (never a GET link, so a prefetch or a crawler cannot end the session).
  * Before the form posts, this device's push subscription is removed on the server (while the session cookie
  * is still valid) and unsubscribed locally, bounded to 1.5 s, so pushes stop reaching a device that logged out.
- * Phones: icon-only 44px button. Wide screens: icon plus the "Salir" text. The accessible name is "Salir" on both.
  */
 export default function LogoutButton() {
   const cleaned = useRef(false);
@@ -35,9 +34,9 @@ export default function LogoutButton() {
         });
       }}
     >
-      <button type="submit" className="logout-btn" aria-label="Salir" title="Cerrar sesión">
+      <button type="submit" className="account-menu-item">
         <LogOutIcon />
-        <span className="logout-label" aria-hidden="true">Salir</span>
+        <span>Cerrar sesión</span>
       </button>
     </form>
   );

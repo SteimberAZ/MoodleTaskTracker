@@ -2,20 +2,22 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import NavLinks from '@/components/NavLinks';
-import { REMINDERS_PATH, SCHEDULE_PATH, TASKS_PATH, buildNavItems, isNavActive } from '@/lib/nav';
+import { REMINDERS_PATH, SCHEDULE_PATH, TASKS_PATH, buildAccountLinks, buildNavItems, isNavActive } from '@/lib/nav';
 
 const hrefs = (isAdmin: boolean) => buildNavItems(isAdmin, '/').map((i) => i.href);
 const labels = (isAdmin: boolean) => buildNavItems(isAdmin, '/').map((i) => i.label);
 
 describe('buildNavItems', () => {
-  it('shows five tabs to a regular user, in order', () => {
-    expect(hrefs(false)).toEqual(['/', '/estadisticas', '/recordatorios', '/notificaciones', '/cuenta']);
-    expect(labels(false)).toEqual(['Tareas', 'Estadísticas', 'Recordatorios', 'Notificaciones', 'Mi cuenta']);
+  it('shows the same four tabs to everyone, in order', () => {
+    expect(hrefs(false)).toEqual(['/', '/estadisticas', '/recordatorios', '/notificaciones']);
+    expect(labels(false)).toEqual(['Tareas', 'Estadísticas', 'Recordatorios', 'Notificaciones']);
+    expect(hrefs(true)).toEqual(hrefs(false));
   });
 
-  it('adds Admin last for admins, for six tabs at most', () => {
-    expect(hrefs(true)).toEqual(['/', '/estadisticas', '/recordatorios', '/notificaciones', '/cuenta', '/admin']);
-    expect(buildNavItems(true, '/')).toHaveLength(6);
+  it('has no account, admin or logout tab: they live in the account menu', () => {
+    for (const isAdmin of [false, true]) {
+      expect(hrefs(isAdmin).some((h) => h === '/cuenta' || h === '/admin')).toBe(false);
+    }
   });
 
   it('has no logout tab: logout lives in the header', () => {
@@ -30,7 +32,6 @@ describe('buildNavItems', () => {
     expect(byHref['/notificaciones']).toBe('Avisos');
     expect(byHref['/recordatorios']).toBe('Recordar');
     expect(byHref['/estadisticas']).toBe('Notas');
-    expect(byHref['/cuenta']).toBe('Cuenta');
     expect(byHref['/']).toBeUndefined();
   });
 
@@ -42,13 +43,27 @@ describe('buildNavItems', () => {
     expect(current('/notificaciones')).toEqual(['/notificaciones']);
     expect(current('/estadisticas')).toEqual(['/estadisticas']);
     expect(current('/estadisticas/x')).toEqual(['/estadisticas']);
-    expect(current('/cuenta')).toEqual(['/cuenta']);
-    expect(current('/admin')).toEqual(['/admin']);
+    expect(current('/cuenta')).toEqual([]);
   });
 
   it('marks nothing as current on unrelated routes', () => {
     expect(buildNavItems(true, '/login').some((i) => i.current)).toBe(false);
     expect(buildNavItems(false, '/admin').some((i) => i.current)).toBe(false);
+  });
+});
+
+describe('buildAccountLinks', () => {
+  it('lists Mi cuenta for everyone and Admin only for admins', () => {
+    expect(buildAccountLinks(false, '/').map((i) => i.label)).toEqual(['Mi cuenta']);
+    expect(buildAccountLinks(true, '/').map((i) => [i.href, i.label])).toEqual([
+      ['/cuenta', 'Mi cuenta'],
+      ['/admin', 'Admin'],
+    ]);
+  });
+
+  it('marks the current account page', () => {
+    expect(buildAccountLinks(true, '/admin').filter((i) => i.current).map((i) => i.href)).toEqual(['/admin']);
+    expect(buildAccountLinks(true, '/').some((i) => i.current)).toBe(false);
   });
 });
 
@@ -64,7 +79,7 @@ describe('isNavActive', () => {
     expect(isNavActive(REMINDERS_PATH, SCHEDULE_PATH)).toBe(true);
     expect(isNavActive(REMINDERS_PATH, '/horariox')).toBe(false);
     expect(buildNavItems(true, SCHEDULE_PATH).filter((i) => i.current).map((i) => i.href)).toEqual(['/recordatorios']);
-    expect(buildNavItems(true, '/')).toHaveLength(6);
+    expect(buildNavItems(true, '/')).toHaveLength(4);
   });
 
   it('only matches whole path segments', () => {
