@@ -13,6 +13,6 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
-  // Everything except Next static assets, the favicon and public image files (logo on the login page).
-  matcher: ['/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)'],
+  // Everything except Next static assets, the favicon, the public brand assets and public image files.
+  matcher: ['/((?!_next/static|_next/image|favicon.ico|icon.svg|brand/|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)'],
 };
