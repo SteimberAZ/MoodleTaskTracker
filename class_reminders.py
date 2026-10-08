@@ -187,6 +187,7 @@ def process_class_reminders(
                 priority="high",
                 ttl=ttl,
                 ntfy_tags=NTFY_TAGS,
+                kind="class",
             )
             if ok:
                 storage.record_milestone(key, MILESTONE, mirror=False)

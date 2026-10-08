@@ -5,6 +5,8 @@ of their installed-PWA subscriptions (the primary channel) and ntfy to their pri
 switched per user with ``moodle_users.ntfy_enabled``, on by default). Task milestones, custom
 reminders, class reminders and "Moodle desconectado" alerts all go through it. The "Enviar prueba"
 button (``process_push_tests``) targets one subscription, so it uses the same sender directly.
+Every attempt for a user is also handed to ``history`` (notification_log.NotificationLog) with its
+``kind`` and per-channel outcome, so the web can list it; that never affects the delivery result.
 
 A delivery counts as successful when at least one channel accepted the message. Callers use that to
 decide whether to record a milestone / advance a reminder, so a total failure is retried later.
@@ -48,6 +50,21 @@ def ntfy_enabled(user: Dict) -> bool:
     return user.get("ntfy_enabled") is not False
 
 
+def _record_history(history, user_id: str, kind: Optional[str], title, body, url, tag, **outcome) -> None:
+    """Hand one outcome to the history; never raises. Skipped without a history, a kind or a user id.
+
+    ``kind`` is chosen by each caller (task / reminder / class / status / test), never inferred from
+    the tag. A send without a user id (legacy env-topic path) is not recorded.
+    """
+    if history is None or not kind or not user_id:
+        return
+    try:
+        history.record(user_id, kind, title, body, url, tag, **outcome)
+        _log_changed("history-record", None)
+    except Exception as exc:  # noqa: BLE001 - logging must never break a delivery
+        _log_changed("history-record", f"[Deliver] could not record the notification history: {type(exc).__name__}")
+
+
 def deliver_to_user(
     user: Dict,
     title: str,
@@ -59,6 +76,8 @@ def deliver_to_user(
     ttl: int = TTL_TASK,
     ntfy_tags: str = "bell",
     ntfy_link: str = "",
+    kind: Optional[str] = None,
+    history=None,
     supabase=None,
     sender=None,
     ntfy: Optional[Callable[..., bool]] = None,
@@ -69,11 +88,14 @@ def deliver_to_user(
     ``url`` / ``tag`` go to the Web Push payload (a path inside the PWA; the tag replaces an older
     notification with the same tag). ``priority`` uses ntfy words and also picks the Web Push urgency.
     ``ntfy_tags`` / ``ntfy_link`` only shape the ntfy copy. A user without a topic is never routed to
-    the owner's topic. Never raises.
+    the owner's topic. ``kind`` (task / reminder / class / status / test) and ``history`` record this
+    attempt in the user's notification history; without either nothing is recorded. Never raises.
     """
     user_id = str(user.get("id") or "")
     delivered = False
     parts = []
+    push_ok = push_total = 0
+    ntfy_attempted = ntfy_ok = False
 
     # 1. Web Push (primary): every subscription the user registered from an installed PWA / browser.
     if sender is not None and getattr(sender, "enabled", False) and supabase is not None and user_id:
@@ -92,7 +114,8 @@ def deliver_to_user(
                 print(f"[Deliver] user {user_id[:8]}: push send crashed: {type(exc).__name__}")
                 result = PushResult.FAILED
             counts[result if result in counts else PushResult.FAILED] += 1
-        delivered = counts[PushResult.OK] > 0
+        push_ok, push_total = counts[PushResult.OK], len(subs)
+        delivered = push_ok > 0
         text = f"push {counts[PushResult.OK]}/{len(subs)} ok" if subs else "push none"
         parts.append(text + (f" ({counts[PushResult.GONE]} gone)" if counts[PushResult.GONE] else ""))
     else:
@@ -101,6 +124,7 @@ def deliver_to_user(
     # 2. ntfy (optional, per user).
     topic = str(user.get("ntfy_topic") or "").strip()
     if ntfy_enabled(user) and topic:
+        ntfy_attempted = True
         post = ntfy or notifier.post_ntfy
         text = f"{body}\n🔗 {ntfy_link}" if ntfy_link else body
         try:
@@ -114,15 +138,20 @@ def deliver_to_user(
         parts.append("ntfy off")
 
     print(f"[Deliver] user {user_id[:8] or '?'}: {', '.join(parts)} -> {'delivered' if delivered else 'NOT delivered'}")
+    _record_history(
+        history, user_id, kind, title, body, url, tag,
+        push_ok=push_ok, push_total=push_total, ntfy_attempted=ntfy_attempted, ntfy_ok=ntfy_ok,
+    )
     return delivered
 
 
-def process_push_tests(supabase, sender) -> int:
+def process_push_tests(supabase, sender, history=None) -> int:
     """Answer the "Enviar prueba" button: send a test push to every subscription that asked for one.
 
     The web sets ``test_requested_at`` on the row; this clears it again, also when the send failed or
     raised, so a broken subscription cannot loop. Returns how many tests were accepted. Never raises
-    for a single row, and does nothing without a working sender / database.
+    for a single row, and does nothing without a working sender / database. Each test is recorded in
+    ``history`` as kind "test" (one device, so push 1/1 or 0/1).
     """
     if sender is None or not getattr(sender, "enabled", False):
         return 0
@@ -143,6 +172,11 @@ def process_push_tests(supabase, sender) -> int:
             result = PushResult.FAILED
         if result is PushResult.OK:
             sent += 1
+        _record_history(
+            history, str(row.get("user_id") or ""), "test",
+            TEST_PAYLOAD["title"], TEST_PAYLOAD["body"], TEST_PAYLOAD["url"], TEST_PAYLOAD["tag"],
+            push_ok=1 if result is PushResult.OK else 0, push_total=1, ntfy_attempted=False, ntfy_ok=False,
+        )
         if result is not PushResult.GONE:  # a deleted row has no flag left to clear
             try:
                 supabase.update_push_subscription(row["id"], {"test_requested_at": None})

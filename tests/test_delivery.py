@@ -560,7 +560,8 @@ def test_the_worker_adapter_builds_the_reminder_notification():
     owner = {"id": "u1", "ntfy_topic": "utm-owner1", "ntfy_enabled": True}
     assert send(owner, {"id": "r9"}, "Beber agua", "Ahora") is True
     assert calls == [(owner, "Beber agua", "Ahora", {
-        "url": "/", "tag": "reminder-r9", "priority": "high", "ttl": TTL_REMINDER, "ntfy_tags": "alarm_clock,bell"})]
+        "url": "/", "tag": "reminder-r9", "priority": "high", "ttl": TTL_REMINDER, "ntfy_tags": "alarm_clock,bell",
+        "kind": "reminder"})]
 
 
 # ---- class reminders (owner only) ---------------------------------------------------------------------

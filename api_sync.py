@@ -97,7 +97,10 @@ def _user_alert(deliver: Callable, user: Dict) -> Callable:
     """An ``alert`` callable (the ``send_system_alert`` keywords) that reaches every channel of ``user``."""
 
     def alert(title, message, priority="default", tags="", topic=None, click_url="", **_unused):
-        return deliver(user, title, message, url="/", tag="moodle-status", priority=priority, ntfy_tags=tags or "bell")
+        return deliver(
+            user, title, message, url="/", tag="moodle-status", priority=priority, ntfy_tags=tags or "bell",
+            kind="status",
+        )
 
     return alert
 

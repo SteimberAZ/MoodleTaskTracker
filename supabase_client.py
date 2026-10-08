@@ -482,6 +482,45 @@ class SupabaseClient:
             print(f"[Supabase] update_push_subscription error: {type(e).__name__}")
             return False
 
+    # ---- Notification history (moodle_notification_log) ----------------------------------------------
+
+    def insert_notification_log(self, rows: List[Dict]) -> None:
+        """Bulk-insert history rows (all rows must share the same keys; see notification_log.build_row).
+
+        Does nothing when Supabase is not configured or there are no rows. RAISES RuntimeError
+        (``HTTP <status>: <body>``) or the transport error so the caller can log it once and drop the
+        rows. The 5-second timeout keeps an outage from stalling the worker tick.
+        """
+        if not self.is_configured or not rows:
+            return
+        headers = dict(self._headers())
+        headers["Prefer"] = "return=minimal"
+        r = requests.post(
+            f"{self.url}/rest/v1/moodle_notification_log", json=rows, headers=headers, timeout=5
+        )
+        status = getattr(r, "status_code", 0)
+        if not (isinstance(status, int) and 200 <= status < 300):
+            raise RuntimeError(f"HTTP {status}: {str(getattr(r, 'text', '') or '')[:_LOG_BODY_MAX]}")
+
+    def prune_notification_log(self, cutoff_iso: str) -> None:
+        """Delete history rows created before ``cutoff_iso`` (UTC, ``YYYY-MM-DDTHH:MM:SSZ``).
+
+        Same contract as ``insert_notification_log``: no-op when unconfigured, RAISES on failure.
+        """
+        if not self.is_configured:
+            return
+        headers = dict(self._headers())
+        headers["Prefer"] = "return=minimal"
+        r = requests.delete(
+            f"{self.url}/rest/v1/moodle_notification_log",
+            params={"created_at": f"lt.{cutoff_iso}"},
+            headers=headers,
+            timeout=10,
+        )
+        status = getattr(r, "status_code", 0)
+        if not (isinstance(status, int) and 200 <= status < 300):
+            raise RuntimeError(f"HTTP {status}: {str(getattr(r, 'text', '') or '')[:_LOG_BODY_MAX]}")
+
     def delete_push_subscription(self, sub_id: str) -> bool:
         """DELETE one subscription row (the browser unsubscribed or the row kept failing)."""
         if not self.is_configured:

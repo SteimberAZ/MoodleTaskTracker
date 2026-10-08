@@ -284,6 +284,7 @@ class TaskNotificationManager:
                     priority=msg["priority"],
                     ntfy_tags=msg["tags"],
                     ntfy_link=kwargs.get("task_url", ""),
+                    kind="task",
                 )
             )
 

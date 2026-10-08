@@ -7,8 +7,8 @@ from typing import Dict, List, Optional, Tuple
 from supabase_client import SupabaseClient
 
 
-# Settings that must never be mirrored to Supabase.
-LOCAL_ONLY_SETTINGS = frozenset({"moodle_session"})
+# Settings that must never be mirrored to Supabase (the cookie is a secret; the prune time is per worker).
+LOCAL_ONLY_SETTINGS = frozenset({"moodle_session", "notification_log_pruned_at"})
 
 # Upper bound of milestones kept in memory while their task could not be mirrored.
 _MAX_DEFERRED_MILESTONES = 1000

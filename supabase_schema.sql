@@ -405,5 +405,47 @@ DROP POLICY IF EXISTS moodle_app_all ON public.moodle_class_schedule;
 CREATE POLICY moodle_app_all ON public.moodle_class_schedule
     FOR ALL TO moodle_app USING (true) WITH CHECK (true);
 
+-- ==========================================================
+-- 10. Notification history ("Avisos" > Historial).
+--     The worker writes one row per notification it executes for a user (not per device): the
+--     kind, the text, the per-channel outcome and the overall status. The web only reads it and
+--     lets a user clear their own rows. Rows older than 90 days are pruned by the worker once a day.
+--     kind:   task | reminder | class | status | test
+--     status: sent (at least one channel accepted it) | failed
+--     push_ok / push_total: Web Push devices that accepted / devices tried.
+--     ntfy_attempted / ntfy_ok: whether the ntfy copy was tried and whether it was accepted.
+-- ==========================================================
+CREATE TABLE IF NOT EXISTS public.moodle_notification_log (
+    id             uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id        uuid NOT NULL REFERENCES public.moodle_users(id) ON DELETE CASCADE,
+    kind           text NOT NULL CHECK (kind IN ('task', 'reminder', 'class', 'status', 'test')),
+    title          text NOT NULL,
+    body           text,
+    url            text,
+    tag            text,
+    status         text NOT NULL CHECK (status IN ('sent', 'failed')),
+    push_ok        integer NOT NULL DEFAULT 0,
+    push_total     integer NOT NULL DEFAULT 0,
+    ntfy_attempted boolean NOT NULL DEFAULT false,
+    ntfy_ok        boolean NOT NULL DEFAULT false,
+    created_at     timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_moodle_notification_log_user_created
+    ON public.moodle_notification_log (user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_moodle_notification_log_created
+    ON public.moodle_notification_log (created_at);
+
+-- Privileges + RLS (same model as above): moodle_app only.
+ALTER TABLE public.moodle_notification_log ENABLE ROW LEVEL SECURITY;
+
+REVOKE ALL ON public.moodle_notification_log FROM anon, authenticated;
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.moodle_notification_log TO moodle_app;
+
+DROP POLICY IF EXISTS moodle_app_all ON public.moodle_notification_log;
+CREATE POLICY moodle_app_all ON public.moodle_notification_log
+    FOR ALL TO moodle_app USING (true) WITH CHECK (true);
+
 -- Ask PostgREST to reload its schema cache so the new tables and columns are served right away.
 NOTIFY pgrst, 'reload schema';

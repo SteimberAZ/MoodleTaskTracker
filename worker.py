@@ -17,6 +17,7 @@ from class_reminders import process_class_reminders
 from class_schedule import check_and_notify_upcoming_classes
 from custom_reminders import process_due_reminders
 from delivery import deliver_to_user, process_push_tests
+from notification_log import NotificationLog
 from supabase_client import SupabaseClient
 from moodle_api import resolve_credentials
 from api_sync import sync_tasks_via_api, sync_user_via_api
@@ -236,6 +237,7 @@ def reminder_deliverer(deliver: Callable) -> Callable[[Dict, Dict, str, str], bo
             priority="high",
             ttl=TTL_REMINDER,
             ntfy_tags="alarm_clock,bell",
+            kind="reminder",
         )
 
     return send
@@ -263,7 +265,9 @@ def run_worker():
     supabase = SupabaseClient.for_worker()
     # Web Push is the primary channel; without pywebpush or a VAPID key it is disabled and only ntfy is used.
     sender = WebPushSender.from_env(supabase)
-    deliver = partial(deliver_to_user, supabase=supabase, sender=sender)
+    # Every delivery attempt is buffered here and written once per tick (see notification_log.py).
+    history = NotificationLog(supabase)
+    deliver = partial(deliver_to_user, supabase=supabase, sender=sender, history=history)
 
     print("=" * 60)
     print("  🚀 MOODLE TRACKER - HEADLESS WORKER (MULTIUSUARIO)")
@@ -286,70 +290,76 @@ def run_worker():
     seen_logins: Dict[str, str] = {}  # user id -> last_login_at already synced
 
     while True:
-        now_ts = time.time()
-        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-        # 1. Class reminders: each user's imported schedule (moodle_class_schedule) and lead time
         try:
-            process_class_reminders(storage, supabase, deliver)
-        except Exception as err:
-            print(f"[{now_str}] [!] Error en recordatorios de clases importadas: {err}")
+            now_ts = time.time()
+            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        # 1a. Built-in owner schedule, only for admins without an imported one (env NTFY_TOPIC as fallback)
-        try:
-            check_and_notify_upcoming_classes(storage, supabase=supabase, deliver=deliver)
-        except Exception as err:
-            print(f"[{now_str}] [!] Error en recordatorio de clases: {err}")
-
-        # 1b. Custom reminders (Supabase -> every channel of each owner)
-        try:
-            process_due_reminders(supabase, deliver=reminder_deliverer(deliver))
-        except Exception as err:
-            print(f"[{now_str}] [!] Error en recordatorios personalizados: {err}")
-
-        # 1c. Web Push test requests: the web only sets test_requested_at, the worker sends the push
-        try:
-            process_push_tests(supabase, sender)
-        except Exception as err:
-            print(f"[{now_str}] [!] Error en pruebas de Web Push: {err}")
-
-        # 2. Recargar cookie fresca desde .env si fue modificada en disco (legacy path)
-        current_cookie = _read_env_cookie() or storage.get_setting("moodle_session", "")
-        if current_cookie and current_cookie != session_cookie:
-            print(f"[{now_str}] 🔄 Se detectó actualización de cookie en .env.")
-            session_cookie = current_cookie
-            storage.set_setting("moodle_session", session_cookie)
-
-        should_check_tasks = (now_ts - last_tasks_check) >= tasks_check_seconds
-        should_keep_alive = (now_ts - last_keep_alive) >= keep_alive_seconds and not legacy.api_active
-
-        if should_check_tasks:
-            print(f"\n[{now_str}] 📋 Verificando Moodle y actualizando tareas...")
-            last_tasks_check = time.time()
-            last_keep_alive = time.time()
-            mode = run_task_tick(
-                storage,
-                supabase,
-                legacy_check=lambda: legacy_check_tasks(storage, supabase, legacy, base_url, session_cookie, now_str),
-                seen_logins=seen_logins,
-                deliver=deliver,
-            )
-        else:
-            # New logins/registrations are synced right away instead of waiting for the next round.
+            # 1. Class reminders: each user's imported schedule (moodle_class_schedule) and lead time
             try:
-                fresh = users_needing_immediate_sync(supabase.fetch_active_users(), seen_logins)
+                process_class_reminders(storage, supabase, deliver)
             except Exception as err:
-                fresh = []
-                print(f"[{now_str}] [!] No se pudo revisar inicios de sesión nuevos: {err}")
-            if fresh:
-                print(f"\n[{now_str}] 🆕 Sincronizando {len(fresh)} usuario(s) con inicio de sesión reciente...")
-                sync_all_users(storage, supabase, fresh, deliver=deliver)
-                remember_logins(fresh, seen_logins)
-                mode = "users"
+                print(f"[{now_str}] [!] Error en recordatorios de clases importadas: {err}")
 
-        if not should_check_tasks and should_keep_alive and mode == "legacy" and session_cookie:
-            last_keep_alive = time.time()
-            legacy_keep_alive(legacy, base_url, session_cookie, now_str)
+            # 1a. Built-in owner schedule, only for admins without an imported one (env NTFY_TOPIC as fallback)
+            try:
+                check_and_notify_upcoming_classes(storage, supabase=supabase, deliver=deliver)
+            except Exception as err:
+                print(f"[{now_str}] [!] Error en recordatorio de clases: {err}")
+
+            # 1b. Custom reminders (Supabase -> every channel of each owner)
+            try:
+                process_due_reminders(supabase, deliver=reminder_deliverer(deliver))
+            except Exception as err:
+                print(f"[{now_str}] [!] Error en recordatorios personalizados: {err}")
+
+            # 1c. Web Push test requests: the web only sets test_requested_at, the worker sends the push
+            try:
+                process_push_tests(supabase, sender, history=history)
+            except Exception as err:
+                print(f"[{now_str}] [!] Error en pruebas de Web Push: {err}")
+
+            # 2. Recargar cookie fresca desde .env si fue modificada en disco (legacy path)
+            current_cookie = _read_env_cookie() or storage.get_setting("moodle_session", "")
+            if current_cookie and current_cookie != session_cookie:
+                print(f"[{now_str}] 🔄 Se detectó actualización de cookie en .env.")
+                session_cookie = current_cookie
+                storage.set_setting("moodle_session", session_cookie)
+
+            should_check_tasks = (now_ts - last_tasks_check) >= tasks_check_seconds
+            should_keep_alive = (now_ts - last_keep_alive) >= keep_alive_seconds and not legacy.api_active
+
+            if should_check_tasks:
+                print(f"\n[{now_str}] 📋 Verificando Moodle y actualizando tareas...")
+                last_tasks_check = time.time()
+                last_keep_alive = time.time()
+                mode = run_task_tick(
+                    storage,
+                    supabase,
+                    legacy_check=lambda: legacy_check_tasks(storage, supabase, legacy, base_url, session_cookie, now_str),
+                    seen_logins=seen_logins,
+                    deliver=deliver,
+                )
+            else:
+                # New logins/registrations are synced right away instead of waiting for the next round.
+                try:
+                    fresh = users_needing_immediate_sync(supabase.fetch_active_users(), seen_logins)
+                except Exception as err:
+                    fresh = []
+                    print(f"[{now_str}] [!] No se pudo revisar inicios de sesión nuevos: {err}")
+                if fresh:
+                    print(f"\n[{now_str}] 🆕 Sincronizando {len(fresh)} usuario(s) con inicio de sesión reciente...")
+                    sync_all_users(storage, supabase, fresh, deliver=deliver)
+                    remember_logins(fresh, seen_logins)
+                    mode = "users"
+
+            if not should_check_tasks and should_keep_alive and mode == "legacy" and session_cookie:
+                last_keep_alive = time.time()
+                legacy_keep_alive(legacy, base_url, session_cookie, now_str)
+
+        finally:
+            # Never raise: one bulk insert of this tick's notifications, then the daily prune.
+            history.flush()
+            history.prune_if_due(storage)
 
         # Tick cada 60 segundos para evaluar con precisión el horario de clases
         time.sleep(60)

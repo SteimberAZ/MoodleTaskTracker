@@ -209,6 +209,7 @@ def notify_class(c: Dict, minutes_left: int, supabase=None, deliver: Optional[Ca
                 priority="high",
                 ttl=TTL_CLASS,
                 ntfy_tags="alarm_clock,mortarboard,books",
+                kind="class",
             )
         )
     return any(results)
