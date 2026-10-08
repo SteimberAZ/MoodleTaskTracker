@@ -117,6 +117,32 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+describe('trackResync', () => {
+  it('makes a device read wait for the resync it would otherwise contradict', async () => {
+    const { trackResync, onResyncSettled } = await import('@/lib/push-client');
+    current = fakeSubscription('https://fcm.googleapis.com/fcm/send/same', CURRENT);
+    replies['/api/push/status'] = { status: 200, body: { ...REGISTERED, registered: false } };
+    let finish: () => void = () => {};
+    const resync = new Promise<void>((resolve) => (finish = resolve));
+    const settled = vi.fn();
+    const off = onResyncSettled(settled);
+    void trackResync(resync);
+    const reading = readDeviceState(CURRENT);
+    await new Promise((resolve) => setTimeout(resolve, 0)); // long enough for an unordered read to finish
+    expect(posts.filter((p) => p.url === '/api/push/status')).toHaveLength(0); // not asked yet
+    replies['/api/push/status'] = { status: 200, body: REGISTERED }; // the resync registered the device
+    finish();
+    expect((await reading).state).toBe('subscribed');
+    expect(settled).toHaveBeenCalledTimes(1);
+    off();
+  });
+
+  it('settles also when the resync fails', async () => {
+    const { trackResync } = await import('@/lib/push-client');
+    await expect(trackResync(Promise.reject(new Error('offline')))).resolves.toBeUndefined();
+  });
+});
+
 describe('resyncSubscription', () => {
   it('re-posts a subscription made with the current key', async () => {
     current = fakeSubscription('https://fcm.googleapis.com/fcm/send/same', CURRENT);

@@ -83,12 +83,53 @@ export async function fetchPushStatus(endpoint: string): Promise<PushServerStatu
   }
 }
 
+/* ------------------------------------------------------------------------- */
+/* Ordering with the background resync (PwaClient)                            */
+/* ------------------------------------------------------------------------- */
+
+// The resync PwaClient runs on the first app page repairs exactly the states readDeviceState reports
+// ('unsynced', 'stale'): a read made while it runs would show a toast for a device that is being fixed.
+let resyncInFlight: Promise<void> | null = null;
+const resyncListeners = new Set<() => void>();
+const RESYNC_WAIT_MS = 5000;
+
+/** Marks `work` (the resync) as in flight: device reads wait for it, and listeners re-read once it settles. */
+export function trackResync(work: Promise<unknown>): Promise<void> {
+  const settled = work.then(
+    () => undefined,
+    () => undefined,
+  );
+  resyncInFlight = settled;
+  void settled.then(() => {
+    if (resyncInFlight === settled) resyncInFlight = null;
+    resyncListeners.forEach((listener) => listener());
+  });
+  return settled;
+}
+
+/** Called after every resync settles (usePushDevice re-reads the device then). Returns an unsubscribe. */
+export function onResyncSettled(listener: () => void): () => void {
+  resyncListeners.add(listener);
+  return () => resyncListeners.delete(listener);
+}
+
+/** Waits (at most `RESYNC_WAIT_MS`) for an in-flight resync, so a read never reports what it is repairing. */
+async function waitForResync(): Promise<void> {
+  const pending = resyncInFlight;
+  if (!pending) return;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([pending, new Promise<void>((resolve) => (timer = setTimeout(resolve, RESYNC_WAIT_MS)))]);
+  if (timer !== undefined) clearTimeout(timer);
+}
+
 /**
  * Reads everything the state machine needs from this device. A subscription bound to another VAPID key is
  * 'stale'; otherwise the server is asked whether it has the subscription ('unsynced' when it does not).
  * When the server cannot be asked (offline, network error) the browser's subscription keeps 'subscribed'.
+ * A resync still in flight (see trackResync) is waited for first.
  */
 export async function readDeviceState(vapidKey: string | undefined): Promise<DeviceSnapshot> {
+  await waitForResync();
   const platform = currentPlatform();
   const standalone = isStandalone();
   const supported = pushSupported();

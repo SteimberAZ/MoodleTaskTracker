@@ -1,12 +1,19 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { hasInstallPrompt, onInstallPromptChange, readDeviceState, type DeviceSnapshot } from '@/lib/push-client';
+import {
+  hasInstallPrompt,
+  onInstallPromptChange,
+  onResyncSettled,
+  readDeviceState,
+  type DeviceSnapshot,
+} from '@/lib/push-client';
 
 /**
  * State of Web Push on this device: `snapshot` is null until the first check finishes (server render and
- * hydration), then follows permission changes made in the system settings (re-read on focus). Each read
- * also asks the server whether it has this device (see readDeviceState). `refresh` resolves with the new snapshot.
+ * hydration), then follows permission changes made in the system settings (re-read on focus) and the
+ * background resync of PwaClient (re-read once it settles). Each read also asks the server whether it has
+ * this device (see readDeviceState). `refresh` resolves with the new snapshot.
  */
 export function usePushDevice(vapidKey: string | undefined) {
   const [snapshot, setSnapshot] = useState<DeviceSnapshot | null>(null);
@@ -25,9 +32,11 @@ export function usePushDevice(vapidKey: string | undefined) {
     };
     document.addEventListener('visibilitychange', onVisible);
     window.addEventListener('focus', onVisible);
+    const offResync = onResyncSettled(() => void refresh());
     return () => {
       document.removeEventListener('visibilitychange', onVisible);
       window.removeEventListener('focus', onVisible);
+      offResync();
     };
   }, [refresh]);
 

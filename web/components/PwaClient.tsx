@@ -8,6 +8,7 @@ import {
   openUrlTarget,
   registerServiceWorker,
   resyncSubscription,
+  trackResync,
 } from '@/lib/push-client';
 
 const LOGIN_PATH = '/login';
@@ -45,10 +46,13 @@ export default function PwaClient({ vapidPublicKey }: { vapidPublicKey?: string 
     }
     if (!needsSync.current) return;
     needsSync.current = false;
-    void (async () => {
-      const registration = await registerServiceWorker();
-      if (registration) await resyncSubscription(vapidPublicKey);
-    })();
+    // Tracked: the device card and the push banner wait for it, then read the repaired state again.
+    void trackResync(
+      (async () => {
+        const registration = await registerServiceWorker();
+        if (registration) await resyncSubscription(vapidPublicKey);
+      })(),
+    );
   }, [pathname, vapidPublicKey]);
 
   // The service worker asks an open page to show a tapped notification's page: acknowledge, then route client-side.
