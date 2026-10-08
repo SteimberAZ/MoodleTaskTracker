@@ -209,8 +209,12 @@ def sync_user_grades(storage, supabase: Any, client: Any, user: Dict, deliver: O
         if callable(getattr(supabase, "delete_grade_items", None)):
             for cid, ids in kept.items():
                 supabase.delete_grade_items(user_id, cid, ids)
-        if callable(getattr(supabase, "delete_grade_courses", None)):
-            supabase.delete_grade_courses(user_id, [int(c["id"]) for c in fetched.get("courses") or []])
+        # Only courses the user left are dropped: a finished course is no longer "current" (so it is not
+        # fetched again) but is still enrolled, and its final grades must stay visible. An empty or missing
+        # enrolment list never deletes anything.
+        enrolled = [int(c) for c in fetched.get("enrolled_ids") or []]
+        if enrolled and callable(getattr(supabase, "delete_grade_courses", None)):
+            supabase.delete_grade_courses(user_id, sorted(set(enrolled) | {int(c["id"]) for c in fetched.get("courses") or []}))
 
         summary = f"{label} grades: {len(rows_out)} item(s) in {len(kept)} course(s), {alerts} alert(s)"
         if failed:

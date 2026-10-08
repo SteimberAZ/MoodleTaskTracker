@@ -72,8 +72,9 @@ SWEEP_COURSE_MAX_AGE_DAYS = 180  # courses without end date older than this (by 
 # (base_url, user_id) -> {"at": float, "tasks": [task dicts], "complete": bool,
 #                         "reads": {cmid: (last attempt time, last known status)}}
 _SWEEP_CACHE: Dict[tuple, Dict] = {}
-# (base_url, user_id) -> (time read, current enrolled courses). Written by every enrolled-course read, so the grade
-# fetch reuses the course list the course sweep just read instead of asking Moodle again.
+# (base_url, user_id) -> (time read, current enrolled courses, ids of every enrolled course). Written by every
+# enrolled-course read, so the grade fetch reuses the course list the course sweep just read instead of asking
+# Moodle again. The full id list lets the grade sync keep the grades of finished (no longer current) courses.
 _COURSES_CACHE: Dict[tuple, tuple] = {}
 # (base_url, user_id) -> time of the last grade fetch attempt (successful or not): at most one per SWEEP_TTL_SECONDS.
 _GRADES_CACHE: Dict[tuple, float] = {}
@@ -143,6 +144,7 @@ class MoodleApiClient:
         self.last_status_checks_complete = True
         # False until a sweep result coming from a fully successful sweep is used.
         self.last_sweep_complete = False
+        self.enrolled_course_ids: List[int] = []
 
     @property
     def endpoint(self) -> str:
@@ -363,15 +365,18 @@ class MoodleApiClient:
         key = (self.base_url, self.user_id)
         entry = _COURSES_CACHE.get(key)
         if use_cache and entry and now - entry[0] < SWEEP_TTL_SECONDS:
+            self.enrolled_course_ids = list(entry[2])
             return [dict(c) for c in entry[1]]
         uid = self._site_userid()
         payload = self.call("core_enrol_get_users_courses", userid=uid)
         if not isinstance(payload, list):
             return None
+        enrolled = sorted({int(c["id"]) for c in payload if isinstance(c, dict) and str(c.get("id") or "").isdigit()})
         current = [c for c in payload if course_is_current(c, now) and str(c.get("id") or "").isdigit()]
         current.sort(key=lambda c: int(c.get("startdate") or 0), reverse=True)
         current = current[:SWEEP_MAX_COURSES]
-        _COURSES_CACHE[key] = (now, [dict(c) for c in current])
+        _COURSES_CACHE[key] = (now, [dict(c) for c in current], tuple(enrolled))
+        self.enrolled_course_ids = enrolled
         return current
 
     def _sweep_status(self, task: Dict) -> Optional[str]:
@@ -505,7 +510,8 @@ class MoodleApiClient:
 
         Never raises. Returns None when not due, when the course list cannot be read, or when the token was
         rejected; otherwise {'courses': [{'id', 'fullname', 'shortname'}], 'items': {course id: [rows of
-        parse_grade_items]}, 'failed': [course ids whose grades could not be read], 'complete': bool}.
+        parse_grade_items]}, 'failed': [course ids whose grades could not be read], 'complete': bool,
+        'enrolled_ids': [ids of every enrolled course, current or finished]}.
         """
         now = now if now is not None else _now()
         if not self.grades_due(now):
@@ -556,6 +562,7 @@ class MoodleApiClient:
                 "items": items,
                 "failed": failed,
                 "complete": not failed,
+                "enrolled_ids": list(getattr(self, "enrolled_course_ids", None) or []),
             }
         except Exception as e:  # noqa: BLE001 - a grade failure must never break the sync
             print(f"[MoodleApi] grade fetch failed ({type(e).__name__})")

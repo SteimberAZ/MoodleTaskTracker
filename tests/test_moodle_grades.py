@@ -172,6 +172,19 @@ def test_fetch_reuses_the_course_list_of_a_recent_sweep():
     assert client.fetch_course_grades(now=NOW + 5) is not None
     assert len(_calls(http, ENROL_FN)) == 1
 
+def test_fetch_lists_every_enrolled_course_including_finished_ones():
+    http = FakeHttp(responses())
+    result = _client(http).fetch_course_grades(now=NOW)
+    assert result["enrolled_ids"] == [10, 11, 12, 13]
+
+
+def test_a_cached_course_list_still_reports_the_enrolled_courses():
+    http = FakeHttp(responses())
+    client = _client(http)
+    client.sweep_course_activities(now=NOW)
+    fresh = _client(http)
+    assert fresh.fetch_course_grades(now=NOW + 5)["enrolled_ids"] == [10, 11, 12, 13]
+
 
 def test_a_forbidden_course_only_fails_that_course():
     def grades(data):

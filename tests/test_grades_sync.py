@@ -56,10 +56,11 @@ def item(cid, iid, raw=None, itype="mod", name=None, gmax=20.0, **extra):
 
 
 class Client:
-    def __init__(self, courses, items, failed=(), due=True):
+    def __init__(self, courses, items, failed=(), due=True, enrolled=None):
         self.result = {
             "courses": [{"id": c, "fullname": "x", "shortname": "x"} for c in courses],
             "items": items, "failed": list(failed), "complete": not failed,
+            "enrolled_ids": list(courses) if enrolled is None else list(enrolled),
         }
         self.due, self.fetches = due, 0
 
@@ -367,3 +368,18 @@ def test_task_sync_runs_the_grade_sync_for_users(tmp_path):
     assert len(db.upserts) == 1
     assert len(deliver.calls) == 1
     assert deliver.calls[0][2] == "Te calificaron: Tarea 502 — 8/20 (Fisica)"
+
+
+def test_a_finished_but_still_enrolled_course_keeps_its_grades(tmp_path):
+    st, db, deliver = _storage(tmp_path), Db(), Deliver()
+    # Course 20 ended (no longer current, so not fetched) but the user is still enrolled in it.
+    client = Client([10], {10: [item(10, 501, raw=17.0)]}, enrolled=[10, 20])
+    assert run(st, db, client, deliver) == "ok"
+    assert db.course_deletes == [[10, 20]]
+
+
+def test_an_empty_enrolment_list_never_deletes_courses(tmp_path):
+    st, db, deliver = _storage(tmp_path), Db(), Deliver()
+    client = Client([10], {10: [item(10, 501, raw=17.0)]}, enrolled=[])
+    assert run(st, db, client, deliver) == "ok"
+    assert db.course_deletes == []
