@@ -331,6 +331,19 @@ class Storage:
             if stale:
                 conn.executemany("UPDATE tasks SET mirror_sig = NULL WHERE id = ?", stale)
 
+    def forget_mirror_signatures(self, task_ids: Iterable[str]) -> None:
+        """Clear the mirror fingerprint of tasks just flagged ``missing_since`` remotely.
+
+        A task that comes back unchanged is then sent again (which clears the flag), also when the
+        fetch that made it missing returned no task at all for its owner.
+        """
+        ids = [(str(i),) for i in task_ids]
+        if not ids:
+            return
+        with self._get_conn() as conn:
+            conn.executemany("UPDATE tasks SET mirror_sig = NULL WHERE id = ?", ids)
+            conn.commit()
+
     @staticmethod
     def _rearm_milestones(conn, task_id: str, old_due, new_due, now: int) -> List[str]:
         """Delete the local milestones a later deadline re-arms; returns the deleted keys."""

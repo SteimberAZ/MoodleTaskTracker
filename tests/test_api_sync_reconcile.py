@@ -306,6 +306,19 @@ def test_a_missing_task_is_flagged_after_two_absent_rounds_and_a_reappearance_cl
     assert _counts(s) == {}
 
 
+def test_tasks_flagged_after_an_empty_fetch_are_resent_when_they_come_back(tmp_path):
+    mirror = Mirror()
+    s, db = _storage(tmp_path, mirror), Db()
+    quiz = _task("q", module="quiz")
+    _sync(s, db, Client([quiz]))
+    for _ in range(2):  # a complete fetch with no task at all, e.g. a course-visibility glitch
+        _sync(s, db, Client([]))
+    assert db.marked == [(USER["id"], ["q"])]
+    mirror.upserts.clear()
+    _sync(s, db, Client([quiz]))  # back, unchanged
+    assert any(t["id"] == "q" for batch in mirror.upserts for t in batch)  # re-sent: missing_since cleared
+
+
 def test_a_pending_vanished_assignment_is_rechecked_until_flagged(tmp_path):
     s, db = _storage(tmp_path), Db()
     _sync(s, db, Client([_task("a", cmid=77)]))

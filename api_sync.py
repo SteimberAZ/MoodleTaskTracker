@@ -346,6 +346,9 @@ def reconcile_missing_tasks(
                 new_counts[tid] = MISSING_ROUNDS - 1
         else:
             print(f"{label} reconciliation: {len(to_mark)} task(s) no longer in Moodle flagged missing.")
+            forget = getattr(storage, "forget_mirror_signatures", None)
+            if callable(forget):
+                forget(to_mark)  # a reappearing task must be re-sent to clear missing_since
     encoded = json.dumps(new_counts, sort_keys=True)
     if encoded != json.dumps(counts, sort_keys=True):  # write only on change (settings are mirrored)
         storage.set_setting(missing_setting_key(user_id), encoded)
