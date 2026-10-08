@@ -29,7 +29,9 @@ export default function LogoutButton() {
         void pushLogoutCleanup(1500).finally(() => {
           cleaned.current = true;
           running.current = false;
-          form.requestSubmit();
+          // Safari before 16 has no requestSubmit; clicking the submit button fires the same submit event.
+          if (typeof form.requestSubmit === 'function') form.requestSubmit();
+          else form.querySelector<HTMLButtonElement>('button[type="submit"]')?.click();
         });
       }}
     >
