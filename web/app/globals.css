@@ -672,6 +672,9 @@ body:has(.site-nav):has(.banner--toast) .container {
 /* ============================== Forms ============================== */
 .form { display: grid; gap: 16px; width: 100%; max-width: 640px; }
 .form label, .form fieldset { display: grid; gap: 6px; font-size: 13px; font-weight: 700; }
+/* A label, its control and its error message (the error sits outside the label so it is not part of the name). */
+.form .field { display: grid; gap: 6px; font-size: 13px; font-weight: 700; }
+.form [aria-invalid='true'] { border-color: var(--danger); }
 .form fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
 .form legend { padding: 0; margin-bottom: 6px; font-weight: 700; }
 .form .alert { margin: 0; }
