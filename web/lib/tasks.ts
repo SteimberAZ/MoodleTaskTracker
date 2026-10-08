@@ -9,16 +9,15 @@ import {
   LEGACY_COLUMNS,
   LIST_COLUMNS,
   MILESTONES_EMBED,
-  countTasksByFilter,
+  TASK_FILTERS,
   isMissingSinceSupported,
   isUnknownColumnError,
   markMissingSinceUnsupported,
   muteTaskRequest,
-  taskCountsQuery,
+  taskCountQuery,
   taskDetailQuery,
   taskListQuery,
   withEmbed,
-  type TaskCountRow,
   type TaskFilter,
 } from './task-query';
 
@@ -203,19 +202,29 @@ export interface TaskCounts {
   total: number;
 }
 
-/** Chip counters. Never throws: the list still works without them. */
+/**
+ * Chip counters: one exact count per tab plus the total, read in parallel (no rows are downloaded, so the
+ * counts stay right for users with more rows than PostgREST's max-rows). Never throws: the list still works
+ * without them.
+ */
 export async function countTasks(
   userId: string,
   nowSeconds = Math.floor(Date.now() / 1000),
 ): Promise<TaskCounts | null> {
+  const count = async (filter: TaskFilter | null) =>
+    (
+      await readWithColumnFallback<{ id: string }>(
+        (plan) => `moodle_tasks${taskCountQuery(userId, filter, nowSeconds, { missingSince: plan.missingSince })}`,
+        FAILURE,
+        true,
+        filter === 'pendientes' || filter === 'atrasadas',
+      )
+    ).total;
   try {
-    const { rows } = await readWithColumnFallback<TaskCountRow>(
-      (plan) => `moodle_tasks${taskCountsQuery(userId, { missingSince: plan.missingSince })}`,
-      FAILURE,
-      false,
-      true,
-    );
-    return { byFilter: countTasksByFilter(rows, nowSeconds), total: rows.length };
+    const filters = TASK_FILTERS.map(({ value }) => value);
+    const [total, ...perFilter] = await Promise.all([count(null), ...filters.map((filter) => count(filter))]);
+    const byFilter = Object.fromEntries(filters.map((filter, i) => [filter, perFilter[i]])) as Record<TaskFilter, number>;
+    return { byFilter, total };
   } catch {
     return null;
   }

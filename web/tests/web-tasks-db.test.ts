@@ -69,17 +69,30 @@ describe('missing_since fallback', () => {
     await expect(listTasksPage(USER, 'pendientes', 1, NOW)).rejects.toBe(redirect);
   });
 
-  it('counters drop ghost rows and report the total of every row', async () => {
-    dbFetch.mockResolvedValueOnce(
-      json([
-        { status: 'pending', is_dismissed: 0, due_timestamp: NOW + 10, missing_since: null },
-        { status: 'pending', is_dismissed: 0, due_timestamp: NOW + 10, missing_since: '2026-10-01T00:00:00Z' },
-        { status: 'pending', is_dismissed: 0, due_timestamp: NOW - 10, missing_since: null },
-      ]),
-    );
+  it('counters are exact counts per tab, never a download of every row', async () => {
+    // More rows than PostgREST's max-rows (1000): only the content-range total is used.
+    const totals: Record<string, number> = { all: 1500, pendientes: 4, atrasadas: 2, silenciadas: 1, entregadas: 1200 };
+    dbFetch.mockImplementation(async (path: string, init?: { headers?: Record<string, string> }) => {
+      expect(init?.headers?.Prefer).toBe('count=exact');
+      const key = path.includes('is_dismissed=eq.1')
+        ? 'silenciadas'
+        : path.includes('status=eq.submitted')
+          ? 'entregadas'
+          : path.includes('due_timestamp=lt.')
+            ? 'atrasadas'
+            : path.includes('due_timestamp=gte.')
+              ? 'pendientes'
+              : 'all';
+      return json([{ id: 'x' }], 200, `0-0/${totals[key]}`);
+    });
     const counts = await countTasks(USER, NOW);
-    expect(counts).toEqual({ byFilter: { pendientes: 1, atrasadas: 1, silenciadas: 0, entregadas: 0 }, total: 3 });
-    expect(paths()[0]).toContain('missing_since');
+    expect(counts).toEqual({ byFilter: { pendientes: 4, atrasadas: 2, silenciadas: 1, entregadas: 1200 }, total: 1500 });
+    for (const path of paths()) {
+      expect(path).toContain('select=id');
+      expect(path).toContain('limit=1');
+      expect(path).not.toContain('order=');
+    }
+    expect(paths().filter((p) => p.includes('missing_since=is.null'))).toHaveLength(2); // ghost rows stay out
   });
 });
 

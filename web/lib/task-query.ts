@@ -126,7 +126,22 @@ export function taskListQuery(
   );
 }
 
-/** Minimal rows used to compute the chip counters in one cheap request. */
+/**
+ * One chip counter: the same filter as the tab (`filter`), or every row of the user (null), read as an exact
+ * count (`Prefer: count=exact`) with at most one row, so the counters never download the task history and
+ * are never cut at PostgREST's max-rows.
+ */
+export function taskCountQuery(
+  userId: string,
+  filter: TaskFilter | null,
+  nowSeconds: number,
+  options: TaskQueryOptions = {},
+): string {
+  const parts = filter ? taskFilterParts(filter, nowSeconds, options).filter((p) => !p.startsWith('order=')) : [];
+  return scopedQuery(userId, 'select=id', ...parts, 'limit=1');
+}
+
+/** Minimal rows of the former in-memory counters (kept for `matchesTaskFilter` / `countTasksByFilter`). */
 export const COUNT_COLUMNS = 'select=status,is_dismissed,due_timestamp';
 
 export function taskCountsQuery(userId: string, options: TaskQueryOptions = {}): string {
