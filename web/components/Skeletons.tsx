@@ -264,6 +264,10 @@ function GradeCardSkeleton() {
       <Sk className="sk-bar" />
       <Sk className="sk-text-sm sk-w-60" />
       <Sk className="sk-text-sm sk-w-40" />
+      {/* The two "¿Ya diste tu examen…?" boxes every card shows while an exam is missing. */}
+      <div className="grade-exams">
+        <Repeat times={2}>{(i) => <Sk key={i} className="sk-exam" />}</Repeat>
+      </div>
     </li>
   );
 }
@@ -301,6 +305,14 @@ export function AccountSkeleton() {
       <PageHeadSkeleton />
       <section className="card item">
         <Sk className="sk-card-title sk-w-30" />
+        {/* Profile photo with "Cambiar foto" / "Quitar foto" (AvatarForm). */}
+        <div className="avatar-form">
+          <Sk className="sk-avatar" />
+          <div className="avatar-actions">
+            <Sk className="sk-btn sk-btn-md" />
+            <Sk className="sk-btn sk-btn-md" />
+          </div>
+        </div>
         <div className="meta">
           <div className="sk-lines">
             <Sk className="sk-dt sk-w-60" />
