@@ -25,7 +25,11 @@ export async function middleware(request: NextRequest) {
     }
     return response;
   }
-  return NextResponse.redirect(new URL('/login', request.url));
+  // Remember where the user was going, so the login returns there (validated again by safeNext on use).
+  const login = new URL('/login', request.url);
+  const { pathname, search } = request.nextUrl;
+  if (pathname !== '/') login.searchParams.set('next', `${pathname}${search}`);
+  return NextResponse.redirect(login);
 }
 
 export const config = {

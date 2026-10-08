@@ -3,14 +3,23 @@
 import { useActionState } from 'react';
 import { login, type LoginState } from '@/app/login/actions';
 
+interface Props {
+  /** Already validated with safeNext by the page; the action validates it again. */
+  next?: string;
+  /** Username prefill from `?u=` (for a re-login link). */
+  initialUsername?: string;
+}
+
 /** The state never carries the password: only an error message and the non-secret fields. */
-export default function LoginForm() {
+export default function LoginForm({ next = '/', initialUsername = '' }: Props) {
   const [state, formAction, pending] = useActionState(login, {} as LoginState);
   return (
     <form action={formAction} className="card form narrow">
-      <h1>Recordatorios</h1>
+      <h1>mineral tareas</h1>
+      <p className="muted small">Tus tareas de Moodle UTM, con avisos</p>
       <p className="muted small">Inicia sesión con tu cuenta de Moodle de la UTM.</p>
       {state.error && <p className="alert" role="alert">{state.error}</p>}
+      <input type="hidden" name="next" value={next} />
 
       <label>
         Correo institucional o usuario de la UTM
@@ -21,7 +30,7 @@ export default function LoginForm() {
           spellCheck={false}
           placeholder="e1234567890@utm.edu.ec"
           maxLength={100}
-          defaultValue={state.username ?? ''}
+          defaultValue={state.username ?? initialUsername}
           aria-describedby="username-hint"
           autoFocus
           required

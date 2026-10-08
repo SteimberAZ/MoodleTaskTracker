@@ -6,6 +6,7 @@ import { resolveSessionSecret } from '@/lib/session-token';
 import { MAX_PASSWORD, MAX_USERNAME, connectToMoodle, resolveMoodleUrl } from '@/lib/moodle';
 import { decideLogin } from '@/lib/login-flow';
 import { loginStore } from '@/lib/login-store';
+import { safeNext } from '@/lib/safe-next';
 
 /** Echoes only non-secret fields (never the password) so the form can be refilled after an error. */
 export interface LoginState {
@@ -54,5 +55,5 @@ export async function login(_prev: LoginState, formData: FormData): Promise<Logi
   }
 
   await startSession(userId);
-  redirect('/');
+  redirect(safeNext(formData.get('next')));
 }
