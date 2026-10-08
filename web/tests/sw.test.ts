@@ -84,7 +84,7 @@ describe('sw.js push', () => {
       body: 'Tarea 2 vence a las 08:00',
       icon: '/icons/icon-192.png',
       badge: '/icons/badge-96.png',
-      renotify: false,
+      renotify: true,
       tag: 'task-abc123',
       data: { url: `${ORIGIN}/tareas/abc123` },
     });
@@ -102,6 +102,18 @@ describe('sw.js push', () => {
     expect(sw.shown[2].title).toBe('mineral tareas');
     expect(sw.shown[2].options.data).toEqual({ url: `${ORIGIN}/` });
     expect(sw.shown.every((n) => !('tag' in n.options))).toBe(true);
+    // renotify without a tag makes showNotification throw a TypeError.
+    expect(sw.shown.every((n) => !('renotify' in n.options))).toBe(true);
+  });
+
+  it('alerts again when a newer message replaces one with the same tag', async () => {
+    const sw = loadWorker();
+    await sw.dispatch('push', pushEvent({ title: 'Recordatorio: Falta 1 dia', body: 'b', tag: 'task-abc123' }));
+    await sw.dispatch('push', pushEvent({ title: 'URGENTE: Faltan menos de 8 horas', body: 'b', tag: 'task-abc123' }));
+    expect(sw.shown.map((n) => [n.options.tag, n.options.renotify])).toEqual([
+      ['task-abc123', true],
+      ['task-abc123', true],
+    ]);
   });
 
   it('never links to another origin', async () => {

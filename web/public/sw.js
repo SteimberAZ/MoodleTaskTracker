@@ -46,10 +46,14 @@ self.addEventListener('push', (event) => {
     body,
     icon: '/icons/icon-192.png',
     badge: '/icons/badge-96.png',
-    renotify: false,
     data: { url: resolveUrl(data.url) },
   };
-  if (typeof data.tag === 'string' && data.tag) options.tag = data.tag;
+  if (typeof data.tag === 'string' && data.tag) {
+    options.tag = data.tag;
+    // A newer message with the same tag (e.g. "Falta 1 dia" -> "Faltan menos de 8 horas") replaces the
+    // old one and must alert again; renotify is only valid together with a tag.
+    options.renotify = true;
+  }
   event.waitUntil(self.registration.showNotification(title, options));
 });
 
