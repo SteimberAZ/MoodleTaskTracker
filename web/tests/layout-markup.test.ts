@@ -1,7 +1,12 @@
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+
+// ClassReminderSetting imports its server action, which pulls in server-only modules.
+vi.mock('@/app/horario/actions', () => ({ setClassReminder: vi.fn() }));
 import type { FormState } from '@/app/actions';
+import { leadSavedMessage } from '@/components/ClassReminderSetting';
+import CopyButton from '@/components/CopyButton';
 import LiveStatus from '@/components/LiveStatus';
 import { NavPlaceholder } from '@/components/NavLinks';
 import ReminderForm, { countFieldErrors } from '@/components/ReminderForm';
@@ -88,5 +93,21 @@ describe('ScheduleDays heading level', () => {
   it('uses h2 under the page h1 and h3 under a step heading', () => {
     expect(renderToStaticMarkup(createElement(ScheduleDays, { items, headingLevel: 2 }))).toMatch(/<h2 id="day-2" class="schedule-day-title">Martes/);
     expect(renderToStaticMarkup(createElement(ScheduleDays, { items }))).toMatch(/<h3 id="day-2" class="schedule-day-title">Martes/);
+  });
+});
+
+describe('status messages', () => {
+  it('describes the saved class reminder lead time', () => {
+    expect(leadSavedMessage(30)).toBe('Aviso de clases: 30 min antes guardado');
+    expect(leadSavedMessage(60)).toBe('Aviso de clases: 1 hora antes guardado');
+    expect(leadSavedMessage(null)).toBe('Avisos de clases desactivados');
+  });
+
+  it('names each copy button after what it copies and keeps its status region mounted', () => {
+    const html = renderToStaticMarkup(createElement(CopyButton, { text: 'ABCD-1234' }));
+    expect(html).toContain('<button type="button" class="btn">Copiar<span class="sr-only"> ABCD-1234</span></button>');
+    expect(html).toContain('<p class="sr-only" role="status" aria-live="polite"></p>');
+    const custom = renderToStaticMarkup(createElement(CopyButton, { text: 'x'.repeat(80), label: 'Copiar enlace' }));
+    expect(custom).toContain('>Copiar enlace</button>');
   });
 });

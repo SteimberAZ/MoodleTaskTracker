@@ -951,7 +951,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 2px
   cursor: pointer;
 }
 .segment[aria-current='page'], .segment[aria-pressed='true'] { background: var(--btn-bg); color: var(--btn-text); }
-.segment:disabled { opacity: 0.6; cursor: wait; }
+.segment:disabled, .segment[aria-disabled='true'] { opacity: 0.6; cursor: wait; }
 @media (hover: hover) {
   .segment:not([aria-current='page']):not([aria-pressed='true']):not(:disabled):hover { background: var(--border); }
 }
