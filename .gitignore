@@ -12,6 +12,8 @@ dist/
 moodle_tasks.db
 *.db
 *.db-journal
+# Single-instance lock held by the running worker (moodle_tasks.db.lock)
+*.db.lock
 # Backups made by the deploy runbook (moodle_tasks.db.bak, *.bak copies of the app)
 *.bak
 .env
