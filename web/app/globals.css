@@ -93,6 +93,12 @@ h2 { font-size: 1.1rem; margin: 0; }
 .badge.pausado { color: var(--warn); }
 .badge.finalizado { color: var(--muted); }
 
+.section-title { margin: 20px 0 8px; }
+.item h3 { font-size: 1.05rem; margin: 0; overflow-wrap: anywhere; }
+.item.task.urgent { border-color: var(--danger); }
+.badge.urgente { color: var(--danger); font-weight: 600; }
+.item-head .badge { text-transform: none; white-space: nowrap; }
+
 .meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px 16px; margin: 12px 0; }
 .meta dt { font-size: 0.75rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.03em; }
 .meta dd { margin: 0; }
