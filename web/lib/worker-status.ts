@@ -24,6 +24,10 @@ export interface WorkerHeartbeat {
   tick_seconds: number | null;
   sync_seconds: number | null;
   delivery_lag_seconds: number | null;
+  /** The worker started with missing config or a disabled sender and keeps running degraded (null: older worker). */
+  degraded: boolean | null;
+  /** Machine reasons for the degraded mode (see DEGRADED_REASON_LABELS); empty when none or unknown. */
+  degraded_reasons: string[];
 }
 
 export interface WorkerStatus {
@@ -81,6 +85,10 @@ export function parseHeartbeat(raw: string | null | undefined): WorkerHeartbeat 
     tick_seconds: num(d.tick_seconds),
     sync_seconds: num(d.sync_seconds),
     delivery_lag_seconds: num(d.delivery_lag_seconds),
+    degraded: bool(d.degraded),
+    degraded_reasons: Array.isArray(d.degraded_reasons)
+      ? d.degraded_reasons.filter((r): r is string => typeof r === 'string' && r.trim() !== '').map((r) => r.trim())
+      : [],
   };
 }
 
@@ -126,7 +134,16 @@ export interface ServiceSummary {
   /** "sent_ok 12 · failed 1 · gone 0", or null when the worker reports no counters. */
   counts: string | null;
   roundMode: string | null;
+  /** Human-readable reasons the worker runs degraded; empty when it does not (or does not say). */
+  degraded: string[];
 }
+
+/** Spanish labels for the worker's degraded_reasons (worker.py DEGRADED_MESSAGES). Unknown reasons show as-is. */
+export const DEGRADED_REASON_LABELS: Record<string, string> = {
+  supabase_not_configured: 'Supabase no está configurado en el worker: no hay usuarios, recordatorios ni historial.',
+  webpush_disabled: 'Web Push está desactivado en el worker: nadie recibe notificaciones push.',
+  vapid_subject_placeholder: 'VAPID_SUBJECT no está definido en el worker: algunos servicios de push pueden rechazar los envíos.',
+};
 
 const ageLabel = (iso: string, now: Date): string => {
   const seconds = Math.max(0, Math.round((now.getTime() - Date.parse(iso)) / 1000));
@@ -157,6 +174,10 @@ export function serviceSummary(status: WorkerStatus | null, webVapidKey: string 
     vapidMismatch: vapidMismatch(status?.vapidPublicKey, webVapidKey),
     counts: entries.length > 0 ? entries.map(([key, value]) => `${key} ${value}`).join(' · ') : null,
     roundMode: hb?.last_round_mode ?? null,
+    degraded:
+      hb && hb.degraded !== false
+        ? hb.degraded_reasons.map((reason) => DEGRADED_REASON_LABELS[reason] ?? reason)
+        : [],
   };
 }
 

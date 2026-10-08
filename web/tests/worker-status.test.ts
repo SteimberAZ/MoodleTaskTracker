@@ -6,7 +6,7 @@ vi.mock('@/lib/auth', () => ({ getCurrentUser: () => getCurrentUser() }));
 const dbJson = vi.fn();
 vi.mock('@/lib/db', () => ({ dbJson: (...args: unknown[]) => dbJson(...args), dbFetch: vi.fn() }));
 
-const { WORKER_STATUS_PATH, getWorkerStatus, isStale, parseHeartbeat, serviceSummary, testPushWarning, vapidMismatch } = await import(
+const { DEGRADED_REASON_LABELS, WORKER_STATUS_PATH, getWorkerStatus, isStale, parseHeartbeat, serviceSummary, testPushWarning, vapidMismatch } = await import(
   '@/lib/worker-status'
 );
 const { POST } = await import('@/app/api/push/test/route');
@@ -200,6 +200,17 @@ describe('serviceSummary (admin card)', () => {
     expect(summary.worker).toEqual({ text: 'Detenido (último latido hace 10 min)', tone: 'urgente' });
     expect(summary.push).toEqual({ text: 'Web Push desactivado (key_mismatch)', tone: 'urgente' });
     expect(summary.vapidMismatch).toBe(true);
+  });
+
+  it('lists the degraded reasons the worker reports, with labels for the known ones', () => {
+    const summary = serviceSummary(
+      status({ at: ago(20), webpush_enabled: false, degraded: true, degraded_reasons: ['webpush_disabled', 'new_reason', 3] }),
+      KEY,
+      NOW,
+    );
+    expect(summary.degraded).toEqual([DEGRADED_REASON_LABELS.webpush_disabled, 'new_reason']);
+    expect(serviceSummary(status({ at: ago(20), degraded: false, degraded_reasons: ['webpush_disabled'] }), KEY, NOW).degraded).toEqual([]);
+    expect(serviceSummary(status({ at: ago(20) }), KEY, NOW).degraded).toEqual([]);
   });
 
   it('says unknown when the worker reports nothing or the read failed', () => {

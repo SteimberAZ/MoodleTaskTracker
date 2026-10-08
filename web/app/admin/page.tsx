@@ -107,6 +107,16 @@ export default async function AdminPage() {
           )}
           {heartbeat?.version && <div><dt>Versión</dt><dd className="mono">{heartbeat.version}</dd></div>}
         </dl>
+        {service.degraded.length > 0 && (
+          <div className="warning">
+            <p>El worker está funcionando en modo degradado:</p>
+            <ul className="plain-list small">
+              {service.degraded.map((reason) => (
+                <li key={reason}>{reason}</li>
+              ))}
+            </ul>
+          </div>
+        )}
         {service.vapidMismatch && (
           <p className="warning">
             La clave VAPID del worker no coincide con la de la web: ningún dispositivo recibirá avisos push hasta que
