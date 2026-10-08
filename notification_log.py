@@ -13,6 +13,7 @@ until the next successful write.
 Rows older than ``RETENTION_DAYS`` are deleted at most once every 24 hours (``prune_if_due``; the
 time of the last run lives in the local settings table).
 """
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
@@ -50,15 +51,18 @@ def build_row(
     ntfy_attempted: bool,
     ntfy_ok: bool,
     created_at: datetime,
+    log_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """One ``moodle_notification_log`` row. Every row carries exactly the same keys.
 
     PostgREST rejects a bulk insert whose rows have different key sets (PGRST102), so optional
     columns (``body``, ``url``, ``tag``) are always present and null when empty. ``status`` is
-    ``sent`` when at least one channel accepted the notification, otherwise ``failed``.
+    ``sent`` when at least one channel accepted the notification, otherwise ``failed``. ``id`` is the
+    one the push link carries (``/notificaciones?n=<id>``); a fresh uuid4 when the caller has none.
     """
     delivered = push_ok > 0 or bool(ntfy_ok)
     return {
+        "id": str(log_id) if log_id else str(uuid.uuid4()),
         "user_id": str(user_id),
         "kind": kind,
         "title": clip(title, TITLE_MAX),
@@ -106,12 +110,16 @@ class NotificationLog:
         url: Any = None,
         tag: Any = None,
         *,
+        log_id: Optional[str] = None,
         push_ok: int = 0,
         push_total: int = 0,
         ntfy_attempted: bool = False,
         ntfy_ok: bool = False,
     ) -> None:
-        """Buffer one user-notification outcome (no network). Ignored without a user id or a database."""
+        """Buffer one user-notification outcome (no network). Ignored without a user id or a database.
+
+        ``log_id`` is the row id the notification was already sent with (see delivery.deliver_to_user).
+        """
         try:
             if not user_id or not self.enabled:
                 return
@@ -123,7 +131,7 @@ class NotificationLog:
                     user_id, kind, title, body, url, tag,
                     push_ok=push_ok, push_total=push_total,
                     ntfy_attempted=ntfy_attempted, ntfy_ok=ntfy_ok,
-                    created_at=self._clock(),
+                    created_at=self._clock(), log_id=log_id,
                 )
             )
         except Exception as exc:  # noqa: BLE001 - the history must never break a delivery

@@ -108,6 +108,7 @@ NTFY_TOPIC=<tu topic>
 MOODLE_URL=https://evirtual.utm.edu.ec
 VAPID_SUBJECT=mailto:<tu correo>
 # VAPID_PRIVATE_KEY_FILE=./vapid_private.pem   (valor por defecto)
+# WEB_APP_URL=https://moodletasktracker.vercel.app   (opcional, sin barra final)
 ```
 El worker recorre a todos los usuarios activos de `moodle_users`, sincroniza sus tareas con su token de Moodle y les envía los avisos como **notificaciones nativas (Web Push)** a cada dispositivo donde las activaron, y también a su tema de ntfy si el usuario lo dejó encendido en **Mi cuenta**. `NTFY_TOPIC` solo se usa como respaldo para el horario de clases cuando no existe ningún usuario admin. `MOODLE_SESSION` (la cookie) queda como respaldo y solo se usa cuando no hay ningún usuario registrado.
 
@@ -117,6 +118,8 @@ python3 -m venv venv && venv/bin/pip install -r requirements-worker.txt
 venv/bin/python scripts/generate_vapid.py   # crea ./vapid_private.pem (600) e imprime la clave pública
 ```
 La clave pública impresa va a Vercel como `NEXT_PUBLIC_VAPID_PUBLIC_KEY`. Guarda una copia de `vapid_private.pem` fuera de git: si se pierde, todos los usuarios tienen que volver a activar las notificaciones. Ejecuta el worker con el Python del venv (`pm2 start worker.py --name utm-moodle-tracker --interpreter "$PWD/venv/bin/python"`).
+
+**Abrir el aviso al tocarlo:** cada notificación se guarda en el historial con un id generado antes de enviarla, y al tocarla la app abre **Avisos** en esa entrada (`/notificaciones?n=<id>`), con un botón "Abrir" hacia la tarea o página relacionada. Si el historial no está disponible, la notificación abre Avisos sin resaltar nada. Las notificaciones de ntfy solo pueden abrir la web si defines `WEB_APP_URL` (la URL pública de la web, por ejemplo la de Vercel): el worker la usa como acción de toque (`Click`) con el mismo enlace. Sin `WEB_APP_URL`, ntfy se comporta como antes.
 
 > Orden de despliegue: detén el worker, ejecuta `supabase_schema.sql` y recién después inicia la versión nueva.
 

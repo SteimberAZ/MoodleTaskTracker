@@ -119,27 +119,36 @@ def send_system_alert(
 
 
 def post_ntfy(
-    title: str, message: str, priority: str = "default", tags: str = "bell", topic: Optional[str] = None
+    title: str,
+    message: str,
+    priority: str = "default",
+    tags: str = "bell",
+    topic: Optional[str] = None,
+    click: str = "",
 ) -> bool:
     """Synchronous ntfy push. Returns True when the server accepted it.
 
-    ``topic`` selects the destination (per user); None falls back to env NTFY_TOPIC.
+    ``topic`` selects the destination (per user); None falls back to env NTFY_TOPIC. ``click`` is an
+    absolute URL opened when the notification is tapped (the ``Click`` header); empty sends none.
     """
     topic = topic if topic else default_topic()
     if not topic:
         return False
+    headers = {
+        # HTTP headers are latin-1; encode the UTF-8 bytes so non-ASCII titles do not raise.
+        "Title": title.replace("\n", " ").encode("utf-8").decode("latin-1"),
+        "Priority": priority,
+        "Tags": tags,
+        "Content-Type": "text/plain; charset=utf-8",
+    }
+    if click:
+        headers["Click"] = click
     try:
         import requests
         res = requests.post(
             f"{ntfy_base_url()}/{topic}",
             data=message.encode("utf-8"),
-            headers={
-                # HTTP headers are latin-1; encode the UTF-8 bytes so non-ASCII titles do not raise.
-                "Title": title.replace("\n", " ").encode("utf-8").decode("latin-1"),
-                "Priority": priority,
-                "Tags": tags,
-                "Content-Type": "text/plain; charset=utf-8",
-            },
+            headers=headers,
             timeout=10,
         )
         if res.status_code == 200:

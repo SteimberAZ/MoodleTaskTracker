@@ -11,6 +11,8 @@ Every attempt for a user is also handed to ``history`` (notification_log.Notific
 A delivery counts as successful when at least one channel accepted the message. Callers use that to
 decide whether to record a milestone / advance a reminder, so a total failure is retried later.
 """
+import os
+import uuid
 from typing import Any, Callable, Dict, Optional
 
 import notifier
@@ -18,14 +20,37 @@ from webpush_sender import TTL_TASK, TTL_TEST, PushResult
 
 HIGH_PRIORITIES = frozenset({"urgent", "max", "high", "4", "5"})
 
+NOTIFICATIONS_PATH = "/notificaciones"
+
 TEST_PAYLOAD = {
     "title": "Notificaciones activas ✅",
     "body": "Así te llegarán tus avisos de Moodle",
-    "url": "/notificaciones",
+    "url": NOTIFICATIONS_PATH,
     "tag": "test",
 }
 
 _last_logged: Dict[str, str] = {}
+
+
+def new_log_id() -> str:
+    """Id of one history row, generated before the notification is sent so the push can point at it."""
+    return str(uuid.uuid4())
+
+
+def history_url(log_id: Optional[str]) -> str:
+    """Where tapping a notification lands: its own entry in Avisos, or just Avisos without a history row."""
+    return f"{NOTIFICATIONS_PATH}?n={log_id}" if log_id else NOTIFICATIONS_PATH
+
+
+def web_app_url() -> str:
+    """Public base URL of the web app (env WEB_APP_URL, no trailing slash); empty when not configured."""
+    return os.environ.get("WEB_APP_URL", "").strip().rstrip("/")
+
+
+def absolute_web_url(path: str) -> str:
+    """``path`` on the configured web app, or "" when WEB_APP_URL is unset (ntfy then keeps its old behaviour)."""
+    base = web_app_url()
+    return f"{base}{path}" if base else ""
 
 
 def _log_changed(key: str, message: Optional[str]) -> None:
@@ -50,16 +75,22 @@ def ntfy_enabled(user: Dict) -> bool:
     return user.get("ntfy_enabled") is not False
 
 
-def _record_history(history, user_id: str, kind: Optional[str], title, body, url, tag, **outcome) -> None:
+def history_active(history, user_id: str, kind: Optional[str]) -> bool:
+    """True when this attempt will be recorded: a usable history, a kind and a user id."""
+    return history is not None and bool(kind) and bool(user_id) and getattr(history, "enabled", True) is not False
+
+
+def _record_history(history, user_id: str, kind: Optional[str], title, body, url, tag, log_id=None, **outcome) -> None:
     """Hand one outcome to the history; never raises. Skipped without a history, a kind or a user id.
 
     ``kind`` is chosen by each caller (task / reminder / class / status / test), never inferred from
-    the tag. A send without a user id (legacy env-topic path) is not recorded.
+    the tag. A send without a user id (legacy env-topic path) is not recorded. ``log_id`` is the id
+    the notification was sent with, so its push link finds this row.
     """
     if history is None or not kind or not user_id:
         return
     try:
-        history.record(user_id, kind, title, body, url, tag, **outcome)
+        history.record(user_id, kind, title, body, url, tag, log_id=log_id, **outcome)
         _log_changed("history-record", None)
     except Exception as exc:  # noqa: BLE001 - logging must never break a delivery
         _log_changed("history-record", f"[Deliver] could not record the notification history: {type(exc).__name__}")
@@ -85,13 +116,21 @@ def deliver_to_user(
     """Send one notification to every channel of ``user``; True when at least one accepted it.
 
     ``user`` needs ``id`` (Web Push subscriptions), ``ntfy_topic`` and optionally ``ntfy_enabled``.
-    ``url`` / ``tag`` go to the Web Push payload (a path inside the PWA; the tag replaces an older
-    notification with the same tag). ``priority`` uses ntfy words and also picks the Web Push urgency.
+    ``url`` is the page the notification is about (a path inside the PWA); ``tag`` replaces an older
+    notification with the same tag. ``priority`` uses ntfy words and also picks the Web Push urgency.
     ``ntfy_tags`` / ``ntfy_link`` only shape the ntfy copy. A user without a topic is never routed to
     the owner's topic. ``kind`` (task / reminder / class / status / test) and ``history`` record this
     attempt in the user's notification history; without either nothing is recorded. Never raises.
+
+    Tapping a notification opens its own entry in Avisos: the history row id is generated here, before
+    sending, and the push payload carries ``url=/notificaciones?n=<id>`` plus the original page as
+    ``target`` (the row keeps it in its ``url`` column, so Avisos can offer an "Abrir" button). When
+    nothing is recorded the payload links to plain ``/notificaciones``. With ``WEB_APP_URL`` set the
+    ntfy copy gets the same link as its click action.
     """
     user_id = str(user.get("id") or "")
+    log_id = new_log_id() if history_active(history, user_id, kind) else None
+    link = history_url(log_id)
     delivered = False
     parts = []
     push_ok = push_total = 0
@@ -105,7 +144,7 @@ def deliver_to_user(
         except Exception as exc:  # noqa: BLE001 - ntfy must still go out
             _log_changed(f"subs {user_id}", f"[Deliver] user {user_id[:8]}: could not read push subscriptions: {exc}")
             subs = []
-        payload = {"title": title, "body": body, "url": url, "tag": tag}
+        payload = {"title": title, "body": body, "url": link, "target": url, "tag": tag}
         counts = {PushResult.OK: 0, PushResult.GONE: 0, PushResult.FAILED: 0}
         for sub in subs:
             try:
@@ -127,8 +166,10 @@ def deliver_to_user(
         ntfy_attempted = True
         post = ntfy or notifier.post_ntfy
         text = f"{body}\n🔗 {ntfy_link}" if ntfy_link else body
+        click = absolute_web_url(link)
+        extra = {"click": click} if click else {}  # only passed when configured: custom senders stay compatible
         try:
-            ntfy_ok = bool(post(title, text, priority=priority, tags=ntfy_tags, topic=topic))
+            ntfy_ok = bool(post(title, text, priority=priority, tags=ntfy_tags, topic=topic, **extra))
         except Exception as exc:  # noqa: BLE001
             print(f"[Deliver] user {user_id[:8]}: ntfy crashed: {type(exc).__name__}")
             ntfy_ok = False
@@ -139,7 +180,7 @@ def deliver_to_user(
 
     print(f"[Deliver] user {user_id[:8] or '?'}: {', '.join(parts)} -> {'delivered' if delivered else 'NOT delivered'}")
     _record_history(
-        history, user_id, kind, title, body, url, tag,
+        history, user_id, kind, title, body, url, tag, log_id,
         push_ok=push_ok, push_total=push_total, ntfy_attempted=ntfy_attempted, ntfy_ok=ntfy_ok,
     )
     return delivered
@@ -165,16 +206,19 @@ def process_push_tests(supabase, sender, history=None) -> int:
         return 0
     sent = 0
     for row in rows:
+        row_user = str(row.get("user_id") or "")
+        log_id = new_log_id() if history_active(history, row_user, "test") else None
+        payload = dict(TEST_PAYLOAD, url=history_url(log_id), target=TEST_PAYLOAD["url"])
         try:
-            result = sender.send_push(row, TEST_PAYLOAD, TTL_TEST, "high")
+            result = sender.send_push(row, payload, TTL_TEST, "high")
         except Exception as exc:  # noqa: BLE001
             print(f"[Deliver] push test crashed: {type(exc).__name__}")
             result = PushResult.FAILED
         if result is PushResult.OK:
             sent += 1
         _record_history(
-            history, str(row.get("user_id") or ""), "test",
-            TEST_PAYLOAD["title"], TEST_PAYLOAD["body"], TEST_PAYLOAD["url"], TEST_PAYLOAD["tag"],
+            history, row_user, "test",
+            TEST_PAYLOAD["title"], TEST_PAYLOAD["body"], TEST_PAYLOAD["url"], TEST_PAYLOAD["tag"], log_id,
             push_ok=1 if result is PushResult.OK else 0, push_total=1, ntfy_attempted=False, ntfy_ok=False,
         )
         if result is not PushResult.GONE:  # a deleted row has no flag left to clear

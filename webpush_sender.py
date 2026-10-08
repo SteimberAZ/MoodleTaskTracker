@@ -72,18 +72,23 @@ def _clean(value: Any, limit: int) -> str:
 
 
 def encode_payload(payload: Mapping[str, Any], max_bytes: int = MAX_PAYLOAD_BYTES) -> str:
-    """JSON ``{"title", "body", "url", "tag"}`` for the service worker, at most ``max_bytes`` of UTF-8.
+    """JSON ``{"title", "body", "url", "tag"}`` (plus ``target`` when given) for the service worker, at most ``max_bytes`` of UTF-8.
 
-    Only those four keys are sent. title/url/tag are clipped; an oversized body is cut at the longest
-    prefix that fits and ends with an ellipsis, so one message always fits a single push record.
+    Only those keys are sent. ``url`` is where a tap lands (Avisos, on the notification's own entry);
+    ``target`` is the page the notification is about. title/url/target/tag are clipped; an oversized
+    body is cut at the longest prefix that fits and ends with an ellipsis, so one message always fits
+    a single push record.
     """
     title = _clean(payload.get("title"), MAX_TITLE_CHARS)
     url = _clean(payload.get("url") or "/", MAX_URL_CHARS)
     tag = _clean(payload.get("tag"), MAX_TAG_CHARS)
+    target = _clean(payload.get("target"), MAX_URL_CHARS) if payload.get("target") else ""
     body = _clean(payload.get("body"), 4 * max_bytes)
 
     def dump(text_body: str) -> str:
         data = {"title": title, "body": text_body, "url": url, "tag": tag}
+        if target:
+            data["target"] = target
         return json.dumps(data, ensure_ascii=False, separators=(",", ":"))
 
     def size(text: str) -> int:

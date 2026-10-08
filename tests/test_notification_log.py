@@ -1,4 +1,5 @@
 """Notification history: one buffered row per user-notification, bulk-written, pruned daily, never fatal."""
+import re
 import time
 from datetime import datetime, timedelta, timezone
 from functools import partial
@@ -24,12 +25,13 @@ T0 = datetime(2026, 10, 6, 12, 0, 0, tzinfo=timezone.utc)
 UID = "11111111-aaaa-bbbb-cccc-000000000001"
 USER = {"id": UID, "moodle_url": "https://m.example", "token": "tok", "ntfy_topic": "utm-aaaaaaaaaaaa",
         "ntfy_enabled": True, "last_error": None}
-COLUMNS = {"user_id", "kind", "title", "body", "url", "tag", "status", "push_ok", "push_total",
+COLUMNS = {"id", "user_id", "kind", "title", "body", "url", "tag", "status", "push_ok", "push_total",
            "ntfy_attempted", "ntfy_ok", "created_at"}
 
 
 @pytest.fixture(autouse=True)
-def _fresh_log_state():
+def _fresh_log_state(monkeypatch):
+    monkeypatch.delenv("WEB_APP_URL", raising=False)
     delivery._last_logged.clear()
     yield
     delivery._last_logged.clear()
@@ -119,7 +121,7 @@ def test_a_delivery_records_one_row_with_the_channel_outcome():
     assert log.pending == 1 and db.inserts == []  # buffered: nothing goes out per notification
     assert log.flush() == 1
     assert db.rows == [{
-        "user_id": UID, "kind": "task", "title": "Titulo", "body": "Cuerpo", "url": "/tareas/t1",
+        "id": db.rows[0]["id"], "user_id": UID, "kind": "task", "title": "Titulo", "body": "Cuerpo", "url": "/tareas/t1",
         "tag": "task-t1", "status": "sent", "push_ok": 2, "push_total": 3, "ntfy_attempted": True,
         "ntfy_ok": True, "created_at": "2026-10-06T12:00:00+00:00"}]
 
@@ -283,6 +285,155 @@ def test_nothing_is_buffered_without_a_configured_database():
     log = NotificationLog(db, clock=lambda: T0)
     _deliverer(log)(USER, "T", "B", kind="task")
     assert log.pending == 0 and log.flush() == 0 and db.inserts == []
+
+
+# ---- tapping a notification opens its own history entry ----------------------------------------------
+
+
+class RecordingSender(Sender):
+    def __init__(self):
+        super().__init__()
+        self.payloads = []
+
+    def send_push(self, sub, payload, ttl, urgency):
+        self.payloads.append(dict(payload))
+        return super().send_push(sub, payload, ttl, urgency)
+
+
+UUID4 = r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
+
+
+def test_the_row_id_is_generated_once_and_used_by_the_push_link_and_the_row():
+    log, db = _log()
+    sender = RecordingSender()
+    deliver = partial(deliver_to_user, supabase=SubsDb(2), sender=sender, ntfy=_ntfy(), history=log)
+    assert deliver(USER, "Titulo", "Cuerpo", url="/tareas/t1", tag="task-t1", kind="task") is True
+    log.flush()
+    (row,) = db.rows
+    assert re.fullmatch(UUID4, row["id"])
+    assert len(sender.payloads) == 2  # one push per device, every one with the same link
+    for payload in sender.payloads:
+        assert payload["url"] == f"/notificaciones?n={row['id']}"
+        assert payload["target"] == "/tareas/t1"
+    assert row["url"] == "/tareas/t1"  # the row keeps the page the notification is about
+
+
+def test_every_notification_gets_its_own_id():
+    log, db = _log()
+    sender = RecordingSender()
+    deliver = partial(deliver_to_user, supabase=SubsDb(1), sender=sender, ntfy=_ntfy(), history=log)
+    deliver(USER, "A", "x", kind="task")
+    deliver(USER, "B", "y", kind="task")
+    log.flush()
+    ids = [r["id"] for r in db.rows]
+    assert len(set(ids)) == 2
+    assert [p["url"] for p in sender.payloads] == [f"/notificaciones?n={i}" for i in ids]
+
+
+@pytest.mark.parametrize("make_history", [
+    lambda: None,  # no history wired
+    lambda: NotificationLog(type("Off", (), {"is_configured": False})()),  # database not configured
+])
+def test_without_a_usable_history_the_push_links_to_plain_avisos(make_history):
+    sender = RecordingSender()
+    deliver_to_user(USER, "T", "B", url="/tareas/t1", kind="task", history=make_history(), supabase=SubsDb(1),
+                    sender=sender, ntfy=_ntfy())
+    assert [(p["url"], p["target"]) for p in sender.payloads] == [("/notificaciones", "/tareas/t1")]
+
+
+def test_without_a_kind_or_user_id_there_is_no_row_to_point_at():
+    log, _ = _log()
+    sender = RecordingSender()
+    deliver_to_user(USER, "T", "B", history=log, supabase=SubsDb(1), sender=sender, ntfy=_ntfy())  # no kind
+    assert sender.payloads[0]["url"] == "/notificaciones" and log.pending == 0
+
+
+def test_a_history_that_breaks_never_fails_the_delivery_and_the_link_still_works():
+    class Boom:
+        def record(self, *a, **k):
+            raise RuntimeError("history down")
+
+    sender = RecordingSender()
+    assert deliver_to_user(USER, "T", "B", kind="task", history=Boom(), supabase=SubsDb(1), sender=sender,
+                           ntfy=_ntfy()) is True
+    assert re.fullmatch(r"/notificaciones\?n=" + UUID4, sender.payloads[0]["url"])
+
+
+def test_push_tests_link_to_their_own_row_too():
+    log, db = _log()
+    sender = RecordingSender()
+    assert process_push_tests(PushTestDb(2), sender, history=log) == 2
+    log.flush()
+    assert [p["url"] for p in sender.payloads] == [f"/notificaciones?n={r['id']}" for r in db.rows]
+    assert {p["target"] for p in sender.payloads} == {"/notificaciones"}
+    assert len({r["id"] for r in db.rows}) == 2
+    plain = RecordingSender()
+    process_push_tests(PushTestDb(1), plain)  # no history: plain Avisos
+    assert plain.payloads[0]["url"] == "/notificaciones"
+
+
+class ClickNtfy:
+    """ntfy sender that accepts the optional ``click`` keyword and records it."""
+
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, title, text, priority="default", tags="bell", topic=None, click=None):
+        self.calls.append(click)
+        return True
+
+
+def test_ntfy_gets_the_same_absolute_link_as_click_when_the_web_app_url_is_set(monkeypatch):
+    monkeypatch.setenv("WEB_APP_URL", " https://moodletasktracker.vercel.app/ ")
+    log, db = _log()
+    ntfy = ClickNtfy()
+    deliver_to_user(USER, "T", "B", url="/tareas/t1", kind="task", history=log, supabase=SubsDb(0), sender=Sender(),
+                    ntfy=ntfy)
+    log.flush()
+    assert ntfy.calls == [f"https://moodletasktracker.vercel.app/notificaciones?n={db.rows[0]['id']}"]
+
+    plain = ClickNtfy()  # no history: still a click, on plain Avisos
+    deliver_to_user(USER, "T", "B", kind="task", supabase=SubsDb(0), sender=Sender(), ntfy=plain)
+    assert plain.calls == ["https://moodletasktracker.vercel.app/notificaciones"]
+
+
+def test_ntfy_is_called_exactly_as_before_without_a_web_app_url():
+    log, _ = _log()
+    seen = []
+
+    def strict(title, text, priority="default", tags="bell", topic=None):  # no click parameter at all
+        seen.append(topic)
+        return True
+
+    assert deliver_to_user(USER, "T", "B", kind="task", history=log, supabase=SubsDb(0), sender=Sender(),
+                           ntfy=strict) is True
+    assert seen == [USER["ntfy_topic"]]
+
+
+def test_post_ntfy_sends_the_click_header_only_when_given(monkeypatch):
+    sent = []
+
+    class Resp:
+        status_code = 200
+        text = ""
+
+    import requests
+
+    monkeypatch.setattr(requests, "post", lambda url, data=None, headers=None, timeout=None: sent.append(headers) or Resp())
+    assert notifier.post_ntfy("T", "B", topic="utm-x") is True
+    assert notifier.post_ntfy("T", "B", topic="utm-x", click="https://app.example/notificaciones?n=1") is True
+    assert "Click" not in sent[0]
+    assert sent[1]["Click"] == "https://app.example/notificaciones?n=1"
+
+
+def test_the_push_payload_carries_target_and_stays_small():
+    import json
+    import webpush_sender as ws
+
+    data = json.loads(ws.encode_payload({"title": "t", "body": "b", "url": "/notificaciones?n=x", "target": "/tareas/t1",
+                                         "tag": "g"}))
+    assert data == {"title": "t", "body": "b", "url": "/notificaciones?n=x", "tag": "g", "target": "/tareas/t1"}
+    assert "target" not in json.loads(ws.encode_payload({"title": "t", "body": "b", "url": "/"}))
 
 
 # ---- row shape ---------------------------------------------------------------------------------------

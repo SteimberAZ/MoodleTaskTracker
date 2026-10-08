@@ -26,7 +26,8 @@ UB = {"id": "22222222-aaaa-bbbb-cccc-000000000002", "moodle_url": BASE, "token":
 
 
 @pytest.fixture(autouse=True)
-def _fresh_log_state():
+def _fresh_log_state(monkeypatch):
+    monkeypatch.delenv("WEB_APP_URL", raising=False)
     delivery._last_logged.clear()
     yield
     delivery._last_logged.clear()
@@ -120,7 +121,9 @@ def test_delivers_to_every_subscription_and_to_ntfy():
 
     assert [s["endpoint"] for s in sender.sent] == [f"https://push.example/{n}" for n in "abc"]
     first = sender.sent[0]
-    assert first["payload"] == {"title": "Titulo", "body": "Cuerpo", "url": "/tareas/t1", "tag": "task-t1"}
+    # No history here, so there is no entry to point at: a tap opens plain Avisos; the page rides as target.
+    assert first["payload"] == {"title": "Titulo", "body": "Cuerpo", "url": "/notificaciones",
+                                "target": "/tareas/t1", "tag": "task-t1"}
     assert first["ttl"] == TTL_TASK and first["urgency"] == "high"
     assert ntfy.calls == [
         {"title": "Titulo", "message": "Cuerpo", "priority": "high", "tags": "bell", "topic": UA["ntfy_topic"]}
@@ -243,7 +246,7 @@ def test_test_requests_get_the_fixed_message_and_the_flag_is_cleared():
     for sent in sender.sent:
         assert sent["payload"] == {"title": "Notificaciones activas ✅",
                                    "body": "Así te llegarán tus avisos de Moodle",
-                                   "url": "/notificaciones", "tag": "test"}
+                                   "url": "/notificaciones", "target": "/notificaciones", "tag": "test"}
         assert sent["ttl"] == TTL_TEST == 600 and sent["urgency"] == "high"
     assert db.updates == [("s-a", {"test_requested_at": None}), ("s-b", {"test_requested_at": None})]
 
