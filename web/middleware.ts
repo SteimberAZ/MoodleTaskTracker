@@ -9,6 +9,6 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
-  // Everything except Next static assets and the favicon.
-  matcher: ['/((?!_next/static|_next/image|favicon.ico).*)'],
+  // Everything except Next static assets, the favicon and the public brand assets.
+  matcher: ['/((?!_next/static|_next/image|favicon.ico|icon.svg|brand/).*)'],
 };
