@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   CLASS_LEAD_OPTIONS,
+  MAX_SCHEDULE_ENTRIES,
   SAMPLE_CLASS,
   classNotification,
   classReminderQuery,
@@ -178,7 +179,7 @@ describe('sanitizeClasses', () => {
     expect(long.level).toBeNull();
     expect(long.credits).toBeNull();
     expect(long.teacher).toBeNull();
-    expect(sanitizeClasses(Array.from({ length: 300 }, () => cls()))).toHaveLength(100);
+    expect(sanitizeClasses(Array.from({ length: 300 }, () => cls()))).toHaveLength(MAX_SCHEDULE_ENTRIES);
     expect(sanitizeClasses('nope')).toEqual([]);
   });
 

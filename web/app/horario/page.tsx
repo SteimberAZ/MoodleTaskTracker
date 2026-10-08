@@ -5,8 +5,7 @@ import { dateToGuayaquilInput } from '@/lib/time';
 import ClassReminderSetting from '@/components/ClassReminderSetting';
 import ConfirmButton from '@/components/ConfirmButton';
 import RemindersTabs from '@/components/RemindersTabs';
-import ScheduleDays from '@/components/ScheduleDays';
-import ScheduleImport from '@/components/ScheduleImport';
+import ScheduleWorkspace from '@/components/ScheduleWorkspace';
 import { deleteSchedule } from './actions';
 
 export const dynamic = 'force-dynamic';
@@ -37,28 +36,16 @@ export default async function SchedulePage() {
           <p className="card muted empty">El horario de clases aún no está disponible. Inténtalo de nuevo más tarde.</p>
         )}
 
-        {schedule && classes.length === 0 && (
-          <div className="card item">
-            <h2 className="card-title">Importa tu horario</h2>
-            <p className="muted">
-              En el SGA abre «Horario de clases», imprime o descarga la página como PDF y súbela aquí. Verás una vista previa antes de
-              guardar.
-            </p>
-            <ScheduleImport hasSchedule={false} />
-          </div>
-        )}
-
-        {schedule && classes.length > 0 && (
+        {schedule && (
           <div className="stack">
-            {ended && schedule.periodEnd && (
+            {ended && schedule.periodEnd && classes.length > 0 && (
               <p className="warning" role="status">
                 Este horario terminó el {formatDate(schedule.periodEnd)}. Importa el del nuevo período para seguir recibiendo avisos.
               </p>
             )}
-            <ScheduleDays items={classes.map((cls, index) => ({ cls, index }))} today={guayaquilWeekday(now)} />
-            <ScheduleImport
-              key="has-schedule"
-              hasSchedule
+            <ScheduleWorkspace
+              saved={classes}
+              today={guayaquilWeekday(now)}
               extraActions={
                 <ConfirmButton
                   action={deleteSchedule}
@@ -72,7 +59,7 @@ export default async function SchedulePage() {
         )}
       </section>
 
-      <section className="card item" aria-labelledby="class-reminder-title">
+      <section className="card item" id="class-reminder" aria-labelledby="class-reminder-title">
         <h2 id="class-reminder-title" className="card-title">Avisos de clases</h2>
         <ClassReminderSetting
           available={lead.available}

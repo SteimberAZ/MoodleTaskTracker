@@ -2,16 +2,18 @@
 
 import { revalidatePath } from 'next/cache';
 import { requireUser } from '@/lib/auth';
-import { parseClassLead, sanitizeClasses } from '@/lib/class-schedule';
-import { deleteClassSchedule, replaceClassSchedule, setClassReminderMinutes } from '@/lib/class-schedule-store';
+import { parseClassLead, sanitizeClasses, type SchedulePeriod } from '@/lib/class-schedule';
+import { deleteClassSchedule, getClassSchedule, replaceClassSchedule, setClassReminderMinutes } from '@/lib/class-schedule-store';
 import { MAX_PDF_BYTES, extractPdfPages, hasPdfSignature } from '@/lib/pdf-text';
 import { checkCooldown } from '@/lib/rate-limit';
-import { signSchedulePreview, verifySchedulePreview } from '@/lib/schedule-token';
+import { parseScheduleEntries } from '@/lib/schedule-entries';
+import { resolveImportSave } from '@/lib/schedule-save';
+import { signSchedulePreview } from '@/lib/schedule-token';
 import { resolveSessionSecret } from '@/lib/session-token';
 import { parseSgaSchedule, type ScheduleClass } from '@/lib/sga-schedule';
 
 export interface SchedulePreview {
-  /** Signed copy of the parsed data; the save step trusts only this, never fields sent by the browser. */
+  /** Signed copy of the parsed data; the import save step requires it, and takes the period from it. */
   token: string;
   periodLabel: string | null;
   periodEnd: string | null;
@@ -69,22 +71,32 @@ export interface SaveState {
   saved?: number;
 }
 
-/** Step 2: saves the previewed classes (minus the ones the user unchecked), replacing the previous schedule. */
-export async function saveSchedule(_prev: SaveState, formData: FormData): Promise<SaveState> {
+/**
+ * Step 2 for an imported PDF: saves the (possibly edited) entries, replacing the previous schedule. The entries
+ * are accepted only together with the signed upload token of this user, and are validated again from scratch.
+ */
+export async function saveImportedSchedule(input: { token: unknown; entries: unknown }): Promise<SaveState> {
   const user = await requireUser();
-  const data = await verifySchedulePreview(await resolveSessionSecret(), user.id, formData.get('token'));
-  if (!data) return { error: 'La vista previa expiró. Sube el PDF otra vez.' };
+  const result = await resolveImportSave(await resolveSessionSecret(), user.id, input?.token, input?.entries);
+  if (!result.ok) return { error: result.error };
+  return persist(user.id, result.classes, result.period);
+}
 
-  const keep = new Set(
-    formData
-      .getAll('keep')
-      .filter((v): v is string => typeof v === 'string' && /^\d{1,3}$/.test(v))
-      .map(Number),
-  );
-  const classes = data.classes.filter((_, index) => keep.has(index));
-  if (classes.length === 0) return { error: 'Selecciona al menos una clase para guardar.' };
+/**
+ * Saves manually edited entries of the session user's own schedule (no PDF involved). `user_id` always comes from
+ * the session and the period label/end stay as already stored; entries are validated strictly.
+ */
+export async function saveEditedSchedule(input: { entries: unknown }): Promise<SaveState> {
+  const user = await requireUser();
+  const parsed = parseScheduleEntries(input?.entries);
+  if (!parsed.ok) return { error: parsed.error };
+  const current = await getClassSchedule(user.id);
+  if (!current) return { error: 'No se pudo leer tu horario actual. Inténtalo de nuevo.' };
+  return persist(user.id, parsed.classes, { label: current.periodLabel, end: current.periodEnd });
+}
 
-  const ok = await replaceClassSchedule(user.id, classes, { label: data.periodLabel, end: data.periodEnd });
+async function persist(userId: string, classes: ScheduleClass[], period: SchedulePeriod): Promise<SaveState> {
+  const ok = await replaceClassSchedule(userId, classes, period);
   if (!ok) return { error: 'No se pudo guardar el horario. Inténtalo de nuevo.' };
   revalidatePath('/horario');
   return { saved: classes.length };

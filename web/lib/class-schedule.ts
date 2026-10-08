@@ -13,7 +13,8 @@ export const CLASS_LEAD_OPTIONS: { value: number | null; token: string; label: s
   { value: 180, token: '180', label: '3 horas' },
 ];
 
-const MAX_CLASSES = 100;
+/** Most entries a schedule may hold (a week has far fewer; this only bounds abuse). */
+export const MAX_SCHEDULE_ENTRIES = 60;
 const MAX_TEXT = 200;
 
 // ------------------------------------------------------------------------------ notification formatting
@@ -188,7 +189,7 @@ function smallInt(value: unknown): number | null {
 export function sanitizeClasses(input: unknown): ScheduleClass[] {
   if (!Array.isArray(input)) return [];
   const out: ScheduleClass[] = [];
-  for (const raw of input.slice(0, MAX_CLASSES)) {
+  for (const raw of input.slice(0, MAX_SCHEDULE_ENTRIES)) {
     if (!raw || typeof raw !== 'object') continue;
     const r = raw as Record<string, unknown>;
     const subject = text(r.subject);
