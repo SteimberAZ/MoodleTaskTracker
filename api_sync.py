@@ -177,10 +177,11 @@ def sync_tasks_via_api(
         return "error"
 
     if storage.get_setting(alert_key, ""):
-        storage.set_setting(alert_key, "")
-        _report_error(supabase, creds, None, user)
-        alert(title="Moodle reconectado", message="La conexión con UTM Moodle se restableció.",
-              priority="default", tags="white_check_mark,mortarboard", **route)
+        sent = alert(title="Moodle reconectado", message="La conexión con UTM Moodle se restableció.",
+                     priority="default", tags="white_check_mark,mortarboard", **route)
+        if sent is not False:  # False = no channel got through: keep the key so the next sync retries
+            storage.set_setting(alert_key, "")
+            _report_error(supabase, creds, None, user)
     elif user and user.get("last_error"):
         _report_error(supabase, creds, None, user)  # error recorded elsewhere (e.g. web), now healthy
     if mirror_ok is False:

@@ -280,6 +280,30 @@ def test_recovery_clears_error_and_alert_state(tmp_path):
     assert alerts[-1]["title"] == "Moodle reconectado"
 
 
+def test_an_undelivered_reconnect_alert_is_retried_on_the_next_sync(tmp_path):
+    s = _storage(tmp_path)
+    sb = FakeSupabase()
+    creds = Credentials("tok", BASE, "supabase")
+    alerts, ok = [], {"value": False}
+
+    def alert(**k):
+        alerts.append(k["title"])
+        return ok["value"] if k["title"] == "Moodle reconectado" else True
+
+    api_sync.sync_tasks_via_api(s, creds, sb, client=StubClient(exc=MoodleTokenInvalid("b", code="invalidtoken")),
+                                alert=alert)
+    healthy = dict(client=StubClient([_task()]), process=lambda *a, **k: None, alert=alert)
+    assert api_sync.sync_tasks_via_api(s, creds, sb, **healthy) == "ok"
+    assert alerts == ["Moodle desconectado", "Moodle reconectado"]
+    assert sb.updates[-1]["last_error"] is not None  # still reported as disconnected
+
+    ok["value"] = True
+    api_sync.sync_tasks_via_api(s, creds, sb, **healthy)
+    api_sync.sync_tasks_via_api(s, creds, sb, **healthy)
+    assert alerts == ["Moodle desconectado", "Moodle reconectado", "Moodle reconectado"]
+    assert sb.updates[-1] == {"last_error": None, "last_error_at": None}
+
+
 def test_transient_errors_return_error_without_alert(tmp_path):
     s = _storage(tmp_path)
     alerts = []
