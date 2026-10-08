@@ -13,19 +13,24 @@ export default function LoginForm() {
       {state.error && <p className="alert" role="alert">{state.error}</p>}
 
       <label>
-        Usuario
+        Correo institucional o usuario de la UTM
         <input
           name="username"
           autoComplete="username"
+          autoCapitalize="none"
+          spellCheck={false}
+          placeholder="e1234567890@utm.edu.ec"
           maxLength={100}
           defaultValue={state.username ?? ''}
+          aria-describedby="username-hint"
           autoFocus
           required
         />
+        <span id="username-hint" className="muted small">Usa el mismo usuario con el que entras a Moodle.</span>
       </label>
 
       <label>
-        Contraseña
+        Contraseña de la UTM
         <input name="password" type="password" autoComplete="current-password" maxLength={200} required />
       </label>
 

@@ -26,7 +26,7 @@ export async function login(_prev: LoginState, formData: FormData): Promise<Logi
   const echo = { username, inviteCode };
 
   if (!process.env.SESSION_SECRET) return { ...echo, error: 'El servidor no está configurado (SESSION_SECRET).' };
-  if (!username || !password) return { ...echo, error: 'Ingresa tu usuario y contraseña de Moodle.' };
+  if (!username || !password) return { ...echo, error: 'Ingresa tu correo o usuario de la UTM y tu contraseña.' };
   if (username.length > MAX_USERNAME || password.length > MAX_PASSWORD || inviteCode.length > MAX_INVITE) {
     return { ...echo, error: 'Alguno de los datos es demasiado largo.' };
   }
