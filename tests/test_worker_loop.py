@@ -346,6 +346,12 @@ class LogDb:
     def prune_notification_log(self, cutoff_iso):
         self.prunes.append(cutoff_iso)
 
+    def fetch_milestones_since(self, days=14):
+        return []
+
+    def fetch_settings_like(self, prefix):
+        return []
+
     @property
     def rows(self):
         return [r for batch in self.inserts for r in batch]
@@ -511,6 +517,48 @@ def test_the_heartbeat_is_written_synchronously_every_tick(steps):
     assert payload["degraded_reasons"] == ["webpush_disabled"]
 
 
+def test_a_long_round_refreshes_the_heartbeat_between_users(monkeypatch, steps):
+    clock = Clock()
+    db = SettingsDb()
+    ctx = worker.WorkerContext(None, db, OffSender(), History(), lambda *a, **k: True, clock=clock)
+    worker.run_delivery_pass(ctx)
+    worker.report_tick(ctx, 0, 0)  # the previous end-of-tick heartbeat
+    db.settings.clear()
+
+    def slow_sync(storage, user, *a, **k):
+        clock.advance(35)
+        return "ok"
+
+    monkeypatch.setattr(worker, "sync_user_via_api", slow_sync)
+    # 8 users x 35 s = 280 s: far past the web's 180 s stale threshold without a mid-round heartbeat
+    worker.sync_all_users(None, None, _users(8), between_users=ctx.delivery_if_due, clock=clock)
+    beats = [k for k, _v, _a in db.settings if k == "worker_status"]
+    assert len(beats) >= 3
+    assert len(beats) <= 280 // worker.HEARTBEAT_INTERVAL_SECONDS  # at most one per interval
+
+
+def test_the_startup_heartbeat_is_written_before_the_first_round(monkeypatch, tmp_path):
+    class Db(SettingsDb):
+        def fetch_active_users(self):
+            return []
+
+    class Offline:
+        is_configured, url = False, ""
+
+    db = Db()
+    storage = Storage(str(tmp_path / "t.db"))
+    storage.supabase = Offline()
+    monkeypatch.setattr(worker, "Storage", lambda: storage)
+    monkeypatch.setattr(worker.SupabaseClient, "for_worker", classmethod(lambda cls: db))
+    monkeypatch.setattr(worker.WebPushSender, "from_env", classmethod(lambda cls, sb: OffSender()))
+    monkeypatch.setattr(worker, "hydrate_storage", lambda *a: True)
+    stop = threading.Event()
+    monkeypatch.setattr(worker, "run_loop", lambda ctx, *a: stop.set())
+    worker.run_worker(stop_event=stop, tick_seconds=0)
+    (key, value, _async), = db.settings
+    assert key == "worker_status" and json.loads(value)["degraded_reasons"] == ["webpush_disabled"]
+
+
 @pytest.mark.parametrize("db", [SettingsDb(fail=RuntimeError("down")), SettingsDb(result=False)])
 def test_a_failing_heartbeat_write_never_raises(db, capsys):
     ctx = worker.WorkerContext(None, db, OffSender(), History(), lambda *a, **k: True)
@@ -576,7 +624,43 @@ def test_the_healthcheck_pings_the_url_and_appends_fail_when_unhealthy():
     worker.ping_healthcheck(healthy, http_get=get, env=env)
     healthy.tick_crashed, healthy.degraded_reasons = False, ["vapid_subject_placeholder"]
     worker.ping_healthcheck(healthy, http_get=get, env=env)
-    assert calls == [("https://hc.example/abc/", 5)] + [("https://hc.example/abc/fail", 5)] * 4
+    healthy.degraded_reasons, healthy.delivery_error = [], True
+    worker.ping_healthcheck(healthy, http_get=get, env=env)
+    healthy.delivery_error = False
+    worker.ping_healthcheck(healthy, http_get=get, env=env, heartbeat_ok=False)  # Supabase rejects writes
+    assert calls == [("https://hc.example/abc/", 5)] + [("https://hc.example/abc/fail", 5)] * 6
+
+
+def test_a_rejected_heartbeat_write_pings_fail(monkeypatch):
+    calls = []
+    monkeypatch.setenv("HEALTHCHECK_URL", "https://hc.example/abc")
+    monkeypatch.setattr("requests.get", lambda url, timeout: calls.append(url))
+    ctx = worker.WorkerContext(None, SettingsDb(result=False), OnSender(), History(), lambda *a, **k: True)
+    worker.report_tick(ctx, 1, 0)
+    ctx.supabase = SettingsDb()
+    worker.report_tick(ctx, 1, 0)
+    assert calls == ["https://hc.example/abc/fail", "https://hc.example/abc"]
+
+
+def test_a_failing_delivery_step_is_reported_until_a_clean_pass(monkeypatch, steps):
+    def boom(*a, **k):
+        raise RuntimeError("down")
+
+    ctx = _ctx()
+    monkeypatch.setattr(worker, "process_due_reminders", boom)
+    worker.run_delivery_pass(ctx)
+    assert ctx.delivery_error is True
+    monkeypatch.setattr(worker, "process_due_reminders", lambda *a, **k: 0)
+    worker.run_delivery_pass(ctx)
+    assert ctx.delivery_error is False
+
+
+def test_a_readable_login_poll_clears_a_failed_round(steps):
+    ctx = _ctx(supabase=MarkerDb([], []))
+    ctx.round_error = True
+    ctx.last_tasks_check = 10 ** 12  # no full round due: only the login poll runs
+    worker.run_tick(ctx)
+    assert ctx.round_error is False
 
 
 def test_the_healthcheck_is_optional_and_swallows_errors(capsys):
@@ -667,11 +751,51 @@ def test_hydration_runs_when_the_storage_supports_it(capsys):
         def hydrate_from_remote(self, supabase):
             raise RuntimeError("down")
 
+    class Failed:
+        def hydrate_from_remote(self, supabase):
+            return {"error": "RuntimeError: HTTP 503"}
+
     store, db = Hydrating(), object()
-    worker.hydrate_storage(store, db)
+    assert worker.hydrate_storage(store, db) is True
     assert store.calls == [db] and "milestones" in capsys.readouterr().out
-    worker.hydrate_storage(object(), db)  # older storage: nothing to do
-    worker.hydrate_storage(Broken(), db)  # never raises
+    assert worker.hydrate_storage(object(), db) is True  # older storage: nothing to do
+    assert worker.hydrate_storage(Broken(), db) is False  # never raises, asks for a retry
+    assert worker.hydrate_storage(Failed(), db) is False
+
+
+def test_a_failed_restore_is_retried_and_holds_the_moodle_round_back(monkeypatch, steps):
+    results = [{"error": "down"}, {"error": "down"}, {"milestones": 4, "settings": 1}]
+
+    class Store:
+        def hydrate_from_remote(self, supabase):
+            return results.pop(0)
+
+    rounds = []
+    monkeypatch.setattr(worker, "run_task_tick", lambda *a, **k: rounds.append(1) or "users")
+    ctx = worker.WorkerContext(Store(), SettingsDb(), OffSender(), History(), lambda *a, **k: True, clock=Clock())
+    ctx.hydrated = False
+    worker.run_tick(ctx)
+    worker.run_tick(ctx)
+    assert rounds == [] and steps.count("process_class_reminders") == 2  # deliveries keep their cadence
+    worker.run_tick(ctx)
+    assert ctx.hydrated is True and rounds == [1]
+
+
+def test_a_restore_that_never_succeeds_stops_holding_the_rounds_back(monkeypatch, steps, capsys):
+    class Store:
+        def hydrate_from_remote(self, supabase):
+            return {"error": "down"}
+
+    rounds = []
+    monkeypatch.setattr(worker, "run_task_tick", lambda *a, **k: rounds.append(1) or "users")
+    clock = Clock()
+    ctx = worker.WorkerContext(Store(), SettingsDb(), OffSender(), History(), lambda *a, **k: True, clock=clock)
+    ctx.hydrated = False
+    worker.run_tick(ctx)
+    clock.advance(worker.HYDRATION_MAX_WAIT_SECONDS + 1)
+    ctx.last_tasks_check = 0
+    worker.run_tick(ctx)
+    assert rounds == [1] and "se revisa Moodle igualmente" in capsys.readouterr().out
 
 
 def test_the_public_vapid_key_is_published_only_for_an_enabled_sender():

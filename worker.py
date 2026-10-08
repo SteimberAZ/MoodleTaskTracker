@@ -8,7 +8,9 @@ round. SIGINT/SIGTERM stop the loop at a step boundary, and an unexpected except
 logged and survived.
 
 Health: every tick ends with a heartbeat in moodle_settings ``worker_status`` (JSON, see
-``build_heartbeat``) and, when ``HEALTHCHECK_URL`` is set, a dead-man-switch ping. A missing
+``build_heartbeat``) and, when ``HEALTHCHECK_URL`` is set, a dead-man-switch ping. A long Moodle
+round also reports between users, at most once per ``HEARTBEAT_INTERVAL_SECONDS``, so the web never
+sees a healthy worker as stopped; one more report goes out right after the startup checks. A missing
 Supabase config, a disabled Web Push sender or the placeholder VAPID subject are reported loudly at
 startup and in every heartbeat (``degraded``); ``WORKER_STRICT=1`` makes them fatal instead. Only one
 worker may run per database: a second one exits with code 1.
@@ -55,6 +57,12 @@ WORKER_VERSION = "1.0"  # reported when the git revision cannot be read
 WORKER_STATUS_KEY = "worker_status"
 VAPID_PUBLIC_KEY_SETTING = "vapid_public_key"
 HEALTHCHECK_TIMEOUT_SECONDS = 5
+# During a long Moodle round the heartbeat (and the ping) are refreshed at most this often, well below
+# the web's WORKER_STALE_SECONDS (180 s).
+HEARTBEAT_INTERVAL_SECONDS = 60
+# A failed startup restore from Supabase is retried every tick and holds the Moodle rounds back (they
+# would re-announce every milestone on a fresh SQLite file) for at most this long.
+HYDRATION_MAX_WAIT_SECONDS = 15 * 60
 
 # Startup problems that leave the worker running in a degraded mode (fatal with WORKER_STRICT=1).
 DEGRADED_MESSAGES = {
@@ -337,8 +345,14 @@ class WorkerContext:
         self.last_round_mode = "skipped"  # "users" | "skipped"
         self.users_ok = 0
         self.users_err = 0
-        self.round_error = False  # the latest full round could not read the users
+        self.round_error = False  # the latest users read (full round or login poll) failed
         self.tick_crashed = False  # the current tick raised an unexpected exception
+        self.delivery_error = False  # a step of the latest delivery pass raised
+        self.hydrated = True  # False while the startup restore from Supabase is still pending
+        self.hydration_deadline: Optional[float] = None  # monotonic time the rounds stop waiting for it
+        self.tick_started: Optional[float] = None  # monotonic start of the current tick
+        self.sync_started: Optional[float] = None  # monotonic start of the current Moodle sync
+        self.last_report_at: Optional[float] = None  # monotonic time of the last heartbeat
         self.version = WORKER_VERSION
         self.degraded_reasons: List[str] = []  # startup problems (see DEGRADED_MESSAGES)
         self.last_push_ok_at: Optional[str] = None  # latest successful push seen by the sender stats
@@ -349,9 +363,11 @@ class WorkerContext:
         return self.stop_event.is_set()
 
     def delivery_if_due(self) -> None:
-        """The delivery pass, when ``DELIVERY_INTERVAL_SECONDS`` passed since the last one."""
+        """Between two users: the delivery pass, when ``DELIVERY_INTERVAL_SECONDS`` passed since the
+        last one, then the heartbeat, when ``HEARTBEAT_INTERVAL_SECONDS`` passed since the last one."""
         if self.last_delivery_at is None or self.clock() - self.last_delivery_at >= DELIVERY_INTERVAL_SECONDS:
             run_delivery_pass(self)
+        report_if_due(self)
 
 
 def _flush_history(ctx: WorkerContext) -> None:
@@ -371,6 +387,7 @@ def run_delivery_pass(ctx: WorkerContext) -> None:
     if ctx.last_delivery_at is not None:
         ctx.max_delivery_gap = max(ctx.max_delivery_gap, now - ctx.last_delivery_at)
     ctx.last_delivery_at = now
+    ctx.delivery_error = False
     steps = (
         # Each user's imported schedule (moodle_class_schedule) and lead time
         ("recordatorios de clases importadas", lambda: process_class_reminders(ctx.storage, ctx.supabase, ctx.deliver)),
@@ -390,6 +407,7 @@ def run_delivery_pass(ctx: WorkerContext) -> None:
             try:
                 step()
             except Exception as err:  # noqa: BLE001
+                ctx.delivery_error = True
                 print(f"[{_stamp()}] [!] Error en {label}: {err}")
     finally:
         # The pushes above link to their history rows: write them now, not after the task sync.
@@ -509,19 +527,21 @@ def write_heartbeat(ctx: WorkerContext, payload: Dict[str, Any]) -> bool:
 
 
 def ping_healthcheck(ctx: WorkerContext, http_get: Optional[Callable[..., Any]] = None,
-                     env: Optional[Dict[str, str]] = None) -> None:
+                     env: Optional[Dict[str, str]] = None, heartbeat_ok: bool = True) -> None:
     """Dead-man switch: GET ``HEALTHCHECK_URL`` (``/fail`` appended when the worker is unhealthy).
 
-    Unhealthy = Web Push disabled, a degraded startup, a crashed tick or a latest full round that
-    could not read the users. Never raises; the URL is
-    never logged (it is a secret of the monitoring service).
+    Unhealthy = Web Push disabled, a degraded startup, a crashed tick, a failed delivery step, a
+    latest users read that failed, or a heartbeat that could not be written (``heartbeat_ok``: an
+    unreachable or rejecting Supabase between rounds). Never raises; the URL is never logged (it is
+    a secret of the monitoring service).
     """
     env = os.environ if env is None else env
     url = str(env.get("HEALTHCHECK_URL") or "").strip()
     if not url:
         return
     healthy = (bool(getattr(ctx.sender, "enabled", False)) and not ctx.degraded_reasons
-               and not ctx.round_error and not ctx.tick_crashed)
+               and not ctx.round_error and not ctx.tick_crashed and not ctx.delivery_error
+               and heartbeat_ok)
     target = url if healthy else url.rstrip("/") + "/fail"
     try:
         if http_get is None:
@@ -536,12 +556,24 @@ def ping_healthcheck(ctx: WorkerContext, http_get: Optional[Callable[..., Any]] 
 
 
 def report_tick(ctx: WorkerContext, tick_seconds: float, sync_seconds: float) -> None:
-    """Heartbeat plus dead-man switch at the end of a tick. Never raises."""
+    """Heartbeat plus dead-man switch (end of a tick, or between users of a long round). Never raises."""
+    ctx.last_report_at = ctx.clock()
+    heartbeat_ok = False
     try:
-        write_heartbeat(ctx, build_heartbeat(ctx, tick_seconds, sync_seconds))
+        heartbeat_ok = write_heartbeat(ctx, build_heartbeat(ctx, tick_seconds, sync_seconds))
     except Exception as err:  # noqa: BLE001
         print(f"[{_stamp()}] [!] Error al preparar worker_status: {err}")
-    ping_healthcheck(ctx)
+    ping_healthcheck(ctx, heartbeat_ok=heartbeat_ok)
+
+
+def report_if_due(ctx: WorkerContext) -> None:
+    """Mid-round heartbeat: ``report_tick`` when ``HEARTBEAT_INTERVAL_SECONDS`` passed since the last one."""
+    now = ctx.clock()
+    if ctx.last_report_at is not None and now - ctx.last_report_at < HEARTBEAT_INTERVAL_SECONDS:
+        return
+    tick_seconds = now - ctx.tick_started if ctx.tick_started is not None else 0.0
+    sync_seconds = now - ctx.sync_started if ctx.sync_started is not None else 0.0
+    report_tick(ctx, tick_seconds, sync_seconds)
 
 
 def prune_storage_if_due(ctx: WorkerContext) -> None:
@@ -646,16 +678,46 @@ def acquire_instance_lock(storage) -> InstanceLock:
     return lock
 
 
-def hydrate_storage(storage, supabase) -> None:
-    """Restore dedupe state from Supabase into a fresh local database, when the storage layer can."""
+def hydrate_storage(storage, supabase) -> bool:
+    """Restore dedupe state from Supabase into a fresh local database, when the storage layer can.
+
+    Returns False only when the restore failed and must be retried (``{"error": ...}`` or a raise);
+    a restore that ran, was not needed or is not supported returns True.
+    """
     hydrate = getattr(storage, "hydrate_from_remote", None)
     if not callable(hydrate):
-        return
+        return True
     try:
         result = hydrate(supabase)
-        print(f"  ♻️ Estado local restaurado desde Supabase: {result}")
     except Exception as err:  # noqa: BLE001
-        print(f"  [!] No se pudo restaurar el estado local desde Supabase: {err}")
+        print(f"  [!] No se pudo restaurar el estado local desde Supabase: {type(err).__name__}")
+        return False
+    if isinstance(result, dict) and result.get("error"):
+        print("  [!] No se pudo restaurar el estado local desde Supabase; se reintenta en el próximo ciclo "
+              "antes de revisar Moodle.")
+        return False
+    print(f"  ♻️ Estado local restaurado desde Supabase: {result}")
+    return True
+
+
+def retry_hydration(ctx: WorkerContext) -> bool:
+    """Retry a failed startup restore. True when the Moodle round may run.
+
+    A fresh SQLite file must get its dedupe state back before any round records milestones, or every
+    alert already sent would go out again; after ``HYDRATION_MAX_WAIT_SECONDS`` the rounds run anyway
+    (a restore that can never succeed must not stop the task sync for good).
+    """
+    ctx.hydrated = hydrate_storage(ctx.storage, ctx.supabase)
+    if ctx.hydrated:
+        return True
+    if ctx.hydration_deadline is None:
+        ctx.hydration_deadline = ctx.clock() + HYDRATION_MAX_WAIT_SECONDS
+    if ctx.clock() < ctx.hydration_deadline:
+        return False
+    print(f"[{_stamp()}] [!] ⚠️ El estado local no se pudo restaurar desde Supabase en "
+          f"{HYDRATION_MAX_WAIT_SECONDS // 60} min; se revisa Moodle igualmente (pueden repetirse avisos).")
+    ctx.hydrated = True
+    return True
 
 
 def publish_vapid_public_key(supabase, sender) -> None:
@@ -676,14 +738,17 @@ def run_tick(ctx: WorkerContext) -> None:
     an ``Exception``: a crash is logged with its traceback, the history is still flushed and the
     heartbeat still written."""
     ctx.tick_crashed = False
-    tick_started = ctx.clock()
+    tick_started = ctx.tick_started = ctx.clock()
+    ctx.sync_started = None
     sync_seconds = 0.0
     try:
         run_delivery_pass(ctx)
         if ctx.stopping:
             return
+        if not ctx.hydrated and not retry_hydration(ctx):
+            return
         now_ts = time.time()
-        sync_started = ctx.clock()
+        sync_started = ctx.sync_started = ctx.clock()
         if now_ts - ctx.last_tasks_check >= ctx.tasks_check_seconds:
             print(f"\n[{_stamp()}] 📋 Verificando Moodle y actualizando tareas...")
             ctx.last_tasks_check = now_ts
@@ -703,7 +768,10 @@ def run_tick(ctx: WorkerContext) -> None:
                 fresh = fetch_fresh_logins(ctx.supabase, ctx.seen_logins)
             except Exception as err:
                 fresh = []
+                ctx.round_error = True
                 print(f"[{_stamp()}] [!] No se pudo revisar inicios de sesión nuevos: {err}")
+            else:
+                ctx.round_error = False  # the users table is readable again
             if fresh:
                 print(f"\n[{_stamp()}] 🆕 Sincronizando {len(fresh)} usuario(s) con inicio de sesión reciente...")
                 outcomes = sync_all_users(ctx.storage, ctx.supabase, fresh, **_sync_options(ctx))
@@ -804,7 +872,10 @@ def _run_worker(storage, stop_event: Optional[threading.Event], tick_seconds: fl
     print(f"  🏷️ Versión: {ctx.version} (estado en moodle_settings.{WORKER_STATUS_KEY} cada ciclo)")
     print("=" * 60)
     ctx.degraded_reasons = check_startup(supabase, sender)  # exits with WORKER_STRICT=1
-    hydrate_storage(storage, supabase)
+    report_tick(ctx, 0.0, 0.0)  # the degraded state reaches /admin before the first (long) round
+    ctx.hydrated = hydrate_storage(storage, supabase)
+    if not ctx.hydrated:
+        ctx.hydration_deadline = ctx.clock() + HYDRATION_MAX_WAIT_SECONDS
     publish_vapid_public_key(supabase, sender)
 
     restore = install_stop_handlers(ctx.stop_event)
