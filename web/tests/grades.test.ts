@@ -466,3 +466,23 @@ describe('manual exam grades', () => {
     );
   });
 });
+
+describe('activities worth 0 points', () => {
+  it('a 0-point activity does not block direct points nor count as pending (Moodle SCORM case)', () => {
+    const rows = [
+      row({ course_id: 20, item_id: 1, item_type: 'mod', item_name: 'Sentencia Join', item_module: 'scorm', grade_max: 0, weight_raw: 0 }),
+      row({ course_id: 20, item_id: 2, item_type: 'mod', item_name: 'Autónoma # 1', grade_max: 5, weight_raw: 0 }),
+      row({ course_id: 20, item_id: 3, item_type: 'mod', item_name: 'Evaluación # 1', grade_raw: 4, grade_max: 5, weight_raw: 1, graded_at: 1 }),
+      row({ course_id: 20, item_id: 4, item_type: 'course', category_id: null, grade_raw: 4, grade_max: 5 }),
+    ];
+    expect(computeCourseStanding(rows)).toMatchObject({
+      method: 'points',
+      estimate: false,
+      earned: 4,
+      spent: 5,
+      available: 95,
+      needed: 66,
+      pendingItems: 1,
+    });
+  });
+});

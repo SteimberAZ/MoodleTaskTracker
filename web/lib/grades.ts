@@ -387,7 +387,9 @@ function applyExams(rows: GradeItemRow[], manual: ManualGradeRow[]) {
 /** Standing of ONE course: pass `rows` that all belong to the same `course_id`, and that course's exam entries. */
 export function computeCourseStanding(moodleRows: GradeItemRow[], manual: ManualGradeRow[] = []): CourseStanding {
   const { rows, replaced, blocks, exams } = applyExams(moodleRows, manual);
-  const leaves = rows.filter(isLeaf);
+  // Activities Moodle grades out of 0 (a SCORM package, a forum without rating) are worth no points and never get a
+  // grade: they neither block the direct-points sum nor count as pending.
+  const leaves = rows.filter((r) => isLeaf(r) && range(r) > 0);
   const courseRow = rows.find((r) => r.item_type === 'course');
   const gradedLeaves = leaves.filter(isGraded);
 
