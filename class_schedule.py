@@ -130,10 +130,25 @@ def class_notification_content(c: Dict, minutes_left: int = 30) -> Tuple[str, st
     return title, body
 
 
+_missing_topic_logged = False
+
+
+def _ntfy_server() -> str:
+    """ntfy server base URL; NTFY_SERVER overrides the public ntfy.sh (e.g. a self-hosted server)."""
+    return (os.environ.get("NTFY_SERVER", "").strip() or "https://ntfy.sh").rstrip("/")
+
+
 def send_class_notification(c: Dict, minutes_left: int = 30):
-    """Post the class reminder to ntfy (env NTFY_TOPIC): the fallback when no admin user can be reached."""
-    topic = os.environ.get("NTFY_TOPIC", "utm-tareas-randy-az")
+    """Post the class reminder to ntfy (env NTFY_TOPIC): the fallback when no admin user can be reached.
+
+    There is no built-in topic: without NTFY_TOPIC the reminder is skipped (logged once per process).
+    """
+    global _missing_topic_logged
+    topic = os.environ.get("NTFY_TOPIC", "").strip()
     if not topic:
+        if not _missing_topic_logged:
+            _missing_topic_logged = True
+            print("[ClassSchedule] NTFY_TOPIC is not set: built-in class reminders without an admin user are skipped.")
         return
 
     title, body = class_notification_content(c, minutes_left)
@@ -147,7 +162,7 @@ def send_class_notification(c: Dict, minutes_left: int = 30):
 
     try:
         res = requests.post(
-            f"https://ntfy.sh/{topic}",
+            f"{_ntfy_server()}/{topic}",
             data=body.encode("utf-8"),
             headers=headers,
             timeout=10,
@@ -241,7 +256,8 @@ def check_and_notify_upcoming_classes(storage, supabase=None, deliver: Optional[
                 if not storage.has_notified_milestone(task_id, "30m"):
                     print(f"[{now_ec.strftime('%Y-%m-%d %H:%M:%S')}] 🎓 Clase próxima detectada ({int(diff_mins)} min): {c['subject']}")
                     if notify_class(c, int(diff_mins), supabase, deliver):
-                        storage.record_milestone(task_id, "30m")
+                        # Local only: a class has no moodle_tasks row, so a mirror would fail its FK.
+                        storage.record_milestone(task_id, "30m", mirror=False)
                     # else: nothing got through; not recorded, so the next tick retries inside the window
         except Exception as e:
             print(f"[ClassSchedule] Error evaluando clase {c.get('id')}: {e}")

@@ -346,7 +346,7 @@ class FakeStorage:
     def has_notified_milestone(self, task_id, milestone):
         return (task_id, milestone) in self.recorded
 
-    def record_milestone(self, task_id, milestone):
+    def record_milestone(self, task_id, milestone, mirror=True):
         self.recorded.add((task_id, milestone))
 
 
