@@ -40,6 +40,9 @@ _ID_CHUNK = 50
 # Seconds a single write may take. Bulk writes (task upserts, history inserts) carry many rows.
 _WRITE_TIMEOUT = 5
 _BULK_TIMEOUT = 15
+# Seconds to open a connection. Every call's timeout becomes (connect, read): a black-holed or
+# overloaded Supabase then costs a few seconds per call, not three full read timeouts.
+_CONNECT_TIMEOUT = 3.05
 
 # Paged reads: rows per request and an upper bound of requests per read.
 _PAGE_SIZE = 1000
@@ -71,9 +74,15 @@ _REMINDER_TASK_EMBED = "task_embed"
 
 
 def _build_session() -> requests.Session:
-    """Shared HTTP session: pooled connections and up to two retries of an idempotent GET on 502/503/504."""
+    """Shared HTTP session: pooled connections and up to two retries of an idempotent GET on 502/503/504.
+
+    A connection that could not be opened is retried once; a read timeout is never retried (the
+    server is stalled: another full wait would only delay the deliveries behind this call).
+    """
     retry = Retry(
         total=2,
+        connect=1,
+        read=0,
         backoff_factor=0.5,
         status_forcelist=(502, 503, 504),
         allowed_methods=frozenset({"GET"}),
@@ -259,6 +268,9 @@ class SupabaseClient:
 
     def _call(self, verb: str, url: str, **kwargs):
         fn = getattr(self._http, verb) if self._http is not None else _transport(verb)
+        timeout = kwargs.get("timeout")
+        if isinstance(timeout, (int, float)) and not isinstance(timeout, bool):
+            kwargs["timeout"] = (min(_CONNECT_TIMEOUT, float(timeout)), float(timeout))
         return fn(url, **kwargs)
 
     def _endpoint(self, path: str) -> str:

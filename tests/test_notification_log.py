@@ -750,7 +750,7 @@ def test_insert_notification_log_posts_one_bulk_request(monkeypatch):
     rows = [{"user_id": UID, "kind": "task"}, {"user_id": UID, "kind": "class"}]
     _client().insert_notification_log(rows)
     assert seen == {"url": "https://sb.example/rest/v1/moodle_notification_log?on_conflict=id", "json": rows,
-                    "prefer": "resolution=ignore-duplicates,return=minimal", "timeout": 15}
+                    "prefer": "resolution=ignore-duplicates,return=minimal", "timeout": (3.05, 15.0)}
 
 
 def test_insert_notification_log_raises_on_http_errors_and_ignores_empty_or_unconfigured(monkeypatch):

@@ -35,9 +35,20 @@ def test_the_shared_session_retries_idempotent_reads_only():
     adapter = supabase_client._SESSION.get_adapter("https://sb.example/rest/v1/x")
     retry = adapter.max_retries
     assert retry.total == 2 and retry.backoff_factor == 0.5
+    assert retry.connect == 1 and retry.read == 0  # a stalled server is not waited on three times
     assert set(retry.status_forcelist) == {502, 503, 504}
     assert set(retry.allowed_methods) == {"GET"}
     assert retry.raise_on_status is False
+
+
+def test_every_call_gets_a_short_connect_timeout(monkeypatch):
+    seen = []
+    monkeypatch.setattr(supabase_client.requests, "get", lambda url, **k: seen.append(k["timeout"]) or _Resp(200, []))
+    client = supabase_client.SupabaseClient(url="https://sb.example", key="k")
+    client._call("get", "https://sb.example/rest/v1/x", timeout=10)
+    client._call("get", "https://sb.example/rest/v1/x", timeout=2)
+    client._call("get", "https://sb.example/rest/v1/x", timeout=(1, 4))
+    assert seen == [(3.05, 10.0), (2.0, 2.0), (1, 4)]
 
 
 def test_calls_use_the_session_unless_requests_is_patched(monkeypatch):
@@ -68,7 +79,7 @@ def test_bulk_writes_get_a_longer_timeout(monkeypatch):
                         lambda url, json=None, headers=None, timeout=None: seen.append(timeout) or _Resp(201))
     _client().upsert_tasks([{"id": "a", "title": "A", "user_id": "u"}], async_call=False)
     _client().upsert_setting("k", "v", async_call=False)
-    assert seen == [15, 5]
+    assert [read for _connect, read in seen] == [15, 5]
 
 
 # ---- milestones ------------------------------------------------------------------------------------
