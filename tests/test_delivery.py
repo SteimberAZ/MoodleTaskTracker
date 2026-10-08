@@ -420,6 +420,25 @@ def test_a_total_delivery_failure_leaves_the_milestone_for_the_next_sync(
     assert len(calls) == 1  # delivered once, not again
 
 
+def test_a_delivered_countdown_alert_settles_a_failed_new_alert(no_ntfy_only_path):
+    # 'new' and '8h' share the push tag: a late retry of 'new' would replace the urgent '8h' alert.
+    storage, t = FakeStorage(), _task(hours_left=6, user_id="u1")
+    calls = []
+
+    def deliver(**k):
+        calls.append(k["retry_key"])
+        ok = not k["retry_key"].endswith(":new")
+        if not ok:  # what deliver_to_user leaves behind after a failed attempt
+            delivery._failed_attempt(delivery._state_key("u1", "task", k["retry_key"]), None, time.time(), False)
+        return ok
+
+    process = notifier.TaskNotificationManager.process_milestones
+    process([t], storage, new_tasks=[t], desktop=False, deliver=deliver)
+    assert calls == ["task-t1:new", "task-t1:8h"] and ("t1", "new") in storage.recorded
+    process([t], storage, new_tasks=[t], desktop=False, deliver=deliver)
+    assert calls == ["task-t1:new", "task-t1:8h"]  # the 'new' alert is not retried after the '8h' one
+
+
 def test_muted_and_submitted_tasks_reach_nobody(no_ntfy_only_path):
     calls = []
     tasks = [_task("m", is_dismissed=1), _task("s", status="submitted")]

@@ -351,11 +351,20 @@ class TaskNotificationManager:
             )
 
         def _settle(t: Dict, task_id: str, milestone: str, delivered: bool) -> None:
-            """Record the milestone when it was delivered, or when its bounded retries are exhausted."""
+            """Record the milestone when it was delivered, or when its bounded retries are exhausted.
+
+            A delivered countdown alert also settles a 'new' alert of the same task that is still waiting
+            for a retry: they share the push tag, so a late 'new' would replace the more urgent alert.
+            """
+            user_id = str(t.get("user_id") or bound_user or "")
             if delivered:
                 storage.record_milestone(task_id, milestone)
+                new_key = _retry_key(task_id, "new")
+                if (milestone != "new" and user_id and delivery.pending_attempts(user_id, "task", new_key)
+                        and not storage.has_notified_milestone(task_id, "new")):
+                    storage.record_milestone(task_id, "new")
+                    delivery.forget(user_id, "task", new_key)
                 return
-            user_id = str(t.get("user_id") or bound_user or "")
             key = _retry_key(task_id, milestone)
             if deliver is not None and user_id and delivery.is_exhausted(user_id, "task", key):
                 print(f"[Notifier] task {task_id[:12]} '{milestone}' alert not delivered after every retry; giving up.")
