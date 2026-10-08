@@ -20,6 +20,8 @@ export default function manifest(): MetadataRoute.Manifest {
       { src: '/icons/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
       { src: '/icons/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
       { src: '/icons/icon-maskable-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
+      // Android 13+ themed icon: Android tints the alpha silhouette with the user's wallpaper colors.
+      { src: '/icons/icon-monochrome-512.png', sizes: '512x512', type: 'image/png', purpose: 'monochrome' },
     ],
   };
 }
