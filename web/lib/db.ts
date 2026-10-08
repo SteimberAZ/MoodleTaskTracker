@@ -39,8 +39,8 @@ export async function dbFetch(path: string, init: RequestInit = {}): Promise<Res
 }
 
 /**
- * Database access without a session. Reserved for the login flow (`lib/login-store.ts`),
- * which runs before a session exists. Do not use anywhere else.
+ * Database access without a session. Reserved for the login flow (`lib/login-store.ts` and the login
+ * throttle RPCs in `app/login/actions.ts`), which runs before a session exists. Do not use anywhere else.
  */
 export function dbFetchAnonymous(path: string, init: RequestInit = {}): Promise<Response> {
   return request(path, init);
