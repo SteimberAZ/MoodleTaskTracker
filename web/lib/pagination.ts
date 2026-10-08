@@ -1,3 +1,5 @@
+import { REMINDERS_PATH } from './nav';
+
 /** Pure pagination helpers shared by the task and reminder lists. */
 export const PAGE_SIZE = 8;
 
@@ -38,25 +40,28 @@ export function parseContentRange(header: string | null | undefined): number | n
 }
 
 export interface HomeParams {
-  /** Task page, reminder page and task filter. Defaults are omitted from the URL. */
+  /** Task page and task filter. Defaults are omitted from the URL. */
   tp?: number;
-  rp?: number;
   tf?: string;
 }
 
-/** Non-default list state as a query string (no leading "?"). */
+/** Non-default task list state as a query string (no leading "?"). */
 function listQuery(params: HomeParams): string {
   const query = new URLSearchParams();
   if (params.tf && params.tf !== 'pendientes') query.set('tf', params.tf);
   if (params.tp && params.tp > 1) query.set('tp', String(params.tp));
-  if (params.rp && params.rp > 1) query.set('rp', String(params.rp));
   return query.toString();
 }
 
-/** `/` link that keeps the other list's state. `anchor` scrolls back to the section the control belongs to. */
-export function homeHref(params: HomeParams, anchor?: 'tareas' | 'recordatorios'): string {
+/** `/` (task list) link. `anchor` scrolls back to the section the control belongs to. */
+export function homeHref(params: HomeParams, anchor?: 'tareas'): string {
   const qs = listQuery(params);
   return `/${qs ? `?${qs}` : ''}${anchor ? `#${anchor}` : ''}`;
+}
+
+/** `/recordatorios` link for a reminder page (`?rp=`); page 1 is the bare path. */
+export function remindersHref(page = 1): string {
+  return page > 1 ? `${REMINDERS_PATH}?rp=${page}` : REMINDERS_PATH;
 }
 
 /** `/tareas/<id>` link that carries the list state so "Volver" lands on the same page. */

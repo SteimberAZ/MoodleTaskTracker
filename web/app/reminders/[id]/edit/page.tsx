@@ -1,3 +1,4 @@
+import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { requireUser } from '@/lib/auth';
 import { getReminder } from '@/lib/reminders';
@@ -5,7 +6,9 @@ import { splitInterval } from '@/lib/schedule';
 import { dateToGuayaquilInput } from '@/lib/time';
 import { listPendingTasks, listTasksByIds, type MoodleTask } from '@/lib/tasks';
 import { saveReminder } from '@/app/actions';
+import { ChevronLeftIcon } from '@/components/Icons';
 import ReminderForm from '@/components/ReminderForm';
+import { REMINDERS_PATH } from '@/lib/nav';
 
 export const dynamic = 'force-dynamic';
 
@@ -24,6 +27,10 @@ export default async function EditReminderPage({ params }: { params: Promise<{ i
 
   return (
     <>
+      <Link href={REMINDERS_PATH} className="back-link">
+        <ChevronLeftIcon />
+        <span>Volver a recordatorios</span>
+      </Link>
       <h1>Editar recordatorio</h1>
       <ReminderForm
         action={saveReminder.bind(null, reminder.id)}

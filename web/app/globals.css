@@ -193,7 +193,6 @@ body:has(.site-nav) .container {
   background: var(--header-bg);
   border-top: 1px solid var(--header-border);
 }
-.nav-form { flex: 1; display: flex; margin: 0; }
 .nav-item {
   position: relative;
   flex: 1;
@@ -204,7 +203,7 @@ body:has(.site-nav) .container {
   gap: 3px;
   min-width: 44px;
   min-height: var(--nav-h);
-  padding: 6px 4px;
+  padding: 6px 2px;
   border: 0;
   background: none;
   color: var(--muted);
@@ -222,8 +221,29 @@ body:has(.site-nav) .container {
   border-radius: 0 0 3px 3px;
   background: var(--clay);
 }
+.nav-item span { white-space: nowrap; }
 .icon { flex-shrink: 0; }
 .nav-label-long { display: none; }
+
+/* Logout: right end of the header. Phones show an icon-only 44px button, wide screens icon plus "Salir". */
+.logout-form { display: flex; flex-shrink: 0; margin: 0; }
+.logout-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 44px;
+  height: 44px;
+  margin-right: -8px; /* the 20px glyph sits on the gutter line, the tap target stays 44px */
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text);
+  font: 700 13px/1 var(--font);
+  cursor: pointer;
+}
+.logout-label { display: none; }
 
 @media (min-width: 720px) {
   :root { --gutter: 24px; }
@@ -244,12 +264,12 @@ body:has(.site-nav) .container {
 
   .site-nav {
     position: static;
+    margin-left: auto;
     padding: 0;
     gap: 4px;
     background: none;
     border: 0;
   }
-  .nav-form { flex: none; }
   .nav-item {
     flex: none;
     flex-direction: row;
@@ -266,6 +286,16 @@ body:has(.site-nav) .container {
   .nav-item[aria-current='page']::before { display: none; }
   .nav-item[aria-current='page'] { background: var(--btn-bg); color: var(--btn-text); }
   .nav-item:not([aria-current='page']):hover { background: var(--border); }
+
+  .logout-btn {
+    width: auto;
+    margin-right: 0;
+    padding: 0 16px;
+    border: 1px solid var(--line);
+    border-radius: 100px;
+  }
+  .logout-label { display: inline; }
+  .logout-btn:hover { background: var(--border); }
 
   .container { padding-top: 32px; }
   body:has(.site-nav) .container { padding-bottom: 80px; }

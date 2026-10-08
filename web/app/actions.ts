@@ -10,6 +10,7 @@ import {
   getReminder,
   updateReminder,
 } from '@/lib/reminders';
+import { REMINDERS_PATH } from '@/lib/nav';
 import { isSafeId } from '@/lib/queries';
 import { getOwnedTask, setTaskMuted } from '@/lib/tasks';
 import { computeNextFire } from '@/lib/schedule';
@@ -95,8 +96,8 @@ export async function saveReminder(
   } catch {
     return { error: 'No se pudo guardar. Inténtalo de nuevo.', values };
   }
-  revalidatePath('/');
-  redirect('/');
+  revalidatePath(REMINDERS_PATH);
+  redirect(REMINDERS_PATH);
 }
 
 /** Mutes (`muted = true`) or restores a task. Always scoped to the session user; unknown ids are a no-op. */
@@ -122,11 +123,11 @@ export async function toggleReminder(id: string): Promise<void> {
     });
     await updateReminder(user.id, id, { active: next.active, next_fire_at: next.nextFireAt.toISOString() });
   }
-  revalidatePath('/');
+  revalidatePath(REMINDERS_PATH);
 }
 
 export async function deleteReminder(id: string): Promise<void> {
   const user = await requireUser();
   await removeReminder(user.id, id);
-  revalidatePath('/');
+  revalidatePath(REMINDERS_PATH);
 }

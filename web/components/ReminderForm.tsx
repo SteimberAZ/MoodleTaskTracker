@@ -3,6 +3,7 @@
 import { useActionState } from 'react';
 import Link from 'next/link';
 import type { FormState } from '@/app/actions';
+import { REMINDERS_PATH } from '@/lib/nav';
 import type { ReminderFormInput } from '@/lib/validate';
 
 export interface TaskOption {
@@ -82,7 +83,7 @@ export default function ReminderForm({ action, initial, submitLabel, tasks }: Pr
         <button type="submit" className="btn primary" disabled={pending}>
           {pending ? 'Guardando…' : submitLabel}
         </button>
-        <Link href="/" className="btn">Cancelar</Link>
+        <Link href={REMINDERS_PATH} className="btn">Cancelar</Link>
       </div>
     </form>
   );

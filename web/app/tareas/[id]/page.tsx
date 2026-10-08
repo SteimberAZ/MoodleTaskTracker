@@ -37,7 +37,7 @@ export default async function TaskDetailPage({
   const description = normalizeDescription(task.description);
   const moodleUrl = safeHttpUrl(task.task_url);
   const back = homeHref(
-    { tf: parseTaskFilter(query.tf), tp: parsePage(query.tp), rp: parsePage(query.rp) },
+    { tf: parseTaskFilter(query.tf), tp: parsePage(query.tp) },
     'tareas',
   );
 

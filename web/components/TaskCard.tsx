@@ -9,7 +9,7 @@ import MuteButton from './MuteButton';
 interface Props {
   task: MoodleTask;
   nowSeconds: number;
-  /** Home list state, carried to the detail link so "Volver" returns to the same page. */
+  /** Task list state, carried to the detail link so "Volver" returns to the same page. */
   listState: HomeParams;
 }
 

@@ -7,6 +7,7 @@ import {
   pageRange,
   parseContentRange,
   parsePage,
+  remindersHref,
   taskDetailHref,
 } from '@/lib/pagination';
 
@@ -66,19 +67,27 @@ describe('parseContentRange', () => {
   });
 });
 
-describe('links keep the other list state', () => {
+describe('task list links keep the filter and page', () => {
   it('omits defaults', () => {
     expect(homeHref({})).toBe('/');
-    expect(homeHref({ tf: 'pendientes', tp: 1, rp: 1 })).toBe('/');
+    expect(homeHref({ tf: 'pendientes', tp: 1 })).toBe('/');
   });
 
-  it('keeps the filter and both pages, with an anchor', () => {
-    expect(homeHref({ tf: 'silenciadas', tp: 2, rp: 3 }, 'recordatorios')).toBe('/?tf=silenciadas&tp=2&rp=3#recordatorios');
+  it('keeps the filter and the page, with an anchor', () => {
+    expect(homeHref({ tf: 'silenciadas', tp: 2 }, 'tareas')).toBe('/?tf=silenciadas&tp=2#tareas');
     expect(homeHref({ tp: 2 }, 'tareas')).toBe('/?tp=2#tareas');
   });
 
   it('builds the detail link with the list state', () => {
     expect(taskDetailHref('abc123', {})).toBe('/tareas/abc123');
     expect(taskDetailHref('abc123', { tf: 'entregadas', tp: 4 })).toBe('/tareas/abc123?tf=entregadas&tp=4');
+  });
+});
+
+describe('remindersHref', () => {
+  it('points at the reminders section and omits page 1', () => {
+    expect(remindersHref()).toBe('/recordatorios');
+    expect(remindersHref(1)).toBe('/recordatorios');
+    expect(remindersHref(3)).toBe('/recordatorios?rp=3');
   });
 });

@@ -1,10 +1,13 @@
+import Link from 'next/link';
 import { requireUser } from '@/lib/auth';
 import { resolvePreselect } from '@/lib/reminder-preselect';
 import { dateToGuayaquilInput } from '@/lib/time';
 import { MAX_TITLE } from '@/lib/validate';
 import { getOwnedTask, listPendingTasks, type MoodleTask } from '@/lib/tasks';
 import { saveReminder } from '@/app/actions';
+import { ChevronLeftIcon } from '@/components/Icons';
 import ReminderForm from '@/components/ReminderForm';
+import { REMINDERS_PATH } from '@/lib/nav';
 
 export const dynamic = 'force-dynamic';
 
@@ -26,6 +29,10 @@ export default async function NewReminderPage({ searchParams }: { searchParams: 
 
   return (
     <>
+      <Link href={REMINDERS_PATH} className="back-link">
+        <ChevronLeftIcon />
+        <span>Volver a recordatorios</span>
+      </Link>
       <h1>Nuevo recordatorio</h1>
       <ReminderForm
         action={saveReminder.bind(null, null)}

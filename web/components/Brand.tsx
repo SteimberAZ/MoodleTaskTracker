@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { getCurrentUser } from '@/lib/auth';
+import LogoutButton from './LogoutButton';
 import NavLinks from './NavLinks';
 
 /** Logo plus the "mineral / tareas" wordmark. Swaps the cap colour in dark mode. */
@@ -19,7 +20,7 @@ export default function Brand() {
 }
 
 /**
- * Sticky header shared by every page and the only navigation of the app.
+ * Sticky header shared by every page: logo on the left, navigation, logout at the right end.
  * Logged out (or when the session cannot be resolved) it shows just the logo.
  */
 export async function SiteHeader() {
@@ -28,6 +29,7 @@ export async function SiteHeader() {
     <header className="site-header">
       <Brand />
       {user && <NavLinks isAdmin={user.is_admin} />}
+      {user && <LogoutButton />}
     </header>
   );
 }
