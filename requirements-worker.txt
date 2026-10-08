@@ -1,5 +1,13 @@
 # Headless worker on the VPS (worker.py and scripts/generate_vapid.py): no desktop UI dependencies.
-# pywebpush brings cryptography, py-vapid and http-ece with it.
-requests>=2.31.0
-beautifulsoup4>=4.12.0
-pywebpush>=2.0
+# Exact pins, tested together with `python -m pytest -q` (Python 3.12). The Web Push chain is pinned
+# explicitly because a silent change there breaks every notification.
+#
+# How to bump: in a clean venv run `pip install -U <package>`, then `python -m pytest -q` (the push
+# tests must run, not skip), copy the new version from `python -m pip freeze` here, and open a PR so
+# CI re-checks it. Bump pywebpush, py-vapid, http-ece and cryptography together.
+requests==2.34.2
+beautifulsoup4==4.15.0
+pywebpush==2.5.0
+py-vapid==1.9.4
+http-ece==1.2.1
+cryptography==50.0.2

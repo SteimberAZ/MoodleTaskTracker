@@ -9,7 +9,7 @@ echo.
 cd /d "%~dp0"
 
 echo [1/3] Verificando dependencias necesarias...
-python -m pip install -r requirements.txt
+python -m pip install customtkinter requests beautifulsoup4 plyer pillow darkdetect pyinstaller
 if %ERRORLEVEL% NEQ 0 (
     echo.
     echo [ERROR] No se pudieron instalar las dependencias.

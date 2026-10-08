@@ -1,1 +1,3 @@
-pytest>=8.0.0
+# Worker dependencies plus the test runner (local development and CI).
+-r requirements-worker.txt
+pytest==9.1.1
