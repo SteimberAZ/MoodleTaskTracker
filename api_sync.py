@@ -21,7 +21,9 @@ Multi-user robustness:
     ``MISSING_ROUNDS`` consecutive absent rounds;
   * the fetch also includes a course sweep (assignments and quizzes outside the timeline, at most once
     per round per user): its first complete result is baselined (no "new" burst) and undated tasks are
-    reconciled only after a complete sweep.
+    reconciled only after a complete sweep;
+  * after a successful fetch the user's grades are synced too (grades_sync, at most once per sweep
+    cadence); a grade failure never changes the result.
 """
 import inspect
 import json
@@ -39,6 +41,7 @@ from moodle_api import (
     MoodleApiError,
     MoodleTokenInvalid,
 )
+from grades_sync import sync_user_grades
 from notifier import TaskNotificationManager, send_system_alert
 
 MIGRATION_FLAG = "api_migration_done"
@@ -385,6 +388,14 @@ def reconcile_missing_tasks(
     return {"submitted": len(submitted), "missing": len(missing), "flagged": len(to_mark)}
 
 
+def _sync_grades(storage, supabase: Any, client: Any, user: Dict, deliver: Optional[Callable], label: str) -> None:
+    """Grade statistics and graded-task alerts (grades_sync). Best effort: never changes the sync result."""
+    try:
+        sync_user_grades(storage, supabase, client, user, deliver=deliver, label=label)
+    except Exception as e:  # noqa: BLE001 - sync_user_grades never raises; belt and braces
+        print(f"{label} grade sync skipped: {type(e).__name__}")
+
+
 def _mark_synced(supabase: Any, user_id: str, label: str) -> None:
     mark = getattr(supabase, "set_user_synced", None)
     if not callable(mark):
@@ -494,6 +505,7 @@ def sync_tasks_via_api(
                 print(f"{label} reconciliation skipped: {getattr(e, 'code', '') or type(e).__name__}")
         elif getattr(client, "last_fetch_complete", None) is False:
             print(f"{label} calendar fetch truncated; reconciliation skipped this round.")
+        _sync_grades(storage, supabase, client, user, deliver, label)
 
     if storage.get_setting(alert_key, ""):
         sent = alert(title="Moodle reconectado", message="La conexión con UTM Moodle se restableció.",
