@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { requireUser } from '@/lib/auth';
-import { getTaskDetail } from '@/lib/tasks';
+import { getTaskDetail, getTaskMilestones } from '@/lib/tasks';
 import { homeHref, parsePage } from '@/lib/pagination';
 import { normalizeDescription, normalizeTeachers, safeHttpUrl } from '@/lib/task-detail';
 import { moduleLabel } from '@/lib/task-module';
@@ -9,6 +9,7 @@ import { parseTaskFilter } from '@/lib/task-query';
 import { timeLeft } from '@/lib/task-time';
 import { formatGuayaquil } from '@/lib/time';
 import { ChevronLeftIcon, ExternalIcon } from '@/components/Icons';
+import AutoRemindersCard from '@/components/AutoRemindersCard';
 import MuteButton from '@/components/MuteButton';
 
 export const dynamic = 'force-dynamic';
@@ -29,6 +30,8 @@ export default async function TaskDetailPage({
   const task = await getTaskDetail(user.id, id);
   if (!task) notFound();
 
+  // Only after the owner-scoped read above: the milestones table has no owner column.
+  const sent = await getTaskMilestones(task);
   const nowSeconds = Math.floor(Date.now() / 1000);
   const muted = task.is_dismissed === 1;
   const submitted = task.status === 'submitted';
@@ -99,6 +102,14 @@ export default async function TaskDetailPage({
         )}
       </section>
 
+      <AutoRemindersCard
+        dueTimestamp={task.due_timestamp}
+        nowSeconds={nowSeconds}
+        sent={sent}
+        submitted={submitted}
+        muted={muted}
+      />
+
       <div className="detail-actions">
         {moodleUrl && (
           <a href={moodleUrl} target="_blank" rel="noopener noreferrer" className="btn primary">
@@ -106,10 +117,13 @@ export default async function TaskDetailPage({
             <ExternalIcon />
           </a>
         )}
-        <Link href={`/reminders/new?task=${encodeURIComponent(task.id)}`} className="btn">
-          Crear recordatorio para esta tarea
-        </Link>
         <MuteButton taskId={task.id} muted={muted} title={task.title} />
+      </div>
+      <div className="extra-reminder">
+        <Link href={`/reminders/new?task=${encodeURIComponent(task.id)}`} className="btn ghost">
+          Recordarme más seguido
+        </Link>
+        <p className="muted small">Opcional: un recordatorio extra que se repite cada cierto tiempo</p>
       </div>
       <p className="muted small">Horas en Ecuador (UTC-5).</p>
     </article>

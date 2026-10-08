@@ -33,6 +33,14 @@ export function dateToGuayaquilInput(date: Date): string {
   return `${g.getUTCFullYear()}-${pad(g.getUTCMonth() + 1)}-${pad(g.getUTCDate())}T${pad(g.getUTCHours())}:${pad(g.getUTCMinutes())}`;
 }
 
+/** Short display of a Unix-seconds instant in Guayaquil time, without the year: "07/10 14:30". */
+export function formatGuayaquilShort(unixSeconds: number): string {
+  const d = new Date(unixSeconds * 1000);
+  if (!Number.isFinite(unixSeconds) || Number.isNaN(d.getTime())) return '—';
+  const g = new Date(d.getTime() + OFFSET_MS);
+  return `${pad(g.getUTCDate())}/${pad(g.getUTCMonth() + 1)} ${pad(g.getUTCHours())}:${pad(g.getUTCMinutes())}`;
+}
+
 /** Human display in Guayaquil time: "07/10/2026 14:30". */
 export function formatGuayaquil(date: Date | string | null | undefined): string {
   if (!date) return '—';

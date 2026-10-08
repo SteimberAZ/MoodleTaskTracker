@@ -1,6 +1,7 @@
 import 'server-only';
 import { dbJson, dbJsonCounted } from './db';
 import { clampPage } from './pagination';
+import { parseMilestoneRows, type SentMap } from './auto-reminders';
 import { ownedTaskQuery, ownedTasksInQuery, scopedQuery } from './queries';
 import {
   LEGACY_COLUMNS,
@@ -9,6 +10,7 @@ import {
   muteTaskRequest,
   taskCountsQuery,
   taskDetailQuery,
+  taskMilestonesQuery,
   taskListQuery,
   type TaskCountRow,
   type TaskFilter,
@@ -135,6 +137,24 @@ export async function getTaskDetail(userId: string, taskId: string): Promise<Moo
     dbJson<MoodleTaskDetail[]>(`moodle_tasks${legacyQuery}`, {}, FAILURE),
   );
   return rows[0] ?? null;
+}
+
+/**
+ * Automatic-alert milestones already recorded for a task. `moodle_task_milestones` has no owner column, so
+ * the argument must be a task returned by `getTaskDetail` (owner-scoped); never pass an id taken from input.
+ * Returns null (unknown) when the table is missing or the read fails: the page then shows the schedule only.
+ */
+export async function getTaskMilestones(ownedTask: Pick<MoodleTask, 'id'>): Promise<SentMap | null> {
+  try {
+    const rows = await dbJson<unknown>(
+      `moodle_task_milestones${taskMilestonesQuery(ownedTask.id)}`,
+      {},
+      'No se pudieron cargar los avisos.',
+    );
+    return parseMilestoneRows(rows);
+  } catch {
+    return null;
+  }
 }
 
 /** Mutes (is_dismissed = 1) or restores a task. Matches id AND owner; returns false when nothing matched. */

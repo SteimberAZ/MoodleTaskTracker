@@ -34,6 +34,9 @@ export default async function RemindersPage({ searchParams }: { searchParams: Se
           <h1 id="reminders-title">Recordatorios</h1>
           <Link href="/reminders/new" className="btn primary">Nuevo</Link>
         </div>
+        <p className="muted section-intro">
+          Tus tareas de Moodle ya tienen avisos automáticos. Usa los recordatorios para otras cosas o para que te insista más.
+        </p>
         {!result && <p className="alert" role="alert">No se pudieron cargar los recordatorios.</p>}
         {result && reminders.length === 0 && (
           <p className="card muted empty">Aún no tienes recordatorios. Crea el primero con «Nuevo».</p>

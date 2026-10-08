@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { dateToGuayaquilInput, formatGuayaquil, guayaquilInputToDate } from '@/lib/time';
+import { dateToGuayaquilInput, formatGuayaquil, formatGuayaquilShort, guayaquilInputToDate } from '@/lib/time';
 
 describe('Guayaquil time conversion', () => {
   it('converts local input to UTC (+5h)', () => {
@@ -26,5 +26,15 @@ describe('Guayaquil time conversion', () => {
     expect(formatGuayaquil('2026-10-07T03:05:00Z')).toBe('06/10/2026 22:05');
     expect(formatGuayaquil(null)).toBe('—');
     expect(formatGuayaquil('not a date')).toBe('—');
+  });
+});
+
+describe('formatGuayaquilShort', () => {
+  it('formats Unix seconds as dd/mm hh:mm in Ecuador time', () => {
+    expect(formatGuayaquilShort(Date.parse('2026-10-07T03:05:00Z') / 1000)).toBe('06/10 22:05');
+  });
+
+  it('returns a dash for invalid input', () => {
+    expect(formatGuayaquilShort(Number.NaN)).toBe('—');
   });
 });

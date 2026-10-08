@@ -8,6 +8,7 @@ import {
   parseTaskFilter,
   taskCountsQuery,
   taskDetailQuery,
+  taskMilestonesQuery,
   taskFilterParts,
   taskListQuery,
   type TaskCountRow,
@@ -138,5 +139,16 @@ describe('reminderPageQuery', () => {
       `?user_id=eq.${USER}&select=*&order=active.desc,next_fire_at.asc&limit=8&offset=8`,
     );
     expect(() => reminderPageQuery('bad', 1)).toThrow();
+  });
+});
+
+describe('taskMilestonesQuery', () => {
+  it('filters by an exact task id and selects only what the page needs', () => {
+    expect(taskMilestonesQuery('abc123def456')).toBe('?task_id=eq.abc123def456&select=milestone,sent_at');
+  });
+
+  it('rejects ids that could inject extra filters', () => {
+    expect(() => taskMilestonesQuery('abc&task_id=neq.1')).toThrow();
+    expect(() => taskMilestonesQuery('')).toThrow();
   });
 });

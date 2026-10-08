@@ -1,5 +1,5 @@
 import { pageRange, PAGE_SIZE } from './pagination';
-import { ownedTaskQuery, scopedQuery } from './queries';
+import { isSafeId, ownedTaskQuery, scopedQuery } from './queries';
 
 /** Pure builders for the task list. Every query goes through `scopedQuery`, so `user_id` is always present. */
 export type TaskFilter = 'pendientes' | 'silenciadas' | 'entregadas';
@@ -99,4 +99,13 @@ export function muteTaskRequest(userId: string, taskId: string, muted: boolean):
 /** Single task for the detail page, owner-scoped. */
 export function taskDetailQuery(userId: string, taskId: string, columns: string = DETAIL_COLUMNS): string {
   return ownedTaskQuery(userId, taskId, columns, 'limit=1');
+}
+
+/**
+ * Milestones the worker already recorded for one task. The table has no `user_id`, so this must only be
+ * built for a task id that was just loaded through an owner-scoped read (`getTaskDetail`).
+ */
+export function taskMilestonesQuery(taskId: string): string {
+  if (!isSafeId(taskId)) throw new Error('Invalid task id');
+  return `?task_id=eq.${taskId}&select=milestone,sent_at`;
 }
