@@ -59,12 +59,14 @@ def sync_all_users(
     process: Optional[Callable] = None,
     alert: Optional[Callable] = None,
     deliver: Optional[Callable] = None,
+    after_user: Optional[Callable[[], Any]] = None,
 ) -> Dict[str, str]:
     """Sync every user in isolation: one user's failure never blocks the others.
 
     Returns {user_id: "ok" | "invalid" | "error" | "skipped"}. Notifications of a user only go to
     that user's own channels (``deliver``: Web Push + their ntfy topic; without it, ntfy only); a user
-    without a topic is skipped (never falls back to the owner's).
+    without a topic is skipped (never falls back to the owner's). ``after_user`` runs after each
+    synced user (the worker writes the notification history there); it must not raise.
     """
     outcomes: Dict[str, str] = {}
     for user in users:
@@ -84,6 +86,8 @@ def sync_all_users(
             print(f"[Worker] {tag}: unexpected error: {err}")
             outcomes[user_id] = "error"
         print(f"[Worker] {tag}: {outcomes[user_id]}")
+        if after_user is not None:
+            after_user()
     return outcomes
 
 
@@ -115,6 +119,7 @@ def run_task_tick(
     alert: Optional[Callable] = None,
     seen_logins: Optional[Dict[str, str]] = None,
     deliver: Optional[Callable] = None,
+    after_user: Optional[Callable[[], Any]] = None,
 ) -> str:
     """One task-sync round. Returns which path ran: "users", "legacy" or "skipped".
 
@@ -131,7 +136,8 @@ def run_task_tick(
     if users:
         print(f"[Worker] 👥 Usuarios activos: {len(users)}")
         sync_all_users(
-            storage, supabase, users, client_factory=client_factory, process=process, alert=alert, deliver=deliver
+            storage, supabase, users, client_factory=client_factory, process=process, alert=alert, deliver=deliver,
+            after_user=after_user,
         )
         if seen_logins is not None:
             remember_logins(users, seen_logins)
@@ -318,6 +324,9 @@ def run_worker():
             except Exception as err:
                 print(f"[{now_str}] [!] Error en pruebas de Web Push: {err}")
 
+            # The pushes above link to their history rows: write them now, not after the task sync.
+            history.flush()
+
             # 2. Recargar cookie fresca desde .env si fue modificada en disco (legacy path)
             current_cookie = _read_env_cookie() or storage.get_setting("moodle_session", "")
             if current_cookie and current_cookie != session_cookie:
@@ -338,6 +347,7 @@ def run_worker():
                     legacy_check=lambda: legacy_check_tasks(storage, supabase, legacy, base_url, session_cookie, now_str),
                     seen_logins=seen_logins,
                     deliver=deliver,
+                    after_user=history.flush,
                 )
             else:
                 # New logins/registrations are synced right away instead of waiting for the next round.
@@ -348,7 +358,7 @@ def run_worker():
                     print(f"[{now_str}] [!] No se pudo revisar inicios de sesión nuevos: {err}")
                 if fresh:
                     print(f"\n[{now_str}] 🆕 Sincronizando {len(fresh)} usuario(s) con inicio de sesión reciente...")
-                    sync_all_users(storage, supabase, fresh, deliver=deliver)
+                    sync_all_users(storage, supabase, fresh, deliver=deliver, after_user=history.flush)
                     remember_logins(fresh, seen_logins)
                     mode = "users"
 
@@ -357,7 +367,7 @@ def run_worker():
                 legacy_keep_alive(legacy, base_url, session_cookie, now_str)
 
         finally:
-            # Never raise: one bulk insert of this tick's notifications, then the daily prune.
+            # Never raise: write whatever is still buffered (also after a crash), then the daily prune.
             history.flush()
             history.prune_if_due(storage)
 

@@ -520,10 +520,13 @@ def test_a_failing_insert_never_breaks_the_flush_nor_the_milestones(capsys):
     notifier.TaskNotificationManager.process_milestones(
         [t], storage, new_tasks=[t], desktop=False, deliver=partial(_deliverer(log), USER))
     assert log.pending == 2
-    assert log.flush() == 0  # dropped, no exception
+    assert log.flush() == 0  # no exception, rows kept for a retry
     assert storage.recorded == {("t1", m) for m in ("new", "8h", "1d", "2d", "3d")}  # dedupe untouched
-    assert log.pending == 0 and log.flush() == 0 and db.inserts == []  # not retried
-    assert "could not record 2 notification(s)" in capsys.readouterr().out
+    assert log.pending == 2
+    for _ in range(notification_log.MAX_FLUSH_ATTEMPTS - 1):
+        assert log.flush() == 0
+    assert log.pending == 0 and log.flush() == 0 and db.inserts == []  # bounded: dropped after the last try
+    assert capsys.readouterr().out.count("could not record notifications (kept for a retry)") == 1
 
 
 def test_an_unreachable_database_is_logged_once_until_it_recovers(capsys):
@@ -535,11 +538,35 @@ def test_an_unreachable_database_is_logged_once_until_it_recovers(capsys):
     assert capsys.readouterr().out.count("[History] could not record") == 1
     db.fail = None
     log.record(UID, "task", "T")
-    assert log.flush() == 1
+    assert log.flush() == 3  # the two rows still within their attempts, plus the new one
     db.fail = ConnectionError("timed out")
     log.record(UID, "task", "T")
     log.flush()
     assert capsys.readouterr().out.count("[History] could not record") == 1  # healthy in between: reported again
+
+
+def test_rows_of_a_failed_insert_are_written_by_the_next_flush():
+    db = LogDb(fail=ConnectionError("timed out"))
+    log = NotificationLog(db, clock=lambda: T0)
+    log.record(UID, "class", "Clase", log_id="11111111-1111-4111-8111-111111111111")
+    assert log.flush() == 0 and log.pending == 1
+    db.fail = None
+    assert log.flush() == 1
+    assert [r["id"] for r in db.rows] == ["11111111-1111-4111-8111-111111111111"]  # the id the push links to
+    assert log.pending == 0
+
+
+def test_the_retry_buffer_is_bounded(monkeypatch):
+    monkeypatch.setattr(notification_log, "MAX_BUFFERED_ROWS", 5)
+    db = LogDb(fail=ConnectionError("timed out"))
+    log = NotificationLog(db, clock=lambda: T0)
+    for i in range(8):
+        log.record(UID, "task", f"n{i}")
+    log.flush()
+    assert log.pending == 5
+    db.fail = None
+    log.flush()
+    assert [r["title"] for r in db.rows] == ["n3", "n4", "n5", "n6", "n7"]  # the oldest were dropped
 
 
 def test_a_missing_table_is_logged_once_and_never_raises(capsys):
@@ -706,3 +733,43 @@ def test_the_worker_writes_the_buffered_history_and_prunes_even_when_a_tick_cras
         worker.run_worker()
     assert [(r["kind"], r["status"], r["title"]) for r in db.rows] == [("class", "failed", "Clase")]
     assert len(db.prunes) == 1
+
+
+def test_reminder_history_is_written_before_the_task_sync_and_after_each_user(monkeypatch, tmp_path):
+    db = LogDb()
+
+    class OffSender:
+        enabled, status, warning = False, "off", ""
+
+    class Offline:
+        is_configured, url = False, ""
+
+    storage = Storage(str(tmp_path / "t.db"))
+    storage.supabase = Offline()
+    monkeypatch.setattr(worker, "Storage", lambda: storage)
+    monkeypatch.setattr(worker.SupabaseClient, "for_worker", classmethod(lambda cls: db))
+    monkeypatch.setattr(worker.WebPushSender, "from_env", classmethod(lambda cls, sb: OffSender()))
+    monkeypatch.setattr(worker, "process_class_reminders",
+                        lambda st, sb, deliver: deliver({"id": UID, "ntfy_topic": ""}, "Clase", "Hoy", kind="class"))
+    for name in ("check_and_notify_upcoming_classes", "process_due_reminders", "process_push_tests"):
+        monkeypatch.setattr(worker, name, lambda *a, **k: 0)
+    seen = {}
+
+    def tick(*a, after_user=None, **k):
+        seen["rows_before_sync"] = [r["title"] for r in db.rows]
+        seen["after_user"] = after_user
+        raise RuntimeError("stop")
+
+    monkeypatch.setattr(worker, "run_task_tick", tick)
+    with pytest.raises(RuntimeError, match="stop"):
+        worker.run_worker()
+    assert seen["rows_before_sync"] == ["Clase"]  # a tapped class push finds its row during the sync
+    assert seen["after_user"] is not None
+
+
+def test_sync_all_users_runs_the_hook_after_each_synced_user(monkeypatch):
+    calls = []
+    monkeypatch.setattr(worker, "sync_user_via_api", lambda *a, **k: calls.append("sync") or "ok")
+    users = [{"id": f"u{i}", "ntfy_topic": "utm-x", "token": "t"} for i in range(2)]
+    worker.sync_all_users(None, None, users, after_user=lambda: calls.append("flush"))
+    assert calls == ["sync", "flush", "sync", "flush"]

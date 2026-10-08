@@ -1,14 +1,16 @@
 """Per-user history of every notification the worker delivers (``moodle_notification_log``).
 
 ``deliver_to_user`` (and the push-test path) hand each outcome to ``NotificationLog.record``, which
-only appends a row to an in-memory buffer. The worker calls ``flush`` once per tick (in a ``finally``,
-so a crashing tick still writes what it delivered) and the whole tick goes out as ONE bulk insert.
-Buffering instead of one POST per notification means a slow or unreachable database costs at most one
-5-second stall per tick instead of one per notification, and no delivery ever waits on the history.
+only appends a row to an in-memory buffer. The worker calls ``flush`` after each delivery phase of a
+tick (reminders, then each synced user) and once more in a ``finally``, so a crashing tick still writes
+what it delivered. Each flush goes out as ONE bulk insert, so the row a push links to
+(``/notificaciones?n=<id>``) exists within seconds of the push, not only at the end of a long tick,
+and no delivery ever waits on the history.
 
-The history is best effort and must never affect delivery: nothing here raises, a failed insert is
-dropped (not retried), and an outage or a missing table is logged once (``delivery._log_changed``)
-until the next successful write.
+The history is best effort and must never affect delivery: nothing here raises. Rows of a failed
+insert stay buffered and are retried on the next flushes (at most ``MAX_FLUSH_ATTEMPTS`` times, and the
+buffer never holds more than ``MAX_BUFFERED_ROWS``); a missing table drops them. An outage or a
+missing table is logged once (``delivery._log_changed``) until the next successful write.
 
 Rows older than ``RETENTION_DAYS`` are deleted at most once every 24 hours (``prune_if_due``; the
 time of the last run lives in the local settings table).
@@ -26,6 +28,8 @@ RETENTION_DAYS = 90
 PRUNE_INTERVAL_SECONDS = 24 * 3600
 PRUNE_SETTING = "notification_log_pruned_at"  # local only (storage.LOCAL_ONLY_SETTINGS)
 FLUSH_CHUNK = 200  # rows per bulk insert request
+MAX_FLUSH_ATTEMPTS = 3  # flushes a row may fail before it is dropped
+MAX_BUFFERED_ROWS = 1000  # oldest rows are dropped beyond this during a long outage
 
 _INSERT_KEY = "history-insert"
 _PRUNE_KEY = "history-prune"
@@ -92,6 +96,7 @@ class NotificationLog:
         self.supabase = supabase
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._rows: List[Dict[str, Any]] = []
+        self._attempts: Dict[str, int] = {}  # row id -> failed flushes so far
 
     @property
     def enabled(self) -> bool:
@@ -140,7 +145,8 @@ class NotificationLog:
     def flush(self) -> int:
         """Insert the buffered rows (one request per ``FLUSH_CHUNK``) and return how many were written.
 
-        The buffer is emptied first and a failure is not retried: those rows are dropped.
+        Rows that could not be written stay buffered for the next flush, up to ``MAX_FLUSH_ATTEMPTS``
+        failed flushes each; a missing table drops them at once. Never raises.
         """
         rows, self._rows = self._rows, []
         if not rows:
@@ -151,17 +157,42 @@ class NotificationLog:
                 chunk = rows[start : start + FLUSH_CHUNK]
                 self.supabase.insert_notification_log(chunk)
                 written += len(chunk)
+                for row in chunk:
+                    self._attempts.pop(row["id"], None)
             delivery._log_changed(_INSERT_KEY, None)
         except Exception as exc:  # noqa: BLE001
+            unwritten = rows[written:]
             if _is_missing_table(exc):
                 message = (
                     "[History] moodle_notification_log does not exist yet (re-run supabase_schema.sql); "
                     "notifications are not recorded until it does."
                 )
+                for row in unwritten:
+                    self._attempts.pop(row["id"], None)
             else:
-                message = f"[History] could not record {len(rows) - written} notification(s): {str(exc)[:200]}"
+                # No row count in the text: it changes every tick and would defeat the log-once dedupe.
+                message = f"[History] could not record notifications (kept for a retry): {str(exc)[:200]}"
+                self._keep_for_retry(unwritten)
             delivery._log_changed(_INSERT_KEY, message)
         return written
+
+    def _keep_for_retry(self, rows: List[Dict[str, Any]]) -> None:
+        """Put failed rows back in front of the buffer, dropping those out of attempts or room."""
+        keep = []
+        for row in rows:
+            tries = self._attempts.get(row["id"], 0) + 1
+            if tries >= MAX_FLUSH_ATTEMPTS:
+                self._attempts.pop(row["id"], None)
+            else:
+                self._attempts[row["id"]] = tries
+                keep.append(row)
+        merged = keep + self._rows
+        overflow = len(merged) - MAX_BUFFERED_ROWS
+        if overflow > 0:
+            for row in merged[:overflow]:
+                self._attempts.pop(row["id"], None)
+            merged = merged[overflow:]
+        self._rows = merged
 
     def prune_if_due(self, storage: Any, now: Optional[datetime] = None) -> bool:
         """Delete rows older than ``RETENTION_DAYS``, at most once per 24 hours. True when it ran OK.
