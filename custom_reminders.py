@@ -81,20 +81,46 @@ def decide_action(reminder: Dict, now: datetime) -> Dict:
     return {"action": "send", "patch": patch}
 
 
-def process_due_reminders(client, send: Callable[[str, str], bool], now: Optional[datetime] = None) -> int:
-    """Fetch due reminders, notify and update them. Returns the number of reminders sent."""
+def owner_topic(reminder: Dict) -> Optional[str]:
+    """ntfy topic of the reminder's owner, or None when it must not be delivered.
+
+    The row embeds its owner as ``moodle_users: {ntfy_topic, active}`` (PostgREST join). A row with
+    no user_id, no joined user, an inactive user or an empty topic is skipped, never sent anywhere.
+    """
+    if not reminder.get("user_id"):
+        return None
+    user = reminder.get("moodle_users")
+    if isinstance(user, list):  # tolerate a to-many embed shape
+        user = user[0] if len(user) == 1 else None
+    if not isinstance(user, dict) or user.get("active") is not True:
+        return None
+    topic = str(user.get("ntfy_topic") or "").strip()
+    return topic or None
+
+
+def process_due_reminders(
+    client, send: Callable[[str, str, str], bool], now: Optional[datetime] = None
+) -> int:
+    """Fetch due reminders, notify their owners and update them. Returns the number sent.
+
+    ``send(title, body, topic)`` delivers to the owner's own ntfy topic. Rows without an active
+    owner are left untouched.
+    """
     if not client.is_configured:
         return 0
     now = now or datetime.now(timezone.utc)
     sent = 0
     for reminder in client.fetch_due_reminders(to_iso(now)):
+        topic = owner_topic(reminder)
+        if topic is None:
+            continue
         decision = decide_action(reminder, now)
         if decision["action"] == "skip":
             continue
         if decision["action"] == "send":
             title = reminder.get("title") or "Recordatorio"
             body = reminder.get("message") or title
-            if not send(title, body):
+            if not send(title, body, topic):
                 # Leave the row untouched so the next tick retries.
                 continue
             sent += 1

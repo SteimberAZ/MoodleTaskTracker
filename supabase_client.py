@@ -83,6 +83,9 @@ class SupabaseClient:
 
     def upsert_tasks(self, tasks: List[Dict], async_call: bool = True):
         """Inserta o actualiza tareas en la tabla moodle_tasks de Supabase."""
+        # Rows without an owner (legacy single-user path) would be rejected by the
+        # NOT NULL user_id column and take the whole batch with them: mirror only owned rows.
+        tasks = [t for t in (tasks or []) if t.get("user_id")]
         if not self.is_configured or not tasks:
             return
 
@@ -103,6 +106,8 @@ class SupabaseClient:
                         "is_notified": t.get("is_notified", 0),
                         "is_dismissed": t.get("is_dismissed", 0),
                     }
+                    # Every row needs an owner (moodle_tasks.user_id is NOT NULL).
+                    row["user_id"] = t["user_id"]
                     # Only sent by the web-service sync; keeps cookie-based rows unchanged.
                     for extra in ("assign_id", "course_module_id"):
                         if t.get(extra) is not None:
@@ -172,6 +177,43 @@ class SupabaseClient:
             pass
         return []
 
+    def fetch_active_users(self) -> List[Dict]:
+        """Active users that have a Moodle token (the worker's sync set).
+
+        Returns [] when Supabase is not configured. RAISES on any transport/HTTP failure so the
+        caller can tell "no users" apart from "could not read users".
+        """
+        if not self.is_configured:
+            return []
+        params = {
+            "active": "eq.true",
+            "token": "not.is.null",
+            "select": "id,moodle_url,site_userid,username,fullname,token,ntfy_topic,is_admin,last_error,last_error_at",
+        }
+        r = requests.get(f"{self.url}/rest/v1/moodle_users", params=params, headers=self._headers(), timeout=10)
+        if r.status_code != 200:
+            raise RuntimeError(f"HTTP {r.status_code}")
+        return [u for u in r.json() if str(u.get("token") or "").strip()]
+
+    def update_user(self, user_id: str, fields: Dict) -> bool:
+        """PATCH one moodle_users row (e.g. last_error / last_error_at)."""
+        if not self.is_configured:
+            return False
+        try:
+            headers = dict(self._headers())
+            headers["Prefer"] = "return=minimal"
+            r = requests.patch(
+                f"{self.url}/rest/v1/moodle_users",
+                params={"id": f"eq.{user_id}"},
+                json=fields,
+                headers=headers,
+                timeout=10,
+            )
+            return r.status_code in (200, 204)
+        except Exception as e:
+            print(f"[Supabase] update_user error: {e}")
+            return False
+
     def fetch_credentials(self) -> Optional[Dict]:
         """The single moodle_credentials row (id=1), or None when absent/unreadable."""
         if not self.is_configured:
@@ -203,15 +245,19 @@ class SupabaseClient:
             return False
 
     def fetch_due_reminders(self, now_iso: str) -> List[Dict]:
-        """Active custom reminders whose next_fire_at is due (synchronous)."""
+        """Active, owned custom reminders whose next_fire_at is due (synchronous).
+
+        Each row embeds its owner as ``moodle_users: {ntfy_topic, active}`` (the delivery topic).
+        """
         if not self.is_configured:
             return []
         try:
             endpoint = f"{self.url}/rest/v1/moodle_custom_reminders"
             params = {
-                "select": "*",
+                "select": "*,moodle_users(ntfy_topic,active)",
                 "active": "eq.true",
                 "next_fire_at": f"lte.{now_iso}",
+                "user_id": "not.is.null",
                 "order": "next_fire_at.asc",
             }
             r = requests.get(endpoint, params=params, headers=self._headers(), timeout=10)

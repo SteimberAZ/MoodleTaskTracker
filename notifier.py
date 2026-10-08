@@ -9,6 +9,20 @@ def ntfy_base_url() -> str:
     return (os.environ.get("NTFY_SERVER", "").strip() or "https://ntfy.sh").rstrip("/")
 
 
+DEFAULT_NTFY_TOPIC = "utm-tareas-randy-az"
+
+
+def default_topic() -> str:
+    """Owner/legacy topic from env NTFY_TOPIC (used when a caller passes no per-user topic)."""
+    return os.environ.get("NTFY_TOPIC", DEFAULT_NTFY_TOPIC)
+
+
+def mask_topic(topic: str) -> str:
+    """Log-safe form of a topic: topics are bearer secrets, so only a short prefix is shown."""
+    topic = topic or ""
+    return f"{topic[:8]}…" if len(topic) > 8 else "…"
+
+
 def send_windows_notification(title: str, message: str, app_name: str = "Moodle Tracker"):
     """Envía una notificación de escritorio nativa en Windows mediante Toast Notification."""
     # 1. PowerShell Windows Runtime Toast (Nativo de Windows 10/11, máxima estabilidad)
@@ -63,10 +77,16 @@ def send_system_alert(
     priority: str = "urgent",
     tags: str = "warning,rotating_light",
     click_url: str = "",
+    topic: Optional[str] = None,
 ):
-    """Envía una alerta de sistema o estado a ntfy (ej. sesión caducada, fallas de red)."""
+    """Envía una alerta de sistema o estado a ntfy (ej. sesión caducada, fallas de red).
+
+    ``topic`` selects the destination (per user); None falls back to env NTFY_TOPIC.
+    """
+    target = topic if topic else default_topic()
+
     def _do_post():
-        topic = os.environ.get("NTFY_TOPIC", "utm-tareas-randy-az")
+        topic = target
         if not topic:
             return
 
@@ -88,7 +108,7 @@ def send_system_alert(
                 timeout=10,
             )
             if res.status_code == 200:
-                print(f"[Notifier] Alerta de sistema enviada a {ntfy_base_url()}/{topic}")
+                print(f"[Notifier] Alerta de sistema enviada a {ntfy_base_url()}/{mask_topic(topic)}")
             else:
                 print(f"[Notifier] Error ntfy ({res.status_code}): {res.text}")
         except Exception as e:
@@ -98,9 +118,14 @@ def send_system_alert(
     threading.Thread(target=_do_post, daemon=True).start()
 
 
-def post_ntfy(title: str, message: str, priority: str = "default", tags: str = "bell") -> bool:
-    """Synchronous ntfy push. Returns True when the server accepted it."""
-    topic = os.environ.get("NTFY_TOPIC", "utm-tareas-randy-az")
+def post_ntfy(
+    title: str, message: str, priority: str = "default", tags: str = "bell", topic: Optional[str] = None
+) -> bool:
+    """Synchronous ntfy push. Returns True when the server accepted it.
+
+    ``topic`` selects the destination (per user); None falls back to env NTFY_TOPIC.
+    """
+    topic = topic if topic else default_topic()
     if not topic:
         return False
     try:
@@ -118,7 +143,7 @@ def post_ntfy(title: str, message: str, priority: str = "default", tags: str = "
             timeout=10,
         )
         if res.status_code == 200:
-            print(f"[Notifier] Push enviado a {ntfy_base_url()}/{topic}")
+            print(f"[Notifier] Push enviado a {ntfy_base_url()}/{mask_topic(topic)}")
             return True
         print(f"[Notifier] Error ntfy ({res.status_code}): {res.text}")
     except Exception as e:
@@ -133,14 +158,19 @@ def send_whatsapp_alert(
     task_url: str = "",
     milestone: str = "new",
     is_urgent: bool = False,
+    topic: Optional[str] = None,
 ):
-    """Envía la alerta directamente a la app móvil ntfy con sonido, prioridad y enlace directo."""
+    """Envía la alerta directamente a la app móvil ntfy con sonido, prioridad y enlace directo.
+
+    ``topic`` selects the destination (per user); None falls back to env NTFY_TOPIC.
+    """
+    target = topic if topic else default_topic()
+
     def _do_post():
-        topic = os.environ.get("NTFY_TOPIC", "utm-tareas-randy-az")
+        topic = target
         if not topic:
             return
 
-        priority = "default"
         priority = "default"
         tags = "mortarboard,books"
         header = "Nueva tarea en Moodle UTM"
@@ -187,7 +217,7 @@ def send_whatsapp_alert(
                 timeout=10,
             )
             if res.status_code == 200:
-                print(f"[Notifier] Notificación Push enviada ({milestone}) a {ntfy_base_url()}/{topic}")
+                print(f"[Notifier] Notificación Push enviada ({milestone}) a {ntfy_base_url()}/{mask_topic(topic)}")
             else:
                 print(f"[Notifier] Error ntfy ({res.status_code}): {res.text}")
         except Exception as e:
@@ -201,8 +231,18 @@ class TaskNotificationManager:
     """Gestiona el análisis de tareas y el disparo de recordatorios según los 5 hitos configurados."""
 
     @staticmethod
-    def process_milestones(tasks: List[Dict], storage, new_tasks: Optional[List[Dict]] = None):
+    def process_milestones(
+        tasks: List[Dict],
+        storage,
+        new_tasks: Optional[List[Dict]] = None,
+        topic: Optional[str] = None,
+        desktop: bool = True,
+    ):
         """
+        ``topic``: ntfy topic that receives the pushes (None = env NTFY_TOPIC, the legacy owner).
+        ``desktop``: also show a Windows toast; multi-user sync passes False because the machine
+        running the worker belongs to the owner, not to the user whose tasks are processed.
+
         Evalúa y envía los recordatorios para los 5 hitos:
         1. 'new': Tarea recién descubierta
         2. '3d': Faltan 3 días (<= 72 horas)
@@ -213,6 +253,13 @@ class TaskNotificationManager:
         import time
         now = int(time.time())
 
+        def _toast(**kwargs):
+            if desktop:
+                send_windows_notification(**kwargs)
+
+        def _push(**kwargs):
+            send_whatsapp_alert(topic=topic, **kwargs)
+
         # 1. Hito 'new' para tareas recién detectadas
         if new_tasks:
             for t in new_tasks:
@@ -220,11 +267,11 @@ class TaskNotificationManager:
                 if t.get("status") == "submitted" or t.get("is_dismissed"):
                     continue
                 if not storage.has_notified_milestone(task_id, "new"):
-                    send_windows_notification(
+                    _toast(
                         title="🔔 ¡Nueva tarea agregada en Moodle!",
                         message=f"{t.get('title', 'Sin título')}\n📚 {t.get('course', 'Materia')}\n📅 {t.get('due_date_str', 'Sin fecha')}",
                     )
-                    send_whatsapp_alert(
+                    _push(
                         title=t.get("title", ""),
                         course=t.get("course", ""),
                         due_date=t.get("due_date_str", ""),
@@ -248,11 +295,11 @@ class TaskNotificationManager:
             # Hito 8 horas (<= 8 * 3600 segundos = 28800s)
             if remaining <= 8 * 3600:
                 if not storage.has_notified_milestone(task_id, "8h"):
-                    send_windows_notification(
+                    _toast(
                         title="🚨 ¡URGENTE Moodle! (Menos de 8 horas)",
                         message=f"¡Faltan menos de 8 horas para entregar!\n{t.get('title', '')}\n📚 {t.get('course', '')}\n📅 {t.get('due_date_str', '')}",
                     )
-                    send_whatsapp_alert(
+                    _push(
                         title=t.get("title", ""),
                         course=t.get("course", ""),
                         due_date=t.get("due_date_str", ""),
@@ -269,11 +316,11 @@ class TaskNotificationManager:
             # Hito 1 día (<= 24 * 3600 segundos = 86400s)
             elif remaining <= 24 * 3600:
                 if not storage.has_notified_milestone(task_id, "1d"):
-                    send_windows_notification(
+                    _toast(
                         title="⚠️ Recordatorio Moodle (¡Falta 1 día!)",
                         message=f"¡Atención! Falta 1 día para entregar:\n{t.get('title', '')}\n📚 {t.get('course', '')}\n📅 {t.get('due_date_str', '')}",
                     )
-                    send_whatsapp_alert(
+                    _push(
                         title=t.get("title", ""),
                         course=t.get("course", ""),
                         due_date=t.get("due_date_str", ""),
@@ -288,11 +335,11 @@ class TaskNotificationManager:
             # Hito 2 días (<= 48 * 3600 segundos = 172800s)
             elif remaining <= 48 * 3600:
                 if not storage.has_notified_milestone(task_id, "2d"):
-                    send_windows_notification(
+                    _toast(
                         title="⏳ Recordatorio Moodle (Faltan 2 días)",
                         message=f"Quedan 2 días para entregar:\n{t.get('title', '')}\n📚 {t.get('course', '')}\n📅 {t.get('due_date_str', '')}",
                     )
-                    send_whatsapp_alert(
+                    _push(
                         title=t.get("title", ""),
                         course=t.get("course", ""),
                         due_date=t.get("due_date_str", ""),
@@ -305,11 +352,11 @@ class TaskNotificationManager:
             # Hito 3 días (<= 72 * 3600 segundos = 259200s)
             elif remaining <= 72 * 3600:
                 if not storage.has_notified_milestone(task_id, "3d"):
-                    send_windows_notification(
+                    _toast(
                         title="📅 Recordatorio Moodle (Faltan 3 días)",
                         message=f"Quedan 3 días para entregar:\n{t.get('title', '')}\n📚 {t.get('course', '')}\n📅 {t.get('due_date_str', '')}",
                     )
-                    send_whatsapp_alert(
+                    _push(
                         title=t.get("title", ""),
                         course=t.get("course", ""),
                         due_date=t.get("due_date_str", ""),

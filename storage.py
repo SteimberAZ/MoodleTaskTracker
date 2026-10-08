@@ -51,9 +51,16 @@ class Storage:
                     first_seen INTEGER,
                     last_updated INTEGER,
                     is_notified INTEGER DEFAULT 0,
-                    is_dismissed INTEGER DEFAULT 0
+                    is_dismissed INTEGER DEFAULT 0,
+                    user_id TEXT
                 )
             """)
+
+            # Databases created before multi-user mode lack tasks.user_id (legacy rows stay NULL).
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
+            if "user_id" not in columns:
+                conn.execute("ALTER TABLE tasks ADD COLUMN user_id TEXT")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_user ON tasks (user_id)")
 
             # Tabla de hitos de recordatorio (nueva, 3d, 2d, 1d, 8h)
             conn.execute("""
@@ -117,8 +124,8 @@ class Storage:
                     conn.execute("""
                         INSERT INTO tasks (
                             id, title, course, due_date_str, due_timestamp,
-                            task_url, status, first_seen, last_updated, is_notified, is_dismissed
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)
+                            task_url, status, first_seen, last_updated, is_notified, is_dismissed, user_id
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?)
                     """, (
                         task_id,
                         t["title"],
@@ -129,6 +136,7 @@ class Storage:
                         t.get("status", "pending"),
                         now,
                         now,
+                        t.get("user_id"),
                     ))
                     new_tasks.append(t)
                 else:
@@ -173,13 +181,18 @@ class Storage:
 
         return new_tasks, updated_tasks
 
-    def get_all_tasks(self, order_by_due: bool = True) -> List[Dict]:
+    def get_all_tasks(self, order_by_due: bool = True, user_id: Optional[str] = None) -> List[Dict]:
+        """Visible tasks; with ``user_id`` only that user's rows, otherwise every row (desktop app)."""
         with self._get_conn() as conn:
             query = "SELECT * FROM tasks WHERE is_dismissed = 0"
+            params: tuple = ()
+            if user_id is not None:
+                query += " AND user_id = ?"
+                params = (str(user_id),)
             if order_by_due:
                 # Primero las que tienen timestamp válido, orden ascendente (más cercanas primero)
                 query += " ORDER BY CASE WHEN due_timestamp > 0 THEN 0 ELSE 1 END, due_timestamp ASC"
-            cur = conn.execute(query)
+            cur = conn.execute(query, params)
             return [dict(row) for row in cur.fetchall()]
 
     def mark_notified(self, task_id: str):
@@ -187,9 +200,14 @@ class Storage:
             conn.execute("UPDATE tasks SET is_notified = 1 WHERE id = ?", (task_id,))
             conn.commit()
 
-    def get_unnotified_new_tasks(self) -> List[Dict]:
+    def get_unnotified_new_tasks(self, user_id: Optional[str] = None) -> List[Dict]:
         with self._get_conn() as conn:
-            cur = conn.execute("SELECT * FROM tasks WHERE is_notified = 0 AND is_dismissed = 0")
+            query = "SELECT * FROM tasks WHERE is_notified = 0 AND is_dismissed = 0"
+            params: tuple = ()
+            if user_id is not None:
+                query += " AND user_id = ?"
+                params = (str(user_id),)
+            cur = conn.execute(query, params)
             return [dict(row) for row in cur.fetchall()]
 
     def has_notified_milestone(self, task_id: str, milestone: str) -> bool:

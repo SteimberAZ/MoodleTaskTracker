@@ -49,9 +49,10 @@ def _raise_if_error(payload: Any):
 class MoodleApiClient:
     """Thin wrapper around ``/webservice/rest/server.php``."""
 
-    def __init__(self, base_url: str, token: str, http: Any = None, timeout: int = 20):
+    def __init__(self, base_url: str, token: str, http: Any = None, timeout: int = 20, user_id: Optional[str] = None):
         self.base_url = (base_url or DEFAULT_MOODLE_URL).rstrip("/")
         self.token = (token or "").strip()
+        self.user_id = str(user_id) if user_id else None  # owner of the produced task dicts
         self.http = http if http is not None else requests
         self.timeout = timeout
 
@@ -114,7 +115,7 @@ class MoodleApiClient:
         """
         tasks = []
         for ev in self.fetch_events(now=now):
-            task = event_to_task(ev, self.base_url)
+            task = event_to_task(ev, self.base_url, user_id=self.user_id)
             if task:
                 tasks.append(task)
         checked = 0
@@ -165,8 +166,21 @@ def _format_due(ts: int) -> str:
     return datetime.fromtimestamp(ts, _LOCAL_TZ).strftime("%d/%m/%Y %H:%M")
 
 
-def event_to_task(ev: Dict, base_url: str = "") -> Optional[Dict]:
-    """Map a calendar action event to the task dict used by Storage/Notifier."""
+def make_task_id(url: str, user_id: Optional[str] = None) -> str:
+    """Task id: md5 of the activity URL, namespaced by owner in multi-user mode.
+
+    Without ``user_id`` this is the legacy single-user scheme (md5 of the URL). With it the id is
+    md5("<user_id>:<url>"), so two users enrolled in the same course get distinct rows.
+    """
+    raw = f"{user_id}:{url}" if user_id else url
+    return hashlib.md5(raw.encode("utf-8")).hexdigest()
+
+
+def event_to_task(ev: Dict, base_url: str = "", user_id: Optional[str] = None) -> Optional[Dict]:
+    """Map a calendar action event to the task dict used by Storage/Notifier.
+
+    With ``user_id`` the task id is namespaced by owner and the dict carries ``user_id``.
+    """
     if not isinstance(ev, dict):
         return None
     module = str(ev.get("modulename") or "").lower()
@@ -179,8 +193,8 @@ def event_to_task(ev: Dict, base_url: str = "") -> Optional[Dict]:
         url = f"{base_url.rstrip('/')}/calendar/view.php"
     ts = int(ev.get("timesort") or ev.get("timestart") or 0)
 
-    # Same scheme as the cookie scraper (md5 of the activity URL) so existing rows match.
-    task_id = hashlib.md5(url.encode("utf-8")).hexdigest()
+    # Legacy scheme matches the cookie scraper (md5 of the activity URL); see make_task_id.
+    task_id = make_task_id(url, user_id)
 
     cmid = None
     m = _CMID_RE.search(url)
@@ -197,7 +211,7 @@ def event_to_task(ev: Dict, base_url: str = "") -> Optional[Dict]:
     if module == "assign" and ev.get("instance"):
         assign_id = int(ev["instance"])
 
-    return {
+    task = {
         "id": task_id,
         "title": name or "Sin título",
         "course": course.get("fullname") or course.get("shortname") or "Materia no especificada",
@@ -209,6 +223,9 @@ def event_to_task(ev: Dict, base_url: str = "") -> Optional[Dict]:
         "course_module_id": cmid,
         "event_id": ev.get("id"),
     }
+    if user_id:
+        task["user_id"] = str(user_id)
+    return task
 
 
 # ---- token source ----------------------------------------------------------------------------

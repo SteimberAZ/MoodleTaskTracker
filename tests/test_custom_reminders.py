@@ -71,6 +71,8 @@ def _reminder(**over):
         "ends_at": "2026-01-02T00:00:00Z",
         "next_fire_at": "2026-01-01T11:59:00Z",
         "active": True,
+        "user_id": "u1",
+        "moodle_users": {"ntfy_topic": "utm-owner1", "active": True},
     }
     r.update(over)
     return r
@@ -127,34 +129,73 @@ class FakeClient:
 def test_process_sends_and_patches():
     client = FakeClient([_reminder(message="Hydrate now")])
     sent = []
-    n = process_due_reminders(client, lambda t, b: sent.append((t, b)) or True, now=NOW)
+    n = process_due_reminders(client, lambda t, b, topic: sent.append((t, b, topic)) or True, now=NOW)
     assert n == 1
-    assert sent == [("Drink water", "Hydrate now")]
+    assert sent == [("Drink water", "Hydrate now", "utm-owner1")]
     assert client.updates[0][0] == "r1"
 
 
 def test_process_body_falls_back_to_title():
     client = FakeClient([_reminder()])
     sent = []
-    process_due_reminders(client, lambda t, b: sent.append((t, b)) or True, now=NOW)
+    process_due_reminders(client, lambda t, b, topic: sent.append((t, b)) or True, now=NOW)
     assert sent == [("Drink water", "Drink water")]
 
 
 def test_process_expired_does_not_send():
     client = FakeClient([_reminder(ends_at="2026-01-01T11:00:00Z")])
     sent = []
-    n = process_due_reminders(client, lambda t, b: sent.append(t) or True, now=NOW)
+    n = process_due_reminders(client, lambda t, b, topic: sent.append(t) or True, now=NOW)
     assert n == 0 and sent == []
     assert client.updates[0][1]["active"] is False
 
 
 def test_process_failed_send_leaves_row_untouched():
     client = FakeClient([_reminder()])
-    n = process_due_reminders(client, lambda t, b: False, now=NOW)
+    n = process_due_reminders(client, lambda t, b, topic: False, now=NOW)
     assert n == 0 and client.updates == []
 
 
 def test_process_unconfigured_client_is_noop():
     client = FakeClient([_reminder()])
     client.is_configured = False
-    assert process_due_reminders(client, lambda t, b: True, now=NOW) == 0
+    assert process_due_reminders(client, lambda t, b, topic: True, now=NOW) == 0
+
+
+def test_each_reminder_goes_to_its_own_owner_topic():
+    client = FakeClient([
+        _reminder(id="a", user_id="ua", moodle_users={"ntfy_topic": "utm-aaaa", "active": True}),
+        _reminder(id="b", user_id="ub", moodle_users={"ntfy_topic": "utm-bbbb", "active": True}),
+    ])
+    sent = []
+    n = process_due_reminders(client, lambda t, b, topic: sent.append(topic) or True, now=NOW)
+    assert n == 2 and sent == ["utm-aaaa", "utm-bbbb"]
+    assert [rid for rid, _ in client.updates] == ["a", "b"]
+
+
+@pytest.mark.parametrize(
+    "over",
+    [
+        {"user_id": None, "moodle_users": None},  # orphan reminder (pre multi-user)
+        {"user_id": None},  # no owner id even if something got joined
+        {"moodle_users": None},  # owner row not visible
+        {"moodle_users": {"ntfy_topic": "utm-zzzz", "active": False}},  # inactive user
+        {"moodle_users": {"ntfy_topic": "", "active": True}},  # no topic
+        {"moodle_users": []},  # unexpected embed shape
+    ],
+)
+def test_reminders_without_active_owner_are_skipped_and_left_untouched(over):
+    client = FakeClient([_reminder(**over)])
+    sent = []
+    n = process_due_reminders(client, lambda t, b, topic: sent.append(topic) or True, now=NOW)
+    assert n == 0 and sent == [] and client.updates == []
+
+
+def test_one_skipped_reminder_does_not_block_the_next():
+    client = FakeClient([
+        _reminder(id="x", user_id=None, moodle_users=None),
+        _reminder(id="y"),
+    ])
+    sent = []
+    assert process_due_reminders(client, lambda t, b, topic: sent.append(topic) or True, now=NOW) == 1
+    assert sent == ["utm-owner1"]
