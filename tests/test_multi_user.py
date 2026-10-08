@@ -335,39 +335,36 @@ def test_user_without_topic_or_token_is_skipped_never_sent_to_owner(tmp_path, mo
     assert set(out.values()) == {"skipped"} and cap.pushes == [] and s.get_all_tasks() == []
 
 
-# ---- legacy gating -----------------------------------------------------------------------------
+# ---- no legacy path -----------------------------------------------------------------------------
 
 
-def test_legacy_runs_only_when_there_are_zero_active_users(tmp_path, monkeypatch):
+def test_zero_active_users_skip_the_round_with_a_warning(tmp_path, monkeypatch, capsys):
     Capture(monkeypatch)
     s = _storage(tmp_path)
-    legacy_calls = []
 
     with_users = FakeSupabase([UA])
-    r = worker.run_task_tick(s, with_users, lambda: legacy_calls.append(1),
+    r = worker.run_task_tick(s, with_users,
                              client_factory=lambda u: EventClient(u["id"], []), process=lambda *a, **k: None)
-    assert r == "users" and legacy_calls == []
+    assert r == "users"
 
-    r = worker.run_task_tick(s, FakeSupabase([]), lambda: legacy_calls.append(1))
-    assert r == "legacy" and legacy_calls == [1]
+    r = worker.run_task_tick(s, FakeSupabase([]))
+    assert r == "skipped"
+    assert "no active users" in capsys.readouterr().out
 
 
 def test_users_fetch_failure_skips_the_round_without_legacy_fallback(tmp_path, capsys):
     s = _storage(tmp_path)
-    legacy_calls = []
-    r = worker.run_task_tick(s, FakeSupabase(fail=True), lambda: legacy_calls.append(1))
-    assert r == "skipped" and legacy_calls == []
+    r = worker.run_task_tick(s, FakeSupabase(fail=True))
+    assert r == "skipped"
     assert "sin respaldo legacy" in capsys.readouterr().out
 
 
-def test_unconfigured_database_means_no_users_and_legacy_runs(tmp_path, monkeypatch):
+def test_unconfigured_database_means_no_users_and_a_skipped_round(tmp_path, monkeypatch):
     for k in ("SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "SUPABASE_KEY", "SUPABASE_ANON_KEY", "MOODLE_DB_JWT"):
         monkeypatch.delenv(k, raising=False)
     client = SupabaseClient(url="", key="")
     assert client.fetch_active_users() == []
-    calls = []
-    assert worker.run_task_tick(_storage(tmp_path), client, lambda: calls.append(1)) == "legacy"
-    assert calls == [1]
+    assert worker.run_task_tick(_storage(tmp_path), client) == "skipped"
 
 
 def test_logs_never_contain_tokens_or_full_topics(tmp_path, monkeypatch, capsys):

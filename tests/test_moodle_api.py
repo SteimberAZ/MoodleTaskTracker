@@ -2,15 +2,19 @@ import hashlib
 
 import pytest
 
+import requests
+
 import api_sync
+import moodle_api
 from moodle_api import (
+    OVERDUE_WINDOW_DAYS,
     Credentials,
     MoodleApiClient,
     MoodleApiError,
+    MoodleNetworkError,
     MoodleTokenInvalid,
     event_to_task,
     parse_assign_submission_status,
-    resolve_credentials,
 )
 from storage import Storage
 
@@ -122,7 +126,7 @@ def test_fetch_tasks_resolves_assign_status_and_tags_source():
     first = http.calls[0]
     assert first[0] == f"{BASE}/webservice/rest/server.php"
     assert first[1]["wstoken"] == "tok" and first[1]["moodlewsrestformat"] == "json"
-    assert first[1]["timesortfrom"] == 1_700_000_000 - 86400 and first[1]["limitnum"] == 50
+    assert first[1]["timesortfrom"] == 1_700_000_000 - 7 * 86400 and first[1]["limitnum"] == 50
 
 
 def test_assign_status_failure_degrades_to_pending_but_invalidtoken_propagates():
@@ -186,20 +190,9 @@ class FakeSupabase:
         return True
 
 
-def test_token_from_supabase_row_wins_over_env():
-    sb = FakeSupabase({"token": " abc ", "moodle_url": "https://row.example"})
-    c = resolve_credentials(sb, env={"MOODLE_TOKEN": "env-token"})
-    assert (c.token, c.base_url, c.source) == ("abc", "https://row.example", "supabase")
-
-
-@pytest.mark.parametrize("sb", [FakeSupabase(None), FakeSupabase({"token": ""}), FakeSupabase(fail=True), None])
-def test_token_falls_back_to_env(sb):
-    c = resolve_credentials(sb, env={"MOODLE_TOKEN": "env-token", "MOODLE_URL": "https://env.example"})
-    assert (c.token, c.base_url, c.source) == ("env-token", "https://env.example", "env")
-
-
-def test_no_token_anywhere_returns_none():
-    assert resolve_credentials(FakeSupabase(None), env={}) is None
+def test_the_legacy_env_token_resolver_is_gone():
+    # The single-user MOODLE_TOKEN / moodle_credentials path was removed with the legacy worker mode.
+    assert not hasattr(moodle_api, "resolve_credentials")
 
 
 # ---- sync + migration guard ------------------------------------------------------------------
@@ -312,3 +305,122 @@ def test_transient_errors_return_error_without_alert(tmp_path):
                                           alert=lambda **k: alerts.append(k))
         assert out == "error"
     assert alerts == []
+
+
+# ---- politeness, network errors and the overdue window ------------------------------------------
+
+
+class RecordingHttp(FakeHttp):
+    def __init__(self, responses):
+        super().__init__(responses)
+        self.timeouts = []
+
+    def post(self, url, data=None, timeout=None):
+        self.timeouts.append(timeout)
+        return super().post(url, data=data, timeout=timeout)
+
+
+def test_fetch_events_reads_the_overdue_window_and_reports_a_complete_fetch():
+    http = RecordingHttp({"core_calendar_get_action_events_by_timesort": {"events": [_event()], "lastid": 1}})
+    client = MoodleApiClient(BASE, "tok", http=http)
+    assert len(client.fetch_events(now=1_700_000_000)) == 1
+    assert OVERDUE_WINDOW_DAYS == 7
+    assert http.calls[0][1]["timesortfrom"] == 1_700_000_000 - 7 * 86400
+    assert client.last_fetch_complete is True
+    assert http.timeouts == [(5, 15)]  # split connect/read timeouts
+
+
+def test_a_fetch_that_hits_max_pages_with_a_full_page_is_incomplete():
+    pages = iter(range(1, 10))
+    http = FakeHttp({"core_calendar_get_action_events_by_timesort": lambda d: {
+        "events": [_event(id=i) for i in range(2)], "lastid": next(pages)}})
+    client = MoodleApiClient(BASE, "tok", http=http)
+    assert len(client.fetch_events(now=1_700_000_000, limit=2, max_pages=3)) == 6
+    assert client.last_fetch_complete is False
+    # the last page was short: everything was read
+    http2 = FakeHttp({"core_calendar_get_action_events_by_timesort": {"events": [_event()], "lastid": 5}})
+    client2 = MoodleApiClient(BASE, "tok", http=http2)
+    client2.fetch_events(now=1_700_000_000, limit=2, max_pages=1)
+    assert client2.last_fetch_complete is True
+
+
+def test_a_failed_fetch_is_never_reported_complete():
+    client = MoodleApiClient(BASE, "tok", http=FakeHttp({"core_calendar_get_action_events_by_timesort": FakeResp({}, 503)}))
+    client.last_fetch_complete = True
+    with pytest.raises(MoodleNetworkError):
+        client.fetch_events(now=1_700_000_000)
+    assert client.last_fetch_complete is False
+
+
+class RaisingHttp:
+    def __init__(self, exc):
+        self.exc = exc
+
+    def post(self, url, data=None, timeout=None):
+        raise self.exc
+
+
+@pytest.mark.parametrize("exc", [requests.exceptions.ConnectTimeout("t"), requests.exceptions.ReadTimeout("t"),
+                                 requests.exceptions.ConnectionError("c")])
+def test_timeouts_and_connection_errors_are_network_errors(exc):
+    with pytest.raises(MoodleNetworkError) as info:
+        MoodleApiClient(BASE, "tok", http=RaisingHttp(exc)).call("core_webservice_get_site_info")
+    assert info.value.is_network and info.value.code == "network"
+    assert "tok" not in str(info.value)
+
+
+@pytest.mark.parametrize("status,network", [(500, True), (502, True), (503, True), (404, False), (403, False)])
+def test_only_server_side_http_errors_count_as_network_errors(status, network):
+    http = FakeHttp({"x": FakeResp({}, status)})
+    with pytest.raises(MoodleApiError) as info:
+        MoodleApiClient(BASE, "tok", http=http).call("x")
+    assert info.value.is_network is network and info.value.status == status
+
+
+def test_token_errors_are_not_network_errors():
+    assert MoodleTokenInvalid("bad", code="invalidtoken").is_network is False
+
+
+def test_clients_share_one_session_with_an_identifying_user_agent():
+    a, b = MoodleApiClient(BASE, "t1"), MoodleApiClient(BASE, "t2")
+    assert a.http is b.http is moodle_api.shared_session()
+    assert isinstance(a.http, requests.Session)
+    assert a.http.headers["User-Agent"] == "mineral-tareas-worker/1.0"
+    injected = FakeHttp({})
+    assert MoodleApiClient(BASE, "t", http=injected).http is injected
+
+
+def test_status_reads_stop_after_two_consecutive_network_errors(capsys):
+    events = [_event(id=i, instance=100 + i, url=f"{BASE}/mod/assign/view.php?id={200 + i}") for i in range(5)]
+    reads = []
+
+    def status(d):
+        reads.append(d["assignid"])
+        return FakeResp({}, 503)
+
+    http = FakeHttp({
+        "core_calendar_get_action_events_by_timesort": {"events": events},
+        "core_course_get_courses_by_field": {"courses": []},
+        "mod_assign_get_submission_status": status,
+    })
+    client = MoodleApiClient(BASE, "tok", http=http)
+    tasks = client.fetch_tasks(now=1_700_000_000, delay=0)
+    assert len(tasks) == 5 and {t["status"] for t in tasks} == {"pending"}
+    assert reads == [100, 101]
+    assert client.last_status_checks_complete is False
+    assert "remaining assignment statuses are skipped" in capsys.readouterr().out
+
+
+def test_a_successful_status_read_resets_the_network_error_streak():
+    events = [_event(id=i, instance=100 + i, url=f"{BASE}/mod/assign/view.php?id={300 + i}") for i in range(4)]
+    outcomes = iter([FakeResp({}, 503), {"lastattempt": {"submission": {"status": "submitted"}}},
+                     FakeResp({}, 503), {"lastattempt": {"submission": {"status": "draft"}}}])
+    http = FakeHttp({
+        "core_calendar_get_action_events_by_timesort": {"events": events},
+        "core_course_get_courses_by_field": {"courses": []},
+        "mod_assign_get_submission_status": lambda d: next(outcomes),
+    })
+    client = MoodleApiClient(BASE, "tok", http=http)
+    tasks = client.fetch_tasks(now=1_700_000_000, delay=0)
+    assert [t["status"] for t in tasks] == ["pending", "submitted", "pending", "pending"]
+    assert client.last_status_checks_complete is True

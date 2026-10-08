@@ -709,35 +709,6 @@ def test_prune_notification_log_deletes_by_cutoff(monkeypatch):
 # ---- worker wiring -----------------------------------------------------------------------------------
 
 
-def test_the_worker_writes_the_buffered_history_and_prunes_even_when_a_tick_crashes(monkeypatch, tmp_path):
-    db = LogDb()
-
-    class OffSender:
-        enabled, status, warning = False, "off", ""
-
-    class Offline:
-        is_configured, url = False, ""
-
-    storage = Storage(str(tmp_path / "t.db"))
-    storage.supabase = Offline()
-    monkeypatch.setattr(worker, "Storage", lambda: storage)
-    monkeypatch.setattr(worker.SupabaseClient, "for_worker", classmethod(lambda cls: db))
-    monkeypatch.setattr(worker.WebPushSender, "from_env", classmethod(lambda cls, sb: OffSender()))
-    monkeypatch.setattr(worker, "process_class_reminders",
-                        lambda st, sb, deliver: deliver({"id": UID, "ntfy_topic": ""}, "Clase", "Hoy", kind="class"))
-    for name in ("check_and_notify_upcoming_classes", "process_due_reminders", "process_push_tests"):
-        monkeypatch.setattr(worker, name, lambda *a, **k: 0)
-
-    def crash(*a, **k):
-        raise RuntimeError("tick crashed")
-
-    monkeypatch.setattr(worker, "run_task_tick", crash)
-    with pytest.raises(RuntimeError, match="tick crashed"):
-        worker.run_worker()
-    assert [(r["kind"], r["status"], r["title"]) for r in db.rows] == [("class", "failed", "Clase")]
-    assert len(db.prunes) == 1
-
-
 def test_reminder_history_is_written_before_the_task_sync_and_after_each_user(monkeypatch, tmp_path):
     db = LogDb()
 
@@ -758,14 +729,14 @@ def test_reminder_history_is_written_before_the_task_sync_and_after_each_user(mo
         monkeypatch.setattr(worker, name, lambda *a, **k: 0)
     seen = {}
 
-    def tick(*a, after_user=None, **k):
+    def tick(*a, after_user=None, stop_event=None, **k):
         seen["rows_before_sync"] = [r["title"] for r in db.rows]
         seen["after_user"] = after_user
-        raise RuntimeError("stop")
+        stop_event.set()
+        return "users"
 
     monkeypatch.setattr(worker, "run_task_tick", tick)
-    with pytest.raises(RuntimeError, match="stop"):
-        worker.run_worker()
+    worker.run_worker()
     assert seen["rows_before_sync"] == ["Clase"]  # a tapped class push finds its row during the sync
     assert seen["after_user"] is not None
 

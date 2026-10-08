@@ -1,12 +1,15 @@
 """Moodle mobile web-service (REST) client.
 
 Authenticates with a user token (``wstoken``) instead of a browser session cookie.
-All functions return plain dicts shaped like the ones produced by ``MoodleClient`` so that
-``Storage`` and ``TaskNotificationManager`` work unchanged.
+All functions return plain dicts shaped like the ones produced by the desktop ``MoodleClient`` so
+that ``Storage`` and ``TaskNotificationManager`` work unchanged.
+
+Politeness: every client shares one ``requests.Session`` (keep-alive, an identifying User-Agent),
+uses split connect/read timeouts, and stops reading assignment statuses after a couple of
+consecutive network failures instead of hammering an unreachable site.
 """
 import hashlib
 import html
-import os
 import re
 import time
 from datetime import datetime, timedelta, timezone
@@ -16,6 +19,20 @@ import requests
 from bs4 import BeautifulSoup
 
 DEFAULT_MOODLE_URL = "https://evirtual.utm.edu.ec"
+
+USER_AGENT = "mineral-tareas-worker/1.0"
+
+# (connect, read) seconds: an unreachable host fails fast, a slow but alive one gets time to answer.
+DEFAULT_TIMEOUT = (5, 15)
+
+# Calendar events are read from this many days in the past, so overdue tasks stay visible. Matches
+# the web "Atrasadas" tab.
+OVERDUE_WINDOW_DAYS = 7
+
+# Consecutive network failures while reading assignment statuses before the rest are skipped.
+STATUS_NETWORK_ERROR_LIMIT = 2
+
+_SESSION: Optional[requests.Session] = None
 
 # Ecuador has no DST; used only to render the human-readable due date.
 _LOCAL_TZ = timezone(timedelta(hours=-5))
@@ -48,6 +65,8 @@ def _now() -> float:
 class MoodleApiError(Exception):
     """A Moodle web-service call failed."""
 
+    is_network = False  # True when Moodle could not be reached (timeout, connection, HTTP 5xx)
+
     def __init__(self, message: str, code: str = "", status: Optional[int] = None):
         super().__init__(message)
         self.code = code
@@ -56,6 +75,22 @@ class MoodleApiError(Exception):
 
 class MoodleTokenInvalid(MoodleApiError):
     """The token was rejected (expired, revoked or lacking access)."""
+
+
+class MoodleNetworkError(MoodleApiError):
+    """Moodle was unreachable or failed on its side: a timeout, a connection error or an HTTP 5xx."""
+
+    is_network = True
+
+
+def shared_session() -> requests.Session:
+    """The process-wide HTTP session used by every client that is not given its own ``http``."""
+    global _SESSION
+    if _SESSION is None:
+        session = requests.Session()
+        session.headers["User-Agent"] = USER_AGENT
+        _SESSION = session
+    return _SESSION
 
 
 def _raise_if_error(payload: Any):
@@ -70,12 +105,17 @@ def _raise_if_error(payload: Any):
 class MoodleApiClient:
     """Thin wrapper around ``/webservice/rest/server.php``."""
 
-    def __init__(self, base_url: str, token: str, http: Any = None, timeout: int = 20, user_id: Optional[str] = None):
+    def __init__(self, base_url: str, token: str, http: Any = None, timeout: Any = DEFAULT_TIMEOUT,
+                 user_id: Optional[str] = None):
         self.base_url = (base_url or DEFAULT_MOODLE_URL).rstrip("/")
         self.token = (token or "").strip()
         self.user_id = str(user_id) if user_id else None  # owner of the produced task dicts
-        self.http = http if http is not None else requests
+        self.http = http if http is not None else shared_session()
         self.timeout = timeout
+        # False until a fetch_events call read every page (a truncated or failed fetch stays False).
+        self.last_fetch_complete = False
+        # False when fetch_tasks stopped reading assignment statuses after repeated network errors.
+        self.last_status_checks_complete = True
 
     @property
     def endpoint(self) -> str:
@@ -91,7 +131,10 @@ class MoodleApiClient:
         try:
             resp = self.http.post(self.endpoint, data=data, timeout=self.timeout)
         except requests.exceptions.RequestException as e:
-            raise MoodleApiError(f"Network error: {e}", code="network") from e
+            # The exception text can echo the request URL; only its type is kept.
+            raise MoodleNetworkError(f"Network error: {type(e).__name__}", code="network") from e
+        if resp.status_code >= 500:
+            raise MoodleNetworkError(f"HTTP {resp.status_code}", code="http", status=resp.status_code)
         if resp.status_code != 200:
             raise MoodleApiError(f"HTTP {resp.status_code}", code="http", status=resp.status_code)
         try:
@@ -104,10 +147,16 @@ class MoodleApiClient:
     # ---- tasks -------------------------------------------------------------------------
 
     def fetch_events(self, now: Optional[float] = None, limit: int = 50, max_pages: int = 5) -> List[Dict]:
-        """Action events (due assignments, quizzes, ...) sorted by time, from 1 day ago."""
-        timesortfrom = int((now if now is not None else time.time()) - 86400)
+        """Action events (due assignments, quizzes, ...) sorted by time, from ``OVERDUE_WINDOW_DAYS`` ago.
+
+        Sets ``last_fetch_complete``: False when ``max_pages`` full pages were read and more may
+        exist (or the call failed), so callers never treat a truncated list as the whole picture.
+        """
+        timesortfrom = int((now if now is not None else time.time()) - OVERDUE_WINDOW_DAYS * 86400)
+        self.last_fetch_complete = False
         events: List[Dict] = []
         after: Optional[int] = None
+        complete = False
         for _ in range(max_pages):
             payload = self.call(
                 "core_calendar_get_action_events_by_timesort",
@@ -119,8 +168,10 @@ class MoodleApiClient:
             events.extend(page)
             last_id = payload.get("lastid") if isinstance(payload, dict) else None
             if len(page) < limit or not last_id:
+                complete = True
                 break
             after = last_id
+        self.last_fetch_complete = complete
         return events
 
     def resolve_assign_instance(self, cmid: int) -> Optional[int]:
@@ -215,7 +266,8 @@ class MoodleApiClient:
 
         Raises ``MoodleTokenInvalid`` / ``MoodleApiError`` when the events call fails. A failure
         while reading the status of a single assignment only leaves that task as pending, except
-        for ``invalidtoken`` which always propagates.
+        for ``invalidtoken`` which always propagates. After ``STATUS_NETWORK_ERROR_LIMIT``
+        consecutive network errors the remaining statuses are not read this round.
         """
         tasks = []
         for ev in self.fetch_events(now=now):
@@ -224,11 +276,18 @@ class MoodleApiClient:
                 tasks.append(task)
         self._attach_details(tasks)
         checked = 0
+        network_errors = 0
+        self.last_status_checks_complete = True
         for task in tasks:
             cmid = task.get("course_module_id")
             is_assign = bool(task.get("assign_id")) or (bool(cmid) and "/mod/assign/" in str(task.get("task_url")))
             if task["status"] == "submitted" or not is_assign:
                 continue
+            if network_errors >= STATUS_NETWORK_ERROR_LIMIT:
+                self.last_status_checks_complete = False
+                print(f"[MoodleApi] Moodle unreachable: {network_errors} status reads failed in a row; "
+                      "the remaining assignment statuses are skipped this round")
+                break
             if checked and delay:
                 time.sleep(delay)
             checked += 1
@@ -237,9 +296,11 @@ class MoodleApiClient:
             except MoodleApiError as e:
                 if e.code == "invalidtoken":
                     raise
+                network_errors = network_errors + 1 if e.is_network else 0
                 ref = task.get("assign_id") or f"cmid {cmid}"
                 print(f"[MoodleApi] assign status failed for {ref}: {e.code or 'error'}: {str(e)[:_LOG_MSG_MAX]}")
                 continue
+            network_errors = 0
             if used_id:
                 task["assign_id"] = used_id  # the instance Moodle actually accepted
             if detected:
@@ -360,27 +421,10 @@ class Credentials:
     def __init__(self, token: str, base_url: str, source: str):
         self.token = token
         self.base_url = base_url
-        self.source = source  # 'supabase' | 'env'
+        self.source = source  # 'user' (moodle_users row) | 'supabase' | 'env'
 
     @property
     def fingerprint(self) -> str:
         """Non-reversible short id of the token (safe to store and log)."""
         return hashlib.sha256(self.token.encode("utf-8")).hexdigest()[:12]
 
-
-def resolve_credentials(supabase: Any = None, env: Optional[Dict[str, str]] = None) -> Optional[Credentials]:
-    """Token from Supabase ``moodle_credentials`` (id=1), falling back to env ``MOODLE_TOKEN``."""
-    env = os.environ if env is None else env
-    default_url = (env.get("MOODLE_URL") or DEFAULT_MOODLE_URL).strip()
-    row = None
-    if supabase is not None and getattr(supabase, "is_configured", False):
-        try:
-            row = supabase.fetch_credentials()
-        except Exception as e:
-            print(f"[MoodleApi] could not read moodle_credentials: {e}")
-    if row and str(row.get("token") or "").strip():
-        return Credentials(str(row["token"]).strip(), str(row.get("moodle_url") or default_url), "supabase")
-    token = (env.get("MOODLE_TOKEN") or "").strip()
-    if token:
-        return Credentials(token, default_url, "env")
-    return None

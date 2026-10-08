@@ -539,7 +539,7 @@ def test_run_task_tick_hands_the_deliverer_to_the_user_sync(monkeypatch):
 
     monkeypatch.setattr(worker, "sync_all_users", lambda *a, **k: seen.update(k) or {})
     deliver = object()
-    assert worker.run_task_tick(None, Users(), lambda: None, deliver=deliver) == "users"
+    assert worker.run_task_tick(None, Users(), deliver=deliver) == "users"
     assert seen["deliver"] is deliver
 
 
@@ -616,7 +616,7 @@ def test_the_worker_adapter_builds_the_reminder_notification():
     assert send(owner, {"id": "r9"}, "Beber agua", "Ahora") is True
     assert calls == [(owner, "Beber agua", "Ahora", {
         "url": "/", "tag": "reminder-r9", "priority": "high", "ttl": TTL_REMINDER, "ntfy_tags": "alarm_clock,bell",
-        "kind": "reminder"})]
+        "kind": "reminder", "renotify": True})]
 
 
 # ---- class reminders (owner only) ---------------------------------------------------------------------

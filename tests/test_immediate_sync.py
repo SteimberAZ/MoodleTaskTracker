@@ -45,6 +45,6 @@ def test_full_round_remembers_synced_users(monkeypatch):
 
     monkeypatch.setattr(worker, "sync_all_users", lambda *a, **k: {})
     seen = {}
-    mode = run_task_tick(None, _FakeSupabase([_user("a", "L1")]), legacy_check=lambda: None, seen_logins=seen)
+    mode = run_task_tick(None, _FakeSupabase([_user("a", "L1")]), seen_logins=seen)
     assert mode == "users"
     assert seen == {"a": "L1"}
