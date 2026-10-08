@@ -11,6 +11,8 @@ import {
   updateReminder,
 } from '@/lib/reminders';
 import { computeNextFire } from '@/lib/schedule';
+import { deleteCredentials, saveCredentials } from '@/lib/credentials';
+import { MAX_PASSWORD, MAX_USERNAME, connectToMoodle, resolveMoodleUrl } from '@/lib/moodle';
 import { validateReminderForm, type FieldErrors, type ReminderFormInput } from '@/lib/validate';
 
 export interface LoginState {
@@ -52,6 +54,7 @@ function readForm(formData: FormData): ReminderFormInput {
     unit: text('unit'),
     startsAt: text('startsAt'),
     endsAt: text('endsAt'),
+    taskId: text('taskId'),
   };
 }
 
@@ -77,6 +80,7 @@ export async function saveReminder(
         ends_at: v.endsAt.toISOString(),
         next_fire_at: v.startsAt.toISOString(),
         active: true,
+        task_id: v.taskId,
       });
     } else {
       const existing = await getReminder(id);
@@ -95,6 +99,7 @@ export async function saveReminder(
         ends_at: v.endsAt.toISOString(),
         next_fire_at: next.nextFireAt.toISOString(),
         active: existing.active && next.active,
+        task_id: v.taskId,
       });
     }
   } catch {
@@ -126,4 +131,48 @@ export async function deleteReminder(id: string): Promise<void> {
   await requireSession();
   await removeReminder(id);
   revalidatePath('/');
+}
+
+export interface MoodleConnectState {
+  error?: string;
+  connected?: boolean;
+}
+
+/**
+ * Exchanges the Moodle password for a mobile token on the server. The password is read,
+ * used once and dropped: it is never stored, logged or returned in the form state.
+ */
+export async function connectMoodle(_prev: MoodleConnectState, formData: FormData): Promise<MoodleConnectState> {
+  await requireSession();
+  const username = String(formData.get('username') ?? '').trim();
+  const password = String(formData.get('password') ?? '');
+  if (!username || !password) return { error: 'Ingresa tu usuario y contraseña de Moodle.' };
+  if (username.length > MAX_USERNAME || password.length > MAX_PASSWORD) {
+    return { error: 'Usuario o contraseña demasiado largos.' };
+  }
+  const moodleUrl = resolveMoodleUrl(process.env.MOODLE_URL);
+  if (!moodleUrl) return { error: 'MOODLE_URL no es válida: debe ser una URL https.' };
+
+  const result = await connectToMoodle(moodleUrl, username, password);
+  if (!result.ok) return { error: result.message };
+
+  try {
+    await saveCredentials({
+      moodle_url: moodleUrl,
+      username,
+      token: result.value.token,
+      site_userid: result.value.siteUserId,
+      fullname: result.value.fullname,
+    });
+  } catch {
+    return { error: 'Moodle aceptó las credenciales, pero no se pudo guardar la conexión.' };
+  }
+  revalidatePath('/moodle');
+  return { connected: true };
+}
+
+export async function disconnectMoodle(): Promise<void> {
+  await requireSession();
+  await deleteCredentials();
+  revalidatePath('/moodle');
 }

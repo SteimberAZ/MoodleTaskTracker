@@ -4,7 +4,7 @@ import { requireSession } from '@/lib/auth';
 import { listReminders, type Reminder } from '@/lib/reminders';
 import { formatInterval, reminderStatus, type ReminderStatus } from '@/lib/schedule';
 import { formatGuayaquil } from '@/lib/time';
-import { listPendingTasks, type MoodleTask } from '@/lib/tasks';
+import { listPendingTasks, listTasksByIds, type MoodleTask } from '@/lib/tasks';
 import { timeLeft } from '@/lib/task-time';
 import DeleteButton from '@/components/DeleteButton';
 
@@ -32,6 +32,12 @@ export default async function HomePage() {
     tasksError = true;
   }
 
+  // Linked tasks may no longer be pending, so resolve them by id.
+  const linkedIds = reminders.map((r) => r.task_id).filter((id): id is string => !!id);
+  const linked = new Map<string, MoodleTask>(
+    (await listTasksByIds(linkedIds).catch(() => [])).map((t) => [t.id, t]),
+  );
+
   const rows = reminders
     .map((r) => ({ r, status: reminderStatus(r, now) }))
     .sort((a, b) => ORDER[a.status] - ORDER[b.status]);
@@ -42,6 +48,7 @@ export default async function HomePage() {
         <h1>Recordatorios</h1>
         <div className="actions">
           <Link href="/reminders/new" className="btn primary">Nuevo</Link>
+          <Link href="/moodle" className="btn">Conectar Moodle</Link>
           <form action={logout}>
             <button type="submit" className="btn">Salir</button>
           </form>
@@ -100,6 +107,12 @@ export default async function HomePage() {
               <span className={`badge ${status}`}>{status}</span>
             </div>
             {r.message && <p className="message">{r.message}</p>}
+            {r.task_id && (
+              <p className="message">
+                Tarea: {linked.get(r.task_id)?.title ?? 'tarea no disponible'}
+                {linked.get(r.task_id)?.course ? ` — ${linked.get(r.task_id)?.course}` : ''}
+              </p>
+            )}
             <dl className="meta">
               <div><dt>Frecuencia</dt><dd>{formatInterval(r.interval_minutes)}</dd></div>
               <div>

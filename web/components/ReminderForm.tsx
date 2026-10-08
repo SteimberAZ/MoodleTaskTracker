@@ -5,13 +5,20 @@ import Link from 'next/link';
 import type { FormState } from '@/app/actions';
 import type { ReminderFormInput } from '@/lib/validate';
 
+export interface TaskOption {
+  id: string;
+  title: string;
+  course: string | null;
+}
+
 interface Props {
   action: (prev: FormState, formData: FormData) => Promise<FormState>;
   initial: ReminderFormInput;
   submitLabel: string;
+  tasks: TaskOption[];
 }
 
-export default function ReminderForm({ action, initial, submitLabel }: Props) {
+export default function ReminderForm({ action, initial, submitLabel, tasks }: Props) {
   const [state, formAction, pending] = useActionState(action, {} as FormState);
   const v = state.values ?? initial;
   const e = state.errors ?? {};
@@ -56,6 +63,19 @@ export default function ReminderForm({ action, initial, submitLabel }: Props) {
         Termina (hora de Ecuador)
         <input name="endsAt" type="datetime-local" defaultValue={v.endsAt} required />
         {e.endsAt && <span className="field-error">{e.endsAt}</span>}
+      </label>
+
+      <label>
+        Relacionar con tarea (opcional)
+        <select name="taskId" defaultValue={v.taskId}>
+          <option value="">Sin tarea</option>
+          {tasks.map((t) => (
+            <option key={t.id} value={t.id}>
+              {t.course ? `${t.title} — ${t.course}` : t.title}
+            </option>
+          ))}
+        </select>
+        {e.taskId && <span className="field-error">{e.taskId}</span>}
       </label>
 
       <div className="actions">

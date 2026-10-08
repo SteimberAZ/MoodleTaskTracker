@@ -8,6 +8,7 @@ const valid: ReminderFormInput = {
   unit: 'hours',
   startsAt: '2026-10-07T08:00',
   endsAt: '2026-10-08T08:00',
+  taskId: '',
 };
 
 describe('validateReminderForm', () => {
@@ -37,6 +38,20 @@ describe('validateReminderForm', () => {
     expect(validateReminderForm({ ...valid, amount: '1.5' }).ok).toBe(false);
     expect(validateReminderForm({ ...valid, amount: '0' }).ok).toBe(false);
     expect(validateReminderForm({ ...valid, unit: 'weeks' }).ok).toBe(false);
+  });
+
+  it('treats an empty task id as no link and keeps a valid one', () => {
+    const none = validateReminderForm(valid);
+    expect(none.ok && none.value.taskId).toBeNull();
+    const linked = validateReminderForm({ ...valid, taskId: ' 12345 ' });
+    expect(linked.ok && linked.value.taskId).toBe('12345');
+  });
+
+  it('rejects a task id longer than 64 characters', () => {
+    const r = validateReminderForm({ ...valid, taskId: 'x'.repeat(65) });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.errors.taskId).toBeDefined();
+    expect(validateReminderForm({ ...valid, taskId: 'x'.repeat(64) }).ok).toBe(true);
   });
 
   it('requires end after start', () => {

@@ -13,6 +13,8 @@ export interface ReminderFormInput {
   unit: string;
   startsAt: string;
   endsAt: string;
+  /** Optional id of the related `moodle_tasks` row; empty string means none. */
+  taskId: string;
 }
 
 export type FieldErrors = Partial<Record<keyof ReminderFormInput, string>>;
@@ -23,6 +25,7 @@ export interface ReminderValues {
   intervalMinutes: number;
   startsAt: Date;
   endsAt: Date;
+  taskId: string | null;
 }
 
 export type ValidationResult =
@@ -31,6 +34,7 @@ export type ValidationResult =
 
 export const MAX_TITLE = 120;
 export const MAX_MESSAGE = 1000;
+export const MAX_TASK_ID = 64;
 
 export function validateReminderForm(input: ReminderFormInput): ValidationResult {
   const errors: FieldErrors = {};
@@ -57,6 +61,9 @@ export function validateReminderForm(input: ReminderFormInput): ValidationResult
     }
   }
 
+  const taskId = input.taskId.trim();
+  if (taskId.length > MAX_TASK_ID) errors.taskId = 'La tarea seleccionada no es válida.';
+
   const startsAt = guayaquilInputToDate(input.startsAt);
   if (!startsAt) errors.startsAt = 'Fecha de inicio inválida.';
   const endsAt = guayaquilInputToDate(input.endsAt);
@@ -68,6 +75,6 @@ export function validateReminderForm(input: ReminderFormInput): ValidationResult
   if (Object.keys(errors).length > 0 || !startsAt || !endsAt) return { ok: false, errors };
   return {
     ok: true,
-    value: { title, message: message || null, intervalMinutes, startsAt, endsAt },
+    value: { title, message: message || null, intervalMinutes, startsAt, endsAt, taskId: taskId || null },
   };
 }
