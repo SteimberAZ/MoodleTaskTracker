@@ -219,7 +219,7 @@ def test_a_failed_patch_after_delivery_is_retried_without_resending():
     send = lambda t, b, topic: sent.append(t) or True
 
     assert process_due_reminders(client, send, now=NOW, unpatched=pending) == 1
-    assert "r1" in pending
+    assert ("r1", "2026-01-01T11:59:00Z") in pending
     # Next ticks: the row is still due (PATCH lost) but nothing is delivered again.
     assert process_due_reminders(client, send, now=NOW, unpatched=pending) == 0
     assert process_due_reminders(client, send, now=NOW, unpatched=pending) == 0

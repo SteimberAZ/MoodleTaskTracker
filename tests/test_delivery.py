@@ -582,11 +582,11 @@ def test_reminders_are_delivered_to_the_owner_user_row():
     assert client.updates[0][0] == "r1"
 
 
-def test_a_missing_ntfy_enabled_column_means_on():
+def test_a_missing_ntfy_enabled_column_means_off():
     seen = []
     process_due_reminders(FakeReminders([_reminder()]),
                           deliver=lambda owner, *a: seen.append(owner["ntfy_enabled"]) or True, now=NOW)
-    assert seen == [True]
+    assert seen == [False]
 
 
 def test_an_undelivered_reminder_stays_untouched_for_the_next_tick():

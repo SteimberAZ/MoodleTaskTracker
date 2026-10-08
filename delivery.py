@@ -166,6 +166,12 @@ def is_exhausted(user_id: Any, kind: Any, tag: Any) -> bool:
     return bool(state) and int(state.get("attempts", 0)) >= MAX_ATTEMPTS
 
 
+def pending_attempts(user_id: Any, kind: Any, tag: Any) -> int:
+    """Failed attempts of the current streak of one key (0 when it has none)."""
+    state = _ATTEMPTS.get(_state_key(user_id, kind, tag))
+    return int(state.get("attempts", 0)) if state else 0
+
+
 def forget(user_id: Any, kind: Any, tag: Any) -> None:
     """Drop the retry state of one key (a caller gave up on it, so a later notification starts fresh)."""
     _ATTEMPTS.pop(_state_key(user_id, kind, tag), None)
