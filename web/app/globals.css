@@ -1176,3 +1176,10 @@ main:has(.form.narrow)::before {
   *, *::before, *::after { transition: none !important; animation: none !important; }
   .btn:hover { transform: none; }
 }
+
+/* Long status texts (admin service card) must wrap instead of widening the page. */
+.meta > div { min-width: 0; }
+.meta dd { min-width: 0; overflow-wrap: anywhere; }
+.meta dd .badge { display: inline-block; max-width: 100%; white-space: normal; overflow-wrap: anywhere; text-align: left; line-height: 1.35; }
+.warning, .warning li { overflow-wrap: anywhere; min-width: 0; }
+
