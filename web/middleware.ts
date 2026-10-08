@@ -12,7 +12,7 @@ import {
  * Cheap gate: checks the cookie signature and expiry only (no database access).
  * Whether the user still exists and is active is enforced by `requireUser()` in each page and action.
  * A valid session in its last week is re-signed for another full period (rolling session), so people who
- * keep using the app are never logged out.
+ * keep using the app are not logged out, up to the absolute lifetime of their sign-in (`iat` is kept).
  */
 export async function middleware(request: NextRequest) {
   if (request.nextUrl.pathname === '/login') return NextResponse.next();
@@ -20,8 +20,9 @@ export async function middleware(request: NextRequest) {
   const session = await verifySessionWithExp(secret, request.cookies.get(SESSION_COOKIE)?.value);
   if (session) {
     const response = NextResponse.next();
-    if (secret && shouldRenewSession(session.exp)) {
-      response.cookies.set(SESSION_COOKIE, await signSession(secret, session.userId), SESSION_COOKIE_OPTIONS);
+    const now = Date.now();
+    if (secret && shouldRenewSession(session.exp, now, session.iat)) {
+      response.cookies.set(SESSION_COOKIE, await signSession(secret, session.userId, now, session.iat), SESSION_COOKIE_OPTIONS);
     }
     return response;
   }

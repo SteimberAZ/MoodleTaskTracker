@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
+  SESSION_ABSOLUTE_MAX_SECONDS,
   SESSION_COOKIE_OPTIONS,
   SESSION_MAX_AGE_SECONDS,
+  hmacHex,
   SESSION_RENEW_THRESHOLD_SECONDS,
   resolveSessionSecret,
   safeEqual,
@@ -19,7 +21,7 @@ const OTHER_USER = '11111111-2222-3333-4444-555555555555';
 describe('session token v2', () => {
   it('round-trips the user id of a freshly signed token', async () => {
     const token = await signSession(SECRET, USER, NOW);
-    expect(token.startsWith(`v2.${USER}.`)).toBe(true);
+    expect(token.startsWith(`v3.${USER}.`)).toBe(true);
     expect(await verifySession(SECRET, token, NOW + 1000)).toBe(USER);
   });
 
@@ -29,14 +31,26 @@ describe('session token v2', () => {
   });
 
   it('rejects a tampered expiry', async () => {
-    const [v, id, exp, sig] = (await signSession(SECRET, USER, NOW)).split('.');
-    const forged = `${v}.${id}.${Number(exp) + 99999}.${sig}`;
+    const [v, id, exp, iat, sig] = (await signSession(SECRET, USER, NOW)).split('.');
+    const forged = `${v}.${id}.${Number(exp) + 99999}.${iat}.${sig}`;
     expect(await verifySession(SECRET, forged, NOW)).toBeNull();
   });
 
   it('rejects a swapped user id (privilege escalation attempt)', async () => {
-    const [v, , exp, sig] = (await signSession(SECRET, USER, NOW)).split('.');
-    expect(await verifySession(SECRET, `${v}.${OTHER_USER}.${exp}.${sig}`, NOW)).toBeNull();
+    const [v, , exp, iat, sig] = (await signSession(SECRET, USER, NOW)).split('.');
+    expect(await verifySession(SECRET, `${v}.${OTHER_USER}.${exp}.${iat}.${sig}`, NOW)).toBeNull();
+  });
+
+  it('rejects a tampered issued-at (the absolute lifetime cannot be extended)', async () => {
+    const [v, id, exp, iat, sig] = (await signSession(SECRET, USER, NOW)).split('.');
+    expect(await verifySession(SECRET, `${v}.${id}.${exp}.${Number(iat) + 86400}.${sig}`, NOW)).toBeNull();
+  });
+
+  it('still accepts a valid legacy v2 token until it expires', async () => {
+    const exp = Math.floor(NOW / 1000) + 1000;
+    const payload = `v2.${USER}.${exp}`;
+    const legacy = `${payload}.${await hmacHex(SECRET, payload)}`;
+    expect(await verifySessionWithExp(SECRET, legacy, NOW)).toEqual({ userId: USER, exp, iat: exp - SESSION_MAX_AGE_SECONDS });
   });
 
   it('rejects a tampered signature', async () => {
@@ -73,6 +87,7 @@ describe('verifySessionWithExp', () => {
     expect(await verifySessionWithExp(SECRET, token, NOW)).toEqual({
       userId: USER,
       exp: Math.floor(NOW / 1000) + SESSION_MAX_AGE_SECONDS,
+      iat: Math.floor(NOW / 1000),
     });
   });
 
@@ -103,6 +118,28 @@ describe('rolling session', () => {
     const verified = await verifySessionWithExp(SECRET, renewed, later);
     expect(verified?.exp).toBe(Math.floor(later / 1000) + SESSION_MAX_AGE_SECONDS);
     expect(shouldRenewSession(verified!.exp, later)).toBe(false);
+  });
+
+  it('keeps the original sign-in and never renews past the absolute lifetime', async () => {
+    const iat = Math.floor(NOW / 1000);
+    let token = await signSession(SECRET, USER, NOW);
+    let now = NOW;
+    let renewals = 0;
+    // Replay the cookie once inside every last week, as a stolen token would be.
+    for (let i = 0; i < 20; i++) {
+      const session = await verifySessionWithExp(SECRET, token, now);
+      if (!session) break;
+      expect(session.iat).toBe(iat);
+      now = (session.exp - 3600) * 1000;
+      const current = await verifySessionWithExp(SECRET, token, now);
+      if (!current || !shouldRenewSession(current.exp, now, current.iat)) break;
+      token = await signSession(SECRET, USER, now, current.iat);
+      renewals += 1;
+    }
+    expect(renewals).toBeGreaterThan(0);
+    const last = await verifySessionWithExp(SECRET, token, now);
+    expect(last!.exp).toBeLessThanOrEqual(iat + SESSION_ABSOLUTE_MAX_SECONDS);
+    expect(await verifySession(SECRET, token, (iat + SESSION_ABSOLUTE_MAX_SECONDS) * 1000)).toBeNull();
   });
 
   it('shares one set of cookie options', () => {
