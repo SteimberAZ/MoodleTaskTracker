@@ -317,3 +317,15 @@ def test_sweep_status_reads_rotate_so_a_task_past_the_cap_is_checked():
             break
     # 25 tasks with 20 reads a round: the task past the cap must be read within two rounds
     assert found_in_round is not None and found_in_round <= 2
+
+
+def test_a_status_read_earlier_is_kept_while_the_task_waits_for_its_next_read():
+    client, _, target = _over_cap_client()
+    statuses = []
+    for rnd in range(4):
+        tasks = client.fetch_tasks(now=NOW + rnd * (SWEEP_TTL_SECONDS + 1), delay=0)
+        statuses.append(next(t["status"] for t in tasks if t["course_module_id"] == target))
+    assert "submitted" in statuses[:2], statuses
+    # once known, a rotation round that skips the task must not report it as pending again
+    first = statuses.index("submitted")
+    assert all(s == "submitted" for s in statuses[first:]), statuses

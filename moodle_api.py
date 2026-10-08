@@ -66,7 +66,8 @@ SWEEP_STALE_MAX_SECONDS = 6 * 3600  # a failed sweep reuses the last good result
 SWEEP_MAX_COURSES = 30
 SWEEP_STATUS_MAX_CHECKS = 20  # submission/attempt reads per sweep; the least recently read tasks go first
 SWEEP_COURSE_MAX_AGE_DAYS = 180  # courses without end date older than this (by startdate) are skipped
-# (base_url, user_id) -> {"at": float, "tasks": [task dicts], "complete": bool, "reads": {cmid: last read time}}
+# (base_url, user_id) -> {"at": float, "tasks": [task dicts], "complete": bool,
+#                         "reads": {cmid: (last attempt time, last known status)}}
 _SWEEP_CACHE: Dict[tuple, Dict] = {}
 
 
@@ -359,11 +360,12 @@ class MoodleApiClient:
             return "submitted" if attempts else "pending"
         return None
 
-    def _fresh_sweep(self, now: float, known_cmids: set, delay: float, reads: Dict[int, float]) -> List[Dict]:
+    def _fresh_sweep(self, now: float, known_cmids: set, delay: float, reads: Dict[int, tuple]) -> List[Dict]:
         """Read the enrolled courses and their assignments and quizzes. May raise (the caller falls back).
 
-        ``reads`` maps a course module to the time its status was last attempted; it is updated in place
-        and lets the status budget rotate across rounds instead of always reaching the same tasks.
+        ``reads`` maps a course module to (time its status was last attempted, last known status). It is
+        updated in place: the status budget rotates across rounds, and a task that is not read this round
+        keeps the status it had before instead of reverting to pending.
         """
         uid = self._site_userid()
         payload = self.call("core_enrol_get_users_courses", userid=uid)
@@ -399,11 +401,16 @@ class MoodleApiClient:
             seen.add(task["course_module_id"])
             tasks.append(task)
 
+        for task in tasks:  # tasks the budget does not reach keep the last status Moodle reported
+            last_known = reads.get(task["course_module_id"], (0.0, None))[1]
+            if last_known:
+                task["status"] = last_known
+                task["status_source"] = "api"
         # The budget is smaller than a big sweep: read the least recently attempted tasks first (never read
         # counts as oldest), then the soonest due, so every task is reached within a few rounds.
         checked = 0
         network_errors = 0
-        for task in sorted(tasks, key=lambda t: (reads.get(t["course_module_id"], 0.0),
+        for task in sorted(tasks, key=lambda t: (reads.get(t["course_module_id"], (0.0, None))[0],
                                                  t["due_timestamp"] or float("inf"))):
             cmid = task["course_module_id"]
             if checked >= SWEEP_STATUS_MAX_CHECKS or network_errors >= STATUS_NETWORK_ERROR_LIMIT:
@@ -411,7 +418,8 @@ class MoodleApiClient:
             if checked and delay:
                 time.sleep(delay)
             checked += 1
-            reads[cmid] = now
+            previous = reads.get(cmid, (0.0, None))[1]
+            reads[cmid] = (now, previous)  # an attempt counts even when it fails
             try:
                 status = self._sweep_status(task)
             except MoodleApiError as e:
@@ -421,6 +429,7 @@ class MoodleApiClient:
                 continue
             network_errors = 0
             if status:
+                reads[cmid] = (now, status)
                 task["status"] = status
                 task["status_source"] = "api"
         live = {t["course_module_id"] for t in tasks}
