@@ -68,7 +68,7 @@ class SupabaseClient:
             try:
                 payload = []
                 for t in tasks:
-                    payload.append({
+                    row = {
                         "id": str(t["id"]),
                         "title": t["title"],
                         "course": t.get("course", "Materia no especificada"),
@@ -80,7 +80,12 @@ class SupabaseClient:
                         "last_updated": t.get("last_updated", 0),
                         "is_notified": t.get("is_notified", 0),
                         "is_dismissed": t.get("is_dismissed", 0),
-                    })
+                    }
+                    # Only sent by the web-service sync; keeps cookie-based rows unchanged.
+                    for extra in ("assign_id", "course_module_id"):
+                        if t.get(extra) is not None:
+                            row[extra] = t[extra]
+                    payload.append(row)
 
                 endpoint = f"{self.url}/rest/v1/moodle_tasks"
                 requests.post(endpoint, json=payload, headers=self._headers(), timeout=5)
@@ -144,6 +149,36 @@ class SupabaseClient:
         except Exception:
             pass
         return []
+
+    def fetch_credentials(self) -> Optional[Dict]:
+        """The single moodle_credentials row (id=1), or None when absent/unreadable."""
+        if not self.is_configured:
+            return None
+        endpoint = f"{self.url}/rest/v1/moodle_credentials"
+        r = requests.get(endpoint, params={"id": "eq.1", "select": "*"}, headers=self._headers(), timeout=10)
+        if r.status_code != 200:
+            raise RuntimeError(f"HTTP {r.status_code}")
+        rows = r.json()
+        return rows[0] if rows else None
+
+    def update_credentials(self, fields: Dict) -> bool:
+        """PATCH the moodle_credentials row (e.g. last_error / last_error_at)."""
+        if not self.is_configured:
+            return False
+        try:
+            headers = dict(self._headers())
+            headers["Prefer"] = "return=minimal"
+            r = requests.patch(
+                f"{self.url}/rest/v1/moodle_credentials",
+                params={"id": "eq.1"},
+                json=fields,
+                headers=headers,
+                timeout=10,
+            )
+            return r.status_code in (200, 204)
+        except Exception as e:
+            print(f"[Supabase] update_credentials error: {e}")
+            return False
 
     def fetch_due_reminders(self, now_iso: str) -> List[Dict]:
         """Active custom reminders whose next_fire_at is due (synchronous)."""

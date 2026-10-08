@@ -13,6 +13,8 @@ from storage import Storage
 from class_schedule import check_and_notify_upcoming_classes
 from custom_reminders import process_due_reminders
 from supabase_client import SupabaseClient
+from moodle_api import resolve_credentials
+from api_sync import sync_tasks_via_api
 
 
 def _read_env_cookie():
@@ -41,13 +43,10 @@ def run_worker():
     base_url = os.environ.get("MOODLE_URL") or storage.get_setting("moodle_url", "https://evirtual.utm.edu.ec")
     session_cookie = _read_env_cookie() or storage.get_setting("moodle_session", "")
 
-    if not session_cookie:
-        print("[!] ERROR: No hay cookie de Moodle configurada en .env ni en la base de datos.")
-        return
-
-    # Guardar en settings
+    # Token (Supabase moodle_credentials / MOODLE_TOKEN) is preferred; the cookie is only a fallback.
+    if session_cookie:
+        storage.set_setting("moodle_session", session_cookie)  # local only, never mirrored
     storage.set_setting("moodle_url", base_url)
-    storage.set_setting("moodle_session", session_cookie)
 
     keep_alive_seconds = 300  # 5 minutos
     try:
@@ -70,6 +69,7 @@ def run_worker():
     last_tasks_check = 0.0
     last_keep_alive = 0.0
     session_expired_notified = False
+    api_active = False  # True while the last sync went through the web-service token
 
     while True:
         now_ts = time.time()
@@ -99,12 +99,26 @@ def run_worker():
 
         client = MoodleClient(base_url, session_cookie)
         should_check_tasks = (now_ts - last_tasks_check) >= tasks_check_seconds
-        should_keep_alive = (now_ts - last_keep_alive) >= keep_alive_seconds
+        should_keep_alive = (now_ts - last_keep_alive) >= keep_alive_seconds and not api_active
 
+        api_outcome = None
         if should_check_tasks:
-            print(f"\n[{now_str}] 📋 Verificando calendario de Moodle y actualizando tareas...")
+            print(f"\n[{now_str}] 📋 Verificando Moodle y actualizando tareas...")
             last_tasks_check = time.time()
             last_keep_alive = time.time()
+            creds = resolve_credentials(reminders_client)
+            if creds:
+                print(f"[{now_str}] 🔑 Usando token de la API de Moodle ({creds.source}).")
+                api_outcome = sync_tasks_via_api(storage, creds, reminders_client)
+            api_active = api_outcome in ("ok", "error")
+            if api_outcome == "invalid" and session_cookie:
+                print(f"[{now_str}] ⚠️ Token inválido; usando cookie de sesión como respaldo.")
+
+        if api_outcome in ("ok", "error"):
+            pass  # errors are logged by sync_tasks_via_api and retried next cycle
+        elif should_check_tasks and not session_cookie:
+            print(f"[{now_str}] [!] Sin token ni cookie de Moodle configurados; nada que revisar.")
+        elif should_check_tasks:
             try:
                 success, tasks, msg = client.fetch_upcoming_tasks()
 
@@ -142,7 +156,7 @@ def run_worker():
             except Exception as err:
                 print(f"[{now_str}] [!] Excepción en tareas: {err}")
 
-        elif should_keep_alive:
+        elif should_keep_alive and session_cookie:
             # Petición liviana de Keep-Alive cada 5 minutos
             last_keep_alive = time.time()
             try:

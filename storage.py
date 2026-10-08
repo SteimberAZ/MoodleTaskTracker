@@ -138,7 +138,7 @@ class Storage:
                     if (
                         existing["status"] == "submitted"
                         and new_status != "submitted"
-                        and t.get("status_source") != "assignment_page"
+                        and t.get("status_source") not in ("assignment_page", "api")
                     ):
                         new_status = "submitted"
                     # Reflect the effective status for the notifier and the Supabase mirror
