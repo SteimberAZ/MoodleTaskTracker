@@ -224,6 +224,8 @@ body:has(.site-nav) .container {
 .nav-item span { white-space: nowrap; }
 .icon { flex-shrink: 0; }
 .nav-label-long { display: none; }
+/* Two instances of the nav: the bottom bar on phones, the inline header nav on wide screens. */
+.site-nav--inline { display: none; }
 
 /* Logout: right end of the header. Phones show an icon-only 44px button, wide screens icon plus "Salir". */
 .logout-form { display: flex; flex-shrink: 0; margin: 0; }
@@ -262,6 +264,8 @@ body:has(.site-nav) .container {
   .brand-word { font-size: 28px; letter-spacing: -1.5px; }
   .brand-sub { font-size: 10px; margin-top: 5px; }
 
+  .site-nav--bar { display: none; }
+  .site-nav--inline { display: flex; }
   .site-nav {
     position: static;
     margin-left: auto;
@@ -595,6 +599,21 @@ input, textarea, select {
   font: 500 16px/1.4 var(--font); /* 16px keeps iOS from zooming on focus */
 }
 textarea { min-height: 96px; resize: vertical; }
+/* iOS Safari gives date/time inputs an intrinsic width that overflows narrow cards and centers the value. */
+input[type='date'],
+input[type='datetime-local'],
+input[type='time'] {
+  display: block;
+  max-width: 100%;
+  -webkit-appearance: none;
+  appearance: none;
+  text-align: left;
+}
+input[type='date']::-webkit-date-and-time-value,
+input[type='datetime-local']::-webkit-date-and-time-value,
+input[type='time']::-webkit-date-and-time-value {
+  text-align: left;
+}
 input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 
 .row { display: grid; grid-template-columns: auto minmax(0, 1fr) minmax(0, 1.2fr); gap: 8px; align-items: center; }

@@ -17,13 +17,15 @@ const ICONS: Record<NavIconName, () => ReactElement> = {
 /**
  * The app navigation: Tareas / Recordatorios / Notificaciones / Mi cuenta / Admin (admins only).
  * Logout is not a tab; it sits at the right end of the header (see LogoutButton).
- * On phones it is a bottom tab bar (see `.site-nav` in globals.css); on wide screens it sits in the header.
+ * Rendered twice by SiteHeader: `inline` inside the header (wide screens only) and `bar` as a bottom tab bar
+ * (phones only). The bar must live OUTSIDE the sticky header: iOS WebKit mispositions `position: fixed`
+ * descendants of a sticky ancestor, which made the bar float up on short pages.
  */
-export default function NavLinks({ isAdmin }: { isAdmin: boolean }) {
+export default function NavLinks({ isAdmin, variant }: { isAdmin: boolean; variant: 'inline' | 'bar' }) {
   const pathname = usePathname() ?? '/';
 
   return (
-    <nav className="site-nav" aria-label="Principal">
+    <nav className={`site-nav site-nav--${variant}`} aria-label="Principal">
       {buildNavItems(isAdmin, pathname).map(({ href, label, shortLabel, icon, current }) => {
         const Icon = ICONS[icon];
         return (

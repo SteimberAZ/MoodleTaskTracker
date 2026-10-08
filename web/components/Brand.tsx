@@ -26,10 +26,14 @@ export default function Brand() {
 export async function SiteHeader() {
   const user = await getCurrentUser().catch(() => null);
   return (
-    <header className="site-header">
-      <Brand />
-      {user && <NavLinks isAdmin={user.is_admin} />}
-      {user && <LogoutButton />}
-    </header>
+    <>
+      <header className="site-header">
+        <Brand />
+        {user && <NavLinks isAdmin={user.is_admin} variant="inline" />}
+        {user && <LogoutButton />}
+      </header>
+      {/* Phones: bottom tab bar, kept outside the sticky header so `position: fixed` anchors to the viewport. */}
+      {user && <NavLinks isAdmin={user.is_admin} variant="bar" />}
+    </>
   );
 }
