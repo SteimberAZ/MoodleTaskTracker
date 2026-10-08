@@ -6,14 +6,15 @@ that ``Storage`` and ``TaskNotificationManager`` work unchanged.
 
 Politeness: every client shares one ``requests.Session`` (keep-alive, an identifying User-Agent),
 uses split connect/read timeouts, and stops reading assignment statuses after a couple of
-consecutive network failures instead of hammering an unreachable site.
+consecutive network failures instead of hammering an unreachable site. The course sweep batches
+all enrolled courses into one call per function and reuses its result for ``SWEEP_TTL_SECONDS``.
 """
 import hashlib
 import html
 import re
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional
 
 import requests
 from bs4 import BeautifulSoup
@@ -56,6 +57,17 @@ DESCRIPTION_MAX = 4000
 _TEACHERS_CACHE: Dict[tuple, tuple] = {}
 TEACHERS_TTL = 12 * 3600  # successful lookups
 TEACHERS_ERROR_TTL = 300  # failed lookups are retried after a short pause, not on every user
+
+# Course sweep (assignments/quizzes of every enrolled course, beyond the timeline). One sweep per user per
+# task round: rounds start every 30 minutes, the 25-minute TTL leaves room for jitter while the immediate
+# post-login sync reuses the cached result.
+SWEEP_TTL_SECONDS = 25 * 60
+SWEEP_STALE_MAX_SECONDS = 6 * 3600  # a failed sweep reuses the last good result up to this age
+SWEEP_MAX_COURSES = 30
+SWEEP_STATUS_MAX_CHECKS = 20  # submission/attempt reads per sweep
+SWEEP_COURSE_MAX_AGE_DAYS = 180  # courses without end date older than this (by startdate) are skipped
+# (base_url, user_id) -> {"at": float, "tasks": [task dicts], "complete": bool}
+_SWEEP_CACHE: Dict[tuple, Dict] = {}
 
 
 def _now() -> float:
@@ -106,16 +118,20 @@ class MoodleApiClient:
     """Thin wrapper around ``/webservice/rest/server.php``."""
 
     def __init__(self, base_url: str, token: str, http: Any = None, timeout: Any = DEFAULT_TIMEOUT,
-                 user_id: Optional[str] = None):
+                 user_id: Optional[str] = None, site_userid: Optional[int] = None):
         self.base_url = (base_url or DEFAULT_MOODLE_URL).rstrip("/")
         self.token = (token or "").strip()
         self.user_id = str(user_id) if user_id else None  # owner of the produced task dicts
+        # Moodle user id of the token owner; read from core_webservice_get_site_info when not given.
+        self.site_userid = int(site_userid) if str(site_userid or "").isdigit() else None
         self.http = http if http is not None else shared_session()
         self.timeout = timeout
         # False until a fetch_events call read every page (a truncated or failed fetch stays False).
         self.last_fetch_complete = False
         # False when fetch_tasks stopped reading assignment statuses after repeated network errors.
         self.last_status_checks_complete = True
+        # False until a sweep result coming from a fully successful sweep is used.
+        self.last_sweep_complete = False
 
     @property
     def endpoint(self) -> str:
@@ -261,13 +277,15 @@ class MoodleApiClient:
             task["teachers"] = self.fetch_course_teachers(task.get("course_id"))
             task["details_updated_at"] = stamp
 
-    def fetch_tasks(self, now: Optional[float] = None, delay: float = 0.2) -> List[Dict]:
+    def fetch_tasks(self, now: Optional[float] = None, delay: float = 0.2, sweep: bool = True) -> List[Dict]:
         """Fetch events, map them to task dicts and resolve submission status.
 
         Raises ``MoodleTokenInvalid`` / ``MoodleApiError`` when the events call fails. A failure
         while reading the status of a single assignment only leaves that task as pending, except
         for ``invalidtoken`` which always propagates. After ``STATUS_NETWORK_ERROR_LIMIT``
-        consecutive network errors the remaining statuses are not read this round.
+        consecutive network errors the remaining statuses are not read this round. With ``sweep``
+        and a ``user_id`` the course sweep adds the activities the timeline missed;
+        ``last_sweep_complete`` tells whether that sweep was fully read.
         """
         tasks = []
         for ev in self.fetch_events(now=now):
@@ -306,7 +324,126 @@ class MoodleApiClient:
             if detected:
                 task["status"] = detected
                 task["status_source"] = "api"
+        self.last_sweep_complete = False
+        if sweep and self.user_id:
+            known = {int(t["course_module_id"]) for t in tasks if t.get("course_module_id")}
+            ids = {t["id"] for t in tasks}
+            extra = self.sweep_course_activities(now=now, known_cmids=known, delay=delay)
+            tasks.extend(t for t in extra if t.get("course_module_id") not in known and t["id"] not in ids)
         return tasks
+
+    # ---- course sweep ------------------------------------------------------------------
+
+    def _site_userid(self) -> int:
+        """Moodle user id of the token owner, read once from core_webservice_get_site_info."""
+        if self.site_userid is not None:
+            return self.site_userid
+        payload = self.call("core_webservice_get_site_info")
+        try:
+            uid = int(payload["userid"])
+        except (KeyError, TypeError, ValueError) as e:
+            raise MoodleApiError("no userid", code="badresponse") from e
+        self.site_userid = uid
+        return uid
+
+    def _sweep_status(self, task: Dict) -> Optional[str]:
+        """'submitted' | 'pending' for a swept assignment or quiz, None when it cannot be read."""
+        if task.get("module") == "assign":
+            status, used = self._assign_status(task.get("assign_id"), task.get("course_module_id"))
+            if used:
+                task["assign_id"] = used
+            return status
+        if task.get("module") == "quiz":
+            payload = self.call("mod_quiz_get_user_attempts", quizid=int(task["quiz_id"]), status="finished")
+            attempts = payload.get("attempts") if isinstance(payload, dict) else None
+            return "submitted" if attempts else "pending"
+        return None
+
+    def _fresh_sweep(self, now: float, known_cmids: set, delay: float) -> List[Dict]:
+        """Read the enrolled courses and their assignments and quizzes. May raise (the caller falls back)."""
+        uid = self._site_userid()
+        payload = self.call("core_enrol_get_users_courses", userid=uid)
+        courses = payload if isinstance(payload, list) else []
+        current = [c for c in courses if course_is_current(c, now) and str(c.get("id") or "").isdigit()]
+        current.sort(key=lambda c: int(c.get("startdate") or 0), reverse=True)
+        current = current[:SWEEP_MAX_COURSES]
+        if not current:
+            return []
+        by_id = {int(c["id"]): c for c in current}
+        params = {f"courseids[{i}]": cid for i, cid in enumerate(by_id)}
+        assigns = self.call("mod_assign_get_assignments", **params)
+        quizzes = self.call("mod_quiz_get_quizzes_by_courses", **params)
+
+        found: List[Optional[Dict]] = []
+        for c in (assigns.get("courses") if isinstance(assigns, dict) else None) or []:
+            if not isinstance(c, dict):
+                continue
+            course = by_id.get(int(c.get("id") or 0)) or c
+            for a in c.get("assignments") or []:
+                found.append(assignment_to_task(a, course, self.base_url, self.user_id, now))
+        for q in (quizzes.get("quizzes") if isinstance(quizzes, dict) else None) or []:
+            if not isinstance(q, dict):
+                continue
+            course = by_id.get(int(q.get("course") or 0)) or {"id": q.get("course")}
+            found.append(quiz_to_task(q, course, self.base_url, self.user_id, now))
+
+        tasks: List[Dict] = []
+        seen: set = set()
+        for task in found:
+            if task is None or task["course_module_id"] in known_cmids or task["course_module_id"] in seen:
+                continue
+            seen.add(task["course_module_id"])
+            tasks.append(task)
+
+        checked = 0
+        network_errors = 0
+        for task in tasks:
+            if checked >= SWEEP_STATUS_MAX_CHECKS or network_errors >= STATUS_NETWORK_ERROR_LIMIT:
+                break
+            if checked and delay:
+                time.sleep(delay)
+            checked += 1
+            try:
+                status = self._sweep_status(task)
+            except MoodleApiError as e:
+                # Not fatal: an 'accessexception' here means this function is not allowed, not a bad token.
+                network_errors = network_errors + 1 if e.is_network else 0
+                print(f"[MoodleApi] sweep status failed for cmid {task['course_module_id']}: {e.code or 'error'}")
+                continue
+            network_errors = 0
+            if status:
+                task["status"] = status
+                task["status_source"] = "api"
+        self._attach_details(tasks)
+        return tasks
+
+    def sweep_course_activities(self, now: Optional[float] = None, known_cmids: Iterable[int] = (),
+                                delay: float = 0.2) -> List[Dict]:
+        """Assignments and quizzes of the enrolled courses that the timeline did not return. Never raises."""
+        now = now if now is not None else _now()
+        key = (self.base_url, self.user_id)
+        entry = _SWEEP_CACHE.get(key)
+        if entry and now - entry["at"] < SWEEP_TTL_SECONDS:
+            tasks = entry["tasks"]
+            self.last_sweep_complete = entry["complete"]
+        else:
+            try:
+                tasks = self._fresh_sweep(now, set(int(c) for c in known_cmids if c), delay)
+                _SWEEP_CACHE[key] = {"at": now, "tasks": tasks, "complete": True}
+                self.last_sweep_complete = True
+                print(f"[MoodleApi] course sweep: {len(tasks)} activity(ies) outside the timeline")
+            except Exception as e:  # noqa: BLE001 - a sweep failure must never break the sync
+                code = getattr(e, "code", "") or type(e).__name__
+                print(f"[MoodleApi] course sweep failed ({code}); timeline only this round")
+                self.last_sweep_complete = False
+                # Keep the last good result for a while; retry after the TTL, not on every sync.
+                if entry and now - entry["at"] < SWEEP_STALE_MAX_SECONDS:
+                    tasks = entry["tasks"]
+                else:
+                    tasks = []
+                _SWEEP_CACHE[key] = {"at": now, "tasks": tasks, "complete": False}
+        # Copies, so callers mutating the returned dicts never change the cache.
+        return [dict(t, teachers=list(t.get("teachers") or [])) for t in tasks]
 
 
 # ---- pure mapping helpers ------------------------------------------------------------------
@@ -412,6 +549,76 @@ def event_to_task(ev: Dict, base_url: str = "", user_id: Optional[str] = None) -
     if user_id:
         task["user_id"] = str(user_id)
     return task
+
+
+def activity_url(base_url: str, module: str, cmid: int) -> str:
+    """The activity URL the calendar timeline uses, so swept tasks keep the timeline task id."""
+    return f"{base_url.rstrip('/')}/mod/{module}/view.php?id={int(cmid)}"
+
+
+def course_is_current(course: Dict, now: float) -> bool:
+    """Whether a core_enrol_get_users_courses entry is worth sweeping: visible, not completed, recent."""
+    if not isinstance(course, dict):
+        return False
+    if course.get("visible") is not None and int(course["visible"]) == 0:
+        return False
+    if course.get("completed"):
+        return False
+    enddate = int(course.get("enddate") or 0)
+    if enddate > 0:
+        return enddate >= now - OVERDUE_WINDOW_DAYS * 86400
+    startdate = int(course.get("startdate") or 0)
+    return startdate == 0 or startdate >= now - SWEEP_COURSE_MAX_AGE_DAYS * 86400
+
+
+def _swept_task(module: str, cmid: int, name: Any, due: int, course: Dict, intro: Any, base_url: str,
+                user_id: Optional[str], assign_id: Optional[int] = None, quiz_id: Optional[int] = None) -> Dict:
+    """Task dict for an activity found by the course sweep: the event_to_task shape, the same task id."""
+    url = activity_url(base_url, module, cmid)
+    task = {
+        "id": make_task_id(url, user_id),
+        "title": str(name or "").strip() or "Sin título",
+        "course": course.get("fullname") or course.get("shortname") or "Materia no especificada",
+        "due_date_str": _format_due(int(due)),
+        "due_timestamp": int(due),
+        "task_url": url,
+        "status": "pending",
+        "assign_id": assign_id,
+        "course_module_id": int(cmid),
+        "event_id": None,
+        "module": module,
+        "course_id": int(course["id"]) if str(course.get("id") or "").isdigit() else None,
+        "description": html_to_text(intro),
+        "source": "sweep",
+        "quiz_id": quiz_id,
+    }
+    if user_id:
+        task["user_id"] = str(user_id)
+    return task
+
+
+def assignment_to_task(a: Dict, course: Dict, base_url: str, user_id: Optional[str], now: float) -> Optional[Dict]:
+    """Task for an assignment the timeline did not return, or None when there is nothing to hand in."""
+    if not isinstance(a, dict) or int(a.get("cmid") or 0) <= 0 or not a.get("id"):
+        return None
+    due = int(a.get("duedate") or 0) or int(a.get("cutoffdate") or 0)
+    if due and due < now - OVERDUE_WINDOW_DAYS * 86400:
+        return None  # same overdue window as the timeline
+    if not due and int(a.get("nosubmissions") or 0) == 1:
+        return None  # offline assignment without a date: nothing to hand in
+    return _swept_task("assign", a["cmid"], a.get("name"), due, course, a.get("intro"), base_url, user_id,
+                       assign_id=int(a["id"]))
+
+
+def quiz_to_task(q: Dict, course: Dict, base_url: str, user_id: Optional[str], now: float) -> Optional[Dict]:
+    """Task for a quiz the timeline did not return, or None when it is closed or not a course module."""
+    if not isinstance(q, dict) or int(q.get("coursemodule") or 0) <= 0 or not q.get("id"):
+        return None
+    due = int(q.get("timeclose") or 0)
+    if due and due < now:
+        return None  # closed: an attempt cannot be told apart here; the timeline covers recent ones
+    return _swept_task("quiz", q["coursemodule"], q.get("name"), due, course, q.get("intro"), base_url, user_id,
+                       quiz_id=int(q["id"]))
 
 
 # ---- token source ----------------------------------------------------------------------------
