@@ -33,6 +33,21 @@ describe('TaskCard overdue badge', () => {
   });
 });
 
+describe('TaskCard without due date', () => {
+  const task = {
+    id: 't2', title: 'Foro', course: 'Curso', module: 'forum', status: 'pending', is_dismissed: 0,
+    due_timestamp: 0, due_date_str: 'Sin fecha límite indicada', task_url: 'https://evirtual.utm.edu.ec/mod/forum/view.php?id=2',
+  } as unknown as Parameters<typeof TaskCard>[0]['task'];
+
+  it('shows the undated label, a neutral badge and the Moodle link, without a time element', () => {
+    const html = renderToStaticMarkup(createElement(TaskCard, { task, nowSeconds: 2_000, listState: {} as never }));
+    expect(html).toContain('Sin fecha de entrega');
+    expect(html).toContain('class="badge pausado"');
+    expect(html).toContain('Abrir en Moodle');
+    expect(html).not.toContain('<time');
+  });
+});
+
 describe('NavPlaceholder (header Suspense fallback)', () => {
   it('keeps a .site-nav element so the body:has(.site-nav) padding does not shift when the nav streams in', () => {
     for (const variant of ['inline', 'bar'] as const) {

@@ -21,6 +21,7 @@ type SearchParams = Promise<Record<string, string | string[] | undefined>>;
 const EMPTY_TASKS: Record<TaskFilter, string> = {
   pendientes: 'No tienes tareas pendientes 🎉',
   atrasadas: 'No tienes tareas atrasadas de los últimos 7 días.',
+  sinfecha: 'No tienes tareas sin fecha de entrega.',
   silenciadas: 'No has silenciado ninguna tarea.',
   entregadas: 'Aún no hay tareas entregadas.',
 };
@@ -79,6 +80,9 @@ export default async function HomePage({ searchParams }: { searchParams: SearchP
           <h1 id="tasks-title" tabIndex={-1}>Tareas</h1>
         </div>
         <TaskFilters active={filter} counts={counts?.byFilter ?? null} />
+        {filter === 'sinfecha' && (
+          <p className="muted small">Actividades de Moodle sin fecha límite: solo reciben el aviso de tarea nueva.</p>
+        )}
         {/* Always mounted: mute results are announced here (text set by MuteButton). */}
         <p id="task-status" role="status" className="sr-only" />
         {!taskResult && <p className="alert" role="alert">No se pudieron cargar las tareas de Moodle.</p>}

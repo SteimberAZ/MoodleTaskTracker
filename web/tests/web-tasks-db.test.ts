@@ -71,28 +71,40 @@ describe('missing_since fallback', () => {
 
   it('counters are exact counts per tab, never a download of every row', async () => {
     // More rows than PostgREST's max-rows (1000): only the content-range total is used.
-    const totals: Record<string, number> = { all: 1500, pendientes: 4, atrasadas: 2, silenciadas: 1, entregadas: 1200 };
+    const totals: Record<string, number> = {
+      all: 1500,
+      pendientes: 4,
+      atrasadas: 2,
+      sinfecha: 3,
+      silenciadas: 1,
+      entregadas: 1200,
+    };
     dbFetch.mockImplementation(async (path: string, init?: { headers?: Record<string, string> }) => {
       expect(init?.headers?.Prefer).toBe('count=exact');
-      const key = path.includes('is_dismissed=eq.1')
-        ? 'silenciadas'
-        : path.includes('status=eq.submitted')
-          ? 'entregadas'
-          : path.includes('due_timestamp=lt.')
-            ? 'atrasadas'
-            : path.includes('due_timestamp=gte.')
-              ? 'pendientes'
-              : 'all';
+      const key = path.includes('due_timestamp.eq.0')
+        ? 'sinfecha'
+        : path.includes('is_dismissed=eq.1')
+          ? 'silenciadas'
+          : path.includes('status=eq.submitted')
+            ? 'entregadas'
+            : path.includes('due_timestamp=lt.')
+              ? 'atrasadas'
+              : path.includes('due_timestamp=gte.')
+                ? 'pendientes'
+                : 'all';
       return json([{ id: 'x' }], 200, `0-0/${totals[key]}`);
     });
     const counts = await countTasks(USER, NOW);
-    expect(counts).toEqual({ byFilter: { pendientes: 4, atrasadas: 2, silenciadas: 1, entregadas: 1200 }, total: 1500 });
+    expect(counts).toEqual({
+      byFilter: { pendientes: 4, atrasadas: 2, sinfecha: 3, silenciadas: 1, entregadas: 1200 },
+      total: 1500,
+    });
     for (const path of paths()) {
       expect(path).toContain('select=id');
       expect(path).toContain('limit=1');
       expect(path).not.toContain('order=');
     }
-    expect(paths().filter((p) => p.includes('missing_since=is.null'))).toHaveLength(2); // ghost rows stay out
+    expect(paths().filter((p) => p.includes('missing_since=is.null'))).toHaveLength(3); // ghost rows stay out
   });
 });
 

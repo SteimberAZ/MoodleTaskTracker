@@ -8,7 +8,7 @@ import { homeHref, parsePage } from '@/lib/pagination';
 import { normalizeDescription, normalizeTeachers, safeHttpUrl } from '@/lib/task-detail';
 import { moduleLabel } from '@/lib/task-module';
 import { parseTaskFilter } from '@/lib/task-query';
-import { timeLeft } from '@/lib/task-time';
+import { hasDueDate, timeLeft } from '@/lib/task-time';
 import { formatGuayaquil } from '@/lib/time';
 import { ChevronLeftIcon, ExternalIcon } from '@/components/Icons';
 import AutoRemindersCard from '@/components/AutoRemindersCard';
@@ -45,6 +45,7 @@ export default async function TaskDetailPage({
   const nowSeconds = Math.floor(Date.now() / 1000);
   const muted = task.is_dismissed === 1;
   const submitted = task.status === 'submitted';
+  const undated = !hasDueDate(task.due_timestamp);
   const left = timeLeft(task.due_timestamp, nowSeconds);
   const teachers = normalizeTeachers(task.teachers);
   const description = normalizeDescription(task.description);
@@ -75,8 +76,8 @@ export default async function TaskDetailPage({
           <div>
             <dt>Vence</dt>
             <dd>
-              {formatGuayaquil(new Date(task.due_timestamp * 1000))}
-              {!submitted && (
+              {undated ? 'Sin fecha de entrega' : formatGuayaquil(new Date(task.due_timestamp * 1000))}
+              {!undated && !submitted && (
                 <span className={`badge ${!muted && left.urgent ? 'urgente' : 'pausado'}`}>{left.label}</span>
               )}
             </dd>

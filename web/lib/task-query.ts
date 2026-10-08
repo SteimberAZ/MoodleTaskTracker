@@ -2,11 +2,12 @@ import { pageRange, TASK_PAGE_SIZE } from './pagination';
 import { ownedTaskQuery, scopedQuery } from './queries';
 
 /** Pure builders for the task list. Every query goes through `scopedQuery`, so `user_id` is always present. */
-export type TaskFilter = 'pendientes' | 'atrasadas' | 'silenciadas' | 'entregadas';
+export type TaskFilter = 'pendientes' | 'atrasadas' | 'sinfecha' | 'silenciadas' | 'entregadas';
 
 export const TASK_FILTERS: readonly { value: TaskFilter; label: string }[] = [
   { value: 'pendientes', label: 'Pendientes' },
   { value: 'atrasadas', label: 'Atrasadas' },
+  { value: 'sinfecha', label: 'Sin fecha de entrega' },
   { value: 'silenciadas', label: 'Silenciadas' },
   { value: 'entregadas', label: 'Entregadas' },
 ];
@@ -79,6 +80,11 @@ export interface TaskQueryOptions {
 const notMissing = (options: TaskQueryOptions): string[] =>
   (options.missingSince ?? missingSinceSupported) ? ['missing_since=is.null'] : [];
 
+/** Tabs that list actionable tasks, so they also hide the tasks Moodle stopped returning. */
+export function usesMissingSince(filter: TaskFilter | null): boolean {
+  return filter === 'pendientes' || filter === 'atrasadas' || filter === 'sinfecha';
+}
+
 /** PostgREST filters and ordering of one tab. */
 export function taskFilterParts(filter: TaskFilter, nowSeconds: number, options: TaskQueryOptions = {}): string[] {
   const now = Math.floor(nowSeconds);
@@ -87,6 +93,15 @@ export function taskFilterParts(filter: TaskFilter, nowSeconds: number, options:
       return ['is_dismissed=eq.1', 'order=due_timestamp.asc'];
     case 'entregadas':
       return ['status=eq.submitted', 'order=due_timestamp.desc'];
+    case 'sinfecha':
+      // The worker stores 0 for "no due date"; null is kept for rows written before that.
+      return [
+        'status=neq.submitted',
+        'is_dismissed=eq.0',
+        'or=(due_timestamp.is.null,due_timestamp.eq.0)',
+        ...notMissing(options),
+        'order=course.asc,title.asc',
+      ];
     case 'atrasadas':
       return [
         'status=neq.submitted',
@@ -152,7 +167,8 @@ export function taskCountsQuery(userId: string, options: TaskQueryOptions = {}):
 export interface TaskCountRow {
   status: string;
   is_dismissed: number | null;
-  due_timestamp: number;
+  /** 0 (or null on old rows) when the activity has no due date. */
+  due_timestamp: number | null;
   /** Absent when the column does not exist yet: the task then counts as present. */
   missing_since?: string | null;
 }
@@ -167,14 +183,21 @@ export function matchesTaskFilter(row: TaskCountRow, filter: TaskFilter, nowSeco
     case 'entregadas':
       return row.status === 'submitted';
     case 'atrasadas':
-      return actionable && row.due_timestamp < now && row.due_timestamp >= now - OVERDUE_WINDOW_SECONDS;
+      return (
+        actionable &&
+        row.due_timestamp != null &&
+        row.due_timestamp < now &&
+        row.due_timestamp >= now - OVERDUE_WINDOW_SECONDS
+      );
+    case 'sinfecha':
+      return actionable && !row.due_timestamp;
     default:
-      return actionable && row.due_timestamp >= now;
+      return actionable && row.due_timestamp != null && row.due_timestamp >= now;
   }
 }
 
 export function countTasksByFilter(rows: TaskCountRow[], nowSeconds: number): Record<TaskFilter, number> {
-  const counts: Record<TaskFilter, number> = { pendientes: 0, atrasadas: 0, silenciadas: 0, entregadas: 0 };
+  const counts: Record<TaskFilter, number> = { pendientes: 0, atrasadas: 0, sinfecha: 0, silenciadas: 0, entregadas: 0 };
   for (const row of rows) {
     for (const { value } of TASK_FILTERS) {
       if (matchesTaskFilter(row, value, nowSeconds)) counts[value] += 1;

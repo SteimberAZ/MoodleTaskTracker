@@ -520,7 +520,7 @@ body:has(.site-nav) .container {
 .reminder-card .badge { text-transform: capitalize; }
 .meta .badge { margin-left: 8px; }
 
-.chips { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 8px; margin-bottom: 12px; }
+.chips { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-bottom: 12px; }
 .filter-chip {
   display: flex;
   flex-direction: column;
@@ -546,9 +546,9 @@ body:has(.site-nav) .container {
   line-height: 1.6;
   text-align: center;
 }
-/* One row of equal chips (three or four); the narrowest phones wrap them two per row. */
+/* Chips in rows of three on phones; the narrowest phones use two per row. */
 @media (max-width: 359px) {
-  .chips { grid-auto-flow: row; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .chips { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (min-width: 520px) {
   .chips { display: flex; flex-wrap: wrap; }

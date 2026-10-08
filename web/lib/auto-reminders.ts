@@ -1,4 +1,5 @@
 import { formatGuayaquilShort } from './time';
+import { hasDueDate } from './task-time';
 
 /**
  * Pure helpers for the "Avisos automáticos" card of the task detail page.
@@ -7,6 +8,7 @@ import { formatGuayaquilShort } from './time';
  * `3d`, `2d`, `1d` and `8h` before the deadline. When a smaller window is reached first, the larger
  * milestones are recorded together with it without sending anything, so they never fire late.
  * The worker mirrors every recorded milestone to `moodle_task_milestones`.
+ * Undated activities (no due date) only get the `new` alert, like the worker.
  */
 export type MilestoneKey = 'new' | '3d' | '2d' | '1d' | '8h';
 
@@ -63,6 +65,7 @@ export function parseMilestoneRows(rows: unknown): SentMap {
  * - no record, in the future -> `pending`
  *
  * `sentMap` null means the milestones could not be read: every item is `unknown` (schedule only).
+ * Without a due date (`dueTs` 0 or null, see `hasDueDate`) only the `new` item is returned.
  */
 export function automaticReminderSchedule(
   dueTs: number,
@@ -91,8 +94,10 @@ export function automaticReminderSchedule(
     return item('pending');
   };
 
+  const newItem = resolve('new', NEW_TASK_LABEL, null, null);
+  if (!hasDueDate(dueTs)) return [newItem];
   return [
-    resolve('new', NEW_TASK_LABEL, null, null),
+    newItem,
     ...TIMED.map((m, i) => resolve(m.key, m.label, dueTs - m.offset, TIMED[i + 1]?.offset ?? null)),
   ];
 }

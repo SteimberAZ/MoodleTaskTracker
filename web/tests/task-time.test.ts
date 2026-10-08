@@ -1,7 +1,21 @@
 import { describe, expect, it } from 'vitest';
-import { timeLeft } from '@/lib/task-time';
+import { hasDueDate, timeLeft } from '@/lib/task-time';
 
 const NOW = 1_800_000_000;
+
+describe('hasDueDate', () => {
+  it('is false for the worker placeholder 0 and for missing values', () => {
+    expect(hasDueDate(0)).toBe(false);
+    expect(hasDueDate(-5)).toBe(false);
+    expect(hasDueDate(Number.NaN)).toBe(false);
+    expect(hasDueDate(null)).toBe(false);
+    expect(hasDueDate(undefined)).toBe(false);
+  });
+
+  it('is true for a Unix timestamp', () => {
+    expect(hasDueDate(1_800_000_000)).toBe(true);
+  });
+});
 
 describe('timeLeft', () => {
   it('reports days, not urgent', () => {

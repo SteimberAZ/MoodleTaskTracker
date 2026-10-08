@@ -17,16 +17,21 @@ import {
   taskCountQuery,
   taskDetailQuery,
   taskListQuery,
+  usesMissingSince,
   withEmbed,
   type TaskFilter,
 } from './task-query';
 
-/** Row of `moodle_tasks`, mirrored by the Python worker. `due_timestamp` is Unix seconds. */
+/**
+ * Row of `moodle_tasks`, mirrored by the Python worker. `due_timestamp` is Unix seconds, 0 (or null on old rows)
+ * when the activity has no due date; use `hasDueDate` from './task-time' before reading it as a time.
+ */
 export interface MoodleTask {
   id: string;
   title: string;
   course: string | null;
   due_date_str: string | null;
+  /** Unix seconds; 0 (or null on old rows) when the activity has no due date. */
   due_timestamp: number;
   task_url: string | null;
   status: string;
@@ -217,7 +222,7 @@ export async function countTasks(
         (plan) => `moodle_tasks${taskCountQuery(userId, filter, nowSeconds, { missingSince: plan.missingSince })}`,
         FAILURE,
         true,
-        filter === 'pendientes' || filter === 'atrasadas',
+        usesMissingSince(filter),
       )
     ).total;
   try {

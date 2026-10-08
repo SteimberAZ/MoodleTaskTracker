@@ -3,7 +3,7 @@ import type { MoodleTask } from '@/lib/tasks';
 import { taskDetailHref, type HomeParams } from '@/lib/pagination';
 import { safeHttpUrl } from '@/lib/task-detail';
 import { moduleLabel } from '@/lib/task-module';
-import { timeLeft } from '@/lib/task-time';
+import { hasDueDate, timeLeft } from '@/lib/task-time';
 import { formatGuayaquilDue } from '@/lib/time';
 import { ExternalIcon } from './Icons';
 import MuteButton from './MuteButton';
@@ -15,7 +15,10 @@ interface Props {
   listState: HomeParams;
   /** Heading level of the title: 3 under a day heading ("Hoy", ...), 2 otherwise. */
   headingLevel?: 2 | 3;
-  /** Shown in the "Atrasadas" tab: late-submission badge and a direct Moodle link. */
+  /**
+   * Shown in the "Atrasadas" tab: late-submission badge and a direct Moodle link. The direct Moodle link is
+   * also shown for undated tasks, which are often hard to find in Moodle.
+   */
   overdue?: boolean;
 }
 
@@ -23,17 +26,20 @@ interface Props {
 export default function TaskCard({ task, nowSeconds, listState, headingLevel = 2, overdue = false }: Props) {
   const muted = task.is_dismissed === 1;
   const submitted = task.status === 'submitted';
+  const undated = !hasDueDate(task.due_timestamp);
   const left = timeLeft(task.due_timestamp, nowSeconds);
-  const urgent = !muted && !submitted && left.urgent;
+  const urgent = !muted && !submitted && !undated && left.urgent;
   // The late-submission badge is long: it may wrap (badge-wrap) instead of overflowing a 320 px card.
   const badge = submitted
     ? { label: 'Entregada', tone: 'activo' }
-    : overdue
-      ? { label: 'Atrasada · Moodle puede aceptar entregas tardías', tone: 'urgente badge-wrap' }
-      : { label: left.label, tone: urgent ? 'urgente' : 'pausado' };
+    : undated
+      ? { label: 'Sin fecha', tone: 'pausado' }
+      : overdue
+        ? { label: 'Atrasada · Moodle puede aceptar entregas tardías', tone: 'urgente badge-wrap' }
+        : { label: left.label, tone: urgent ? 'urgente' : 'pausado' };
   const Heading = headingLevel === 3 ? 'h3' : 'h2';
   const href = taskDetailHref(task.id, listState);
-  const moodleUrl = overdue ? safeHttpUrl(task.task_url) : null;
+  const moodleUrl = overdue || undated ? safeHttpUrl(task.task_url) : null;
 
   return (
     <li className={`card task-card${urgent ? ' urgent' : ''}${muted ? ' is-muted' : ''}`} data-card="">
@@ -48,12 +54,18 @@ export default function TaskCard({ task, nowSeconds, listState, headingLevel = 2
         </Link>
       </Heading>
       {task.course && <p className="task-course" title={task.course}>{task.course}</p>}
-      <p className="task-due">
-        <span className="task-due-label">Vence</span>{' '}
-        <time dateTime={new Date(task.due_timestamp * 1000).toISOString()}>
-          {formatGuayaquilDue(task.due_timestamp, nowSeconds)}
-        </time>
-      </p>
+      {undated ? (
+        <p className="task-due">
+          <span className="task-due-label">Sin fecha de entrega</span>
+        </p>
+      ) : (
+        <p className="task-due">
+          <span className="task-due-label">Vence</span>{' '}
+          <time dateTime={new Date(task.due_timestamp * 1000).toISOString()}>
+            {formatGuayaquilDue(task.due_timestamp, nowSeconds)}
+          </time>
+        </p>
+      )}
       <div className="card-actions">
         {moodleUrl && (
           <a href={moodleUrl} target="_blank" rel="noopener noreferrer" className="btn primary">

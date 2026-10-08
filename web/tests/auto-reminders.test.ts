@@ -87,6 +87,11 @@ describe('automaticReminderSchedule', () => {
   it('treats the new item without record as not sent', () => {
     expect(byKey(automaticReminderSchedule(DUE, DUE - 30 * H, {}, OPEN)).new.state).toBe('skipped');
   });
+
+  it('undated tasks only schedule the new-task alert', () => {
+    expect(automaticReminderSchedule(0, DUE, {}, OPEN).map((i) => i.key)).toEqual(['new']);
+    expect(byKey(automaticReminderSchedule(0, DUE, { new: DUE }, OPEN)).new.state).toBe('sent');
+  });
 });
 
 describe('describeAutoReminder', () => {

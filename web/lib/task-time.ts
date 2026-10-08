@@ -29,3 +29,11 @@ export function timeLeft(dueTimestamp: number, nowSeconds: number): TimeLeft {
   const d = Math.floor(diff / DAY);
   return { label: `falta${d === 1 ? '' : 'n'} ${plural(d, 'día', 'días')}`, urgent: false };
 }
+
+/**
+ * False for activities without a deadline: the worker stores 0 for "no due date" (null on old rows).
+ * Such a value must never be read as 1970 or as an overdue task.
+ */
+export function hasDueDate(dueTimestamp: number | null | undefined): boolean {
+  return typeof dueTimestamp === 'number' && Number.isFinite(dueTimestamp) && dueTimestamp > 0;
+}

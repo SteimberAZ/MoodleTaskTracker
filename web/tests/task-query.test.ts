@@ -17,6 +17,7 @@ import {
   taskDetailQuery,
   taskFilterParts,
   taskListQuery,
+  usesMissingSince,
   withEmbed,
   type TaskCountRow,
 } from '@/lib/task-query';
@@ -34,8 +35,9 @@ describe('parseTaskFilter', () => {
     expect(parseTaskFilter('')).toBe('pendientes');
   });
 
-  it('accepts the four tabs', () => {
+  it('accepts the five tabs', () => {
     expect(parseTaskFilter('atrasadas')).toBe('atrasadas');
+    expect(parseTaskFilter('sinfecha')).toBe('sinfecha');
     expect(parseTaskFilter('silenciadas')).toBe('silenciadas');
     expect(parseTaskFilter('entregadas')).toBe('entregadas');
     expect(parseTaskFilter(['entregadas', 'x'])).toBe('entregadas');
@@ -133,7 +135,13 @@ describe('filter counters', () => {
   ];
 
   it('counts each tab with the same rules as the query', () => {
-    expect(countTasksByFilter(rows, NOW)).toEqual({ pendientes: 3, atrasadas: 1, silenciadas: 2, entregadas: 2 });
+    expect(countTasksByFilter(rows, NOW)).toEqual({
+      pendientes: 3,
+      atrasadas: 1,
+      sinfecha: 0,
+      silenciadas: 2,
+      entregadas: 2,
+    });
   });
 
   it('matchesTaskFilter mirrors the PostgREST filters', () => {
@@ -189,8 +197,15 @@ describe('atrasadas tab', () => {
   });
 
   it('is the second chip', () => {
-    expect(TASK_FILTERS.map((f) => f.value)).toEqual(['pendientes', 'atrasadas', 'silenciadas', 'entregadas']);
+    expect(TASK_FILTERS.map((f) => f.value)).toEqual([
+      'pendientes',
+      'atrasadas',
+      'sinfecha',
+      'silenciadas',
+      'entregadas',
+    ]);
     expect(TASK_FILTERS[1].label).toBe('Atrasadas');
+    expect(TASK_FILTERS[2].label).toBe('Sin fecha de entrega');
   });
 
   it('counts with the same window as the query', () => {
@@ -206,10 +221,64 @@ describe('atrasadas tab', () => {
   });
 });
 
+describe('sinfecha tab', () => {
+  it('sinfecha lists undated actionable tasks', () => {
+    expect(taskFilterParts('sinfecha', NOW)).toEqual([
+      'status=neq.submitted',
+      'is_dismissed=eq.0',
+      'or=(due_timestamp.is.null,due_timestamp.eq.0)',
+      'missing_since=is.null',
+      'order=course.asc,title.asc',
+    ]);
+    expect(taskFilterParts('sinfecha', NOW, { missingSince: false })).toEqual([
+      'status=neq.submitted',
+      'is_dismissed=eq.0',
+      'or=(due_timestamp.is.null,due_timestamp.eq.0)',
+      'order=course.asc,title.asc',
+    ]);
+    expect(taskListQuery(USER, 'sinfecha', NOW, 1).startsWith(`?user_id=eq.${USER}&`)).toBe(true);
+  });
+
+  it('matches undated tasks only (0 or null), never dated ones', () => {
+    const base = { status: 'pending', is_dismissed: 0 };
+    expect(matchesTaskFilter({ ...base, due_timestamp: 0 }, 'sinfecha', NOW)).toBe(true);
+    expect(matchesTaskFilter({ ...base, due_timestamp: 0 }, 'pendientes', NOW)).toBe(false);
+    expect(matchesTaskFilter({ ...base, due_timestamp: 0 }, 'atrasadas', NOW)).toBe(false);
+    expect(matchesTaskFilter({ ...base, due_timestamp: null }, 'sinfecha', NOW)).toBe(true);
+    expect(matchesTaskFilter({ ...base, due_timestamp: null }, 'pendientes', NOW)).toBe(false);
+    expect(matchesTaskFilter({ ...base, due_timestamp: null }, 'atrasadas', NOW)).toBe(false);
+    expect(matchesTaskFilter({ ...base, due_timestamp: NOW + 5 }, 'sinfecha', NOW)).toBe(false);
+  });
+
+  it('leaves out submitted, muted and ghost undated tasks', () => {
+    expect(matchesTaskFilter({ status: 'submitted', is_dismissed: 0, due_timestamp: 0 }, 'sinfecha', NOW)).toBe(false);
+    expect(matchesTaskFilter({ status: 'pending', is_dismissed: 1, due_timestamp: 0 }, 'sinfecha', NOW)).toBe(false);
+    expect(
+      matchesTaskFilter(
+        { status: 'pending', is_dismissed: 0, due_timestamp: 0, missing_since: '2026-10-01T00:00:00Z' },
+        'sinfecha',
+        NOW,
+      ),
+    ).toBe(false);
+  });
+});
+
+describe('usesMissingSince', () => {
+  it('is true for the tabs that list actionable tasks', () => {
+    expect(usesMissingSince('pendientes')).toBe(true);
+    expect(usesMissingSince('atrasadas')).toBe(true);
+    expect(usesMissingSince('sinfecha')).toBe(true);
+    expect(usesMissingSince('silenciadas')).toBe(false);
+    expect(usesMissingSince('entregadas')).toBe(false);
+    expect(usesMissingSince(null)).toBe(false);
+  });
+});
+
 describe('missing_since (ghost tasks)', () => {
-  it('hides tasks Moodle no longer returns from pendientes and atrasadas only', () => {
+  it('hides tasks Moodle no longer returns from pendientes, atrasadas and sinfecha only', () => {
     expect(taskFilterParts('pendientes', NOW)).toContain('missing_since=is.null');
     expect(taskFilterParts('atrasadas', NOW)).toContain('missing_since=is.null');
+    expect(taskFilterParts('sinfecha', NOW)).toContain('missing_since=is.null');
     expect(taskFilterParts('silenciadas', NOW)).not.toContain('missing_since=is.null');
     expect(taskFilterParts('entregadas', NOW)).not.toContain('missing_since=is.null');
   });
