@@ -22,6 +22,8 @@ from typing import Any, Dict, List, Optional
 import delivery
 
 KINDS = frozenset({"task", "reminder", "class", "status", "test"})
+# moodle_notification_log.push_state: what happened on the Web Push channel of one attempt.
+PUSH_STATES = frozenset({"ok", "partial", "failed", "no_devices", "read_error", "disabled"})
 TITLE_MAX = 200
 BODY_MAX = 1000
 RETENTION_DAYS = 90
@@ -34,6 +36,7 @@ MAX_BUFFERED_ROWS = 1000  # oldest rows are dropped beyond this during a long ou
 _INSERT_KEY = "history-insert"
 _PRUNE_KEY = "history-prune"
 _RECORD_KEY = "history-buffer"
+_DROP_KEY = "history-dropped"
 
 
 def clip(text: Any, limit: int) -> str:
@@ -56,15 +59,21 @@ def build_row(
     ntfy_ok: bool,
     created_at: datetime,
     log_id: Optional[str] = None,
+    push_state: Optional[str] = None,
+    delivered: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """One ``moodle_notification_log`` row. Every row carries exactly the same keys.
 
     PostgREST rejects a bulk insert whose rows have different key sets (PGRST102), so optional
-    columns (``body``, ``url``, ``tag``) are always present and null when empty. ``status`` is
-    ``sent`` when at least one channel accepted the notification, otherwise ``failed``. ``id`` is the
-    one the push link carries (``/notificaciones?n=<id>``); a fresh uuid4 when the caller has none.
+    columns (``body``, ``url``, ``tag``, ``push_state``) are always present and null when empty.
+    ``status`` is ``sent`` when the notification really reached the user: ``delivered`` as decided by
+    ``delivery.deliver_to_user`` (an unconfirmed ntfy copy does not count), or, without it, at least
+    one accepted channel. ``push_state`` is one of PUSH_STATES (unknown values are stored as null).
+    ``id`` is the one the push link carries (``/notificaciones?n=<id>``); a fresh uuid4 when the
+    caller has none.
     """
-    delivered = push_ok > 0 or bool(ntfy_ok)
+    if delivered is None:
+        delivered = push_ok > 0 or bool(ntfy_ok)
     return {
         "id": str(log_id) if log_id else str(uuid.uuid4()),
         "user_id": str(user_id),
@@ -78,6 +87,7 @@ def build_row(
         "push_total": int(push_total),
         "ntfy_attempted": bool(ntfy_attempted),
         "ntfy_ok": bool(ntfy_ok),
+        "push_state": push_state if push_state in PUSH_STATES else None,
         # Explicit, not the column default: now() is the same for a whole bulk insert, which would
         # make the rows of one tick indistinguishable when ordering the history.
         "created_at": created_at.astimezone(timezone.utc).isoformat(),
@@ -89,6 +99,12 @@ def _is_missing_table(exc: Exception) -> bool:
     return "PGRST205" in text or "42P01" in text or "HTTP 404" in text
 
 
+def _is_missing_push_state(exc: Exception) -> bool:
+    """The insert was refused because moodle_notification_log.push_state does not exist yet."""
+    text = str(exc)
+    return "push_state" in text and ("PGRST204" in text or "42703" in text)
+
+
 class NotificationLog:
     """Buffered writer of the notification history. Never raises."""
 
@@ -97,6 +113,8 @@ class NotificationLog:
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._rows: List[Dict[str, Any]] = []
         self._attempts: Dict[str, int] = {}  # row id -> failed flushes so far
+        self._push_state_supported = True  # False once the server reported the column missing
+        self.dropped = 0  # rows given up on since start (out of attempts or buffer room)
 
     @property
     def enabled(self) -> bool:
@@ -120,10 +138,13 @@ class NotificationLog:
         push_total: int = 0,
         ntfy_attempted: bool = False,
         ntfy_ok: bool = False,
+        push_state: Optional[str] = None,
+        delivered: Optional[bool] = None,
     ) -> None:
         """Buffer one user-notification outcome (no network). Ignored without a user id or a database.
 
         ``log_id`` is the row id the notification was already sent with (see delivery.deliver_to_user).
+        ``push_state`` and ``delivered`` come from the delivery (see ``build_row``).
         """
         try:
             if not user_id or not self.enabled:
@@ -137,6 +158,7 @@ class NotificationLog:
                     push_ok=push_ok, push_total=push_total,
                     ntfy_attempted=ntfy_attempted, ntfy_ok=ntfy_ok,
                     created_at=self._clock(), log_id=log_id,
+                    push_state=push_state, delivered=delivered,
                 )
             )
         except Exception as exc:  # noqa: BLE001 - the history must never break a delivery
@@ -155,11 +177,12 @@ class NotificationLog:
         try:
             for start in range(0, len(rows), FLUSH_CHUNK):
                 chunk = rows[start : start + FLUSH_CHUNK]
-                self.supabase.insert_notification_log(chunk)
+                self._insert(chunk)
                 written += len(chunk)
                 for row in chunk:
                     self._attempts.pop(row["id"], None)
             delivery._log_changed(_INSERT_KEY, None)
+            delivery._log_changed(_DROP_KEY, None)
         except Exception as exc:  # noqa: BLE001
             unwritten = rows[written:]
             if _is_missing_table(exc):
@@ -176,13 +199,31 @@ class NotificationLog:
             delivery._log_changed(_INSERT_KEY, message)
         return written
 
+    def _insert(self, chunk: List[Dict[str, Any]]) -> None:
+        """Insert one chunk; without the push_state column (schema not re-run yet) it is left out."""
+        if not self._push_state_supported:
+            chunk = [{k: v for k, v in row.items() if k != "push_state"} for row in chunk]
+            self.supabase.insert_notification_log(chunk)
+            return
+        try:
+            self.supabase.insert_notification_log(chunk)
+        except Exception as exc:  # noqa: BLE001
+            if not _is_missing_push_state(exc):
+                raise
+            self._push_state_supported = False
+            print("[History] moodle_notification_log.push_state does not exist yet (re-run supabase_schema.sql); "
+                  "rows are written without it.")
+            self._insert(chunk)
+
     def _keep_for_retry(self, rows: List[Dict[str, Any]]) -> None:
         """Put failed rows back in front of the buffer, dropping those out of attempts or room."""
         keep = []
+        dropped = 0
         for row in rows:
             tries = self._attempts.get(row["id"], 0) + 1
             if tries >= MAX_FLUSH_ATTEMPTS:
                 self._attempts.pop(row["id"], None)
+                dropped += 1
             else:
                 self._attempts[row["id"]] = tries
                 keep.append(row)
@@ -192,7 +233,12 @@ class NotificationLog:
             for row in merged[:overflow]:
                 self._attempts.pop(row["id"], None)
             merged = merged[overflow:]
+            dropped += overflow
         self._rows = merged
+        if dropped:
+            self.dropped += dropped
+            # Stable text (the running total is in ``dropped``) so a long outage logs it once.
+            delivery._log_changed(_DROP_KEY, "[History] notification rows were dropped after repeated insert failures.")
 
     def prune_if_due(self, storage: Any, now: Optional[datetime] = None) -> bool:
         """Delete rows older than ``RETENTION_DAYS``, at most once per 24 hours. True when it ran OK.

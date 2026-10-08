@@ -9,12 +9,26 @@ def ntfy_base_url() -> str:
     return (os.environ.get("NTFY_SERVER", "").strip() or "https://ntfy.sh").rstrip("/")
 
 
-DEFAULT_NTFY_TOPIC = "utm-tareas-randy-az"
+_missing_topic_logged = False
 
 
 def default_topic() -> str:
-    """Owner/legacy topic from env NTFY_TOPIC (used when a caller passes no per-user topic)."""
-    return os.environ.get("NTFY_TOPIC", DEFAULT_NTFY_TOPIC)
+    """Owner/legacy topic from env NTFY_TOPIC (used when a caller passes no per-user topic).
+
+    There is no built-in fallback topic: topics are bearer secrets, so without NTFY_TOPIC the legacy
+    path sends nothing (logged once).
+    """
+    return os.environ.get("NTFY_TOPIC", "").strip()
+
+
+def _resolve_topic(topic: Optional[str]) -> str:
+    """``topic`` or env NTFY_TOPIC; "" (logged once per process) when neither is set."""
+    global _missing_topic_logged
+    target = topic or default_topic()
+    if not target and not _missing_topic_logged:
+        _missing_topic_logged = True
+        print("[Notifier] NTFY_TOPIC is not set and no per-user topic was given; ntfy is skipped.")
+    return target
 
 
 def mask_topic(topic: str) -> str:
@@ -83,7 +97,7 @@ def send_system_alert(
 
     ``topic`` selects the destination (per user); None falls back to env NTFY_TOPIC.
     """
-    target = topic if topic else default_topic()
+    target = _resolve_topic(topic)
 
     def _do_post():
         topic = target
@@ -131,7 +145,7 @@ def post_ntfy(
     ``topic`` selects the destination (per user); None falls back to env NTFY_TOPIC. ``click`` is an
     absolute URL opened when the notification is tapped (the ``Click`` header); empty sends none.
     """
-    topic = topic if topic else default_topic()
+    topic = _resolve_topic(topic)
     if not topic:
         return False
     headers = {
@@ -204,14 +218,15 @@ def send_whatsapp_alert(
 
     ``topic`` selects the destination (per user); None falls back to env NTFY_TOPIC.
     """
-    target = topic if topic else default_topic()
+    target = _resolve_topic(topic)
 
     def _do_post():
         topic = target
         if not topic:
             return
 
-        msg = milestone_message(title, course, due_date, milestone)
+        msg = milestone_message(
+title, course, due_date, milestone)
         msg_lines = list(msg["lines"])
         if task_url:
             msg_lines.append(f"🔗 {task_url}")
