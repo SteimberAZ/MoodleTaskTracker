@@ -76,7 +76,7 @@ export default function SchedulePicker({
   }
 
   return (
-    <form action={formAction} className="stack picker" aria-busy={pending}>
+    <form action={formAction} className="stack picker">
       <label className={`dropzone${pending ? ' is-busy' : ''}`}>
         <svg className="dropzone-icon" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
           <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" />
@@ -103,6 +103,7 @@ export default function SchedulePicker({
         </button>
       </noscript>
 
+      {/* Always mounted (also while empty) so the "Leyendo tu horario…" change is announced. */}
       <div role="status" aria-live="polite" className="picker-status">
         {pending && (
           <p className="loading-text">

@@ -4,6 +4,8 @@ export const TASKS_PATH = '/';
 export const REMINDERS_PATH = '/recordatorios';
 /** The class schedule lives inside Recordatorios (a segment at the top of both pages), so the tab bar stays at five items. */
 export const SCHEDULE_PATH = '/horario';
+/** The only page without the app navigation (logged out). */
+export const LOGIN_PATH = '/login';
 
 export type NavIconName = 'tasks' | 'reminders' | 'bell' | 'user' | 'shield';
 

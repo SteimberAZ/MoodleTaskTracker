@@ -1,14 +1,18 @@
+import type { Metadata } from 'next';
 import { requireUser } from '@/lib/auth';
 import { SAMPLE_CLASS, guayaquilWeekday, pickSampleClass, titleCase } from '@/lib/class-schedule';
 import { getClassReminderMinutes, getClassSchedule } from '@/lib/class-schedule-store';
 import { dateToGuayaquilInput } from '@/lib/time';
 import ClassReminderSetting from '@/components/ClassReminderSetting';
-import ConfirmButton from '@/components/ConfirmButton';
 import RemindersTabs from '@/components/RemindersTabs';
 import ScheduleWorkspace from '@/components/ScheduleWorkspace';
-import { deleteSchedule } from './actions';
 
 export const dynamic = 'force-dynamic';
+// Reading an uploaded PDF (previewSchedule) is bounded: past this the platform stops the request instead of
+// letting a pathological file hold a function for the default limit.
+export const maxDuration = 20;
+
+export const metadata: Metadata = { title: 'Horario de clases' };
 
 /** "2027-01-31" -> "31/01/2027". */
 const formatDate = (iso: string): string => iso.split('-').reverse().join('/');
@@ -43,18 +47,7 @@ export default async function SchedulePage() {
                 Este horario terminó el {formatDate(schedule.periodEnd)}. Importa el del nuevo período para seguir recibiendo avisos.
               </p>
             )}
-            <ScheduleWorkspace
-              saved={classes}
-              today={guayaquilWeekday(now)}
-              extraActions={
-                <ConfirmButton
-                  action={deleteSchedule}
-                  label="Borrar horario"
-                  message="¿Borrar tu horario de clases? Dejarás de recibir avisos de clases hasta que lo importes de nuevo."
-                  danger
-                />
-              }
-            />
+            <ScheduleWorkspace saved={classes} today={guayaquilWeekday(now)} />
           </div>
         )}
       </section>

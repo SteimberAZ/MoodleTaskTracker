@@ -20,8 +20,9 @@ const manrope = Manrope({
 });
 
 export const metadata: Metadata = {
-  title: 'mineral tareas',
-  description: 'Recordatorios personales con avisos periódicos',
+  // Pages set a short `title`; the template keeps the app name in every tab and history entry.
+  title: { default: 'mineral tareas', template: '%s · mineral tareas' },
+  description: 'Tareas de Moodle UTM con avisos en tu celular',
   robots: { index: false, follow: false },
   applicationName: 'mineral tareas',
   // Declaring `icons` replaces the automatic link of app/icon.svg, so the SVG favicon is listed here too.

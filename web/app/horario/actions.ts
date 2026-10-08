@@ -3,7 +3,13 @@
 import { revalidatePath } from 'next/cache';
 import { requireUser } from '@/lib/auth';
 import { parseClassLead, sanitizeClasses, type SchedulePeriod } from '@/lib/class-schedule';
-import { deleteClassSchedule, getClassSchedule, replaceClassSchedule, setClassReminderMinutes } from '@/lib/class-schedule-store';
+import {
+  deleteClassSchedule,
+  getClassReminderMinutes,
+  getClassSchedule,
+  replaceClassSchedule,
+  setClassReminderMinutes,
+} from '@/lib/class-schedule-store';
 import { MAX_PDF_BYTES, extractPdfPages, hasPdfSignature } from '@/lib/pdf-text';
 import { checkCooldown } from '@/lib/rate-limit';
 import { parseScheduleEntries } from '@/lib/schedule-entries';
@@ -69,7 +75,13 @@ export interface SaveState {
   error?: string;
   /** Number of classes saved. */
   saved?: number;
+  /** Set when this first save also switched class reminders on with the default lead time (minutes). */
+  defaultLead?: number;
 }
+
+/** Lead time switched on by the first schedule import, so a new user gets class reminders without a second step. */
+// Not exported: a 'use server' module may only export async functions.
+const DEFAULT_CLASS_LEAD_MINUTES = 30;
 
 /**
  * Step 2 for an imported PDF: saves the (possibly edited) entries, replacing the previous schedule. The entries
@@ -79,7 +91,9 @@ export async function saveImportedSchedule(input: { token: unknown; entries: unk
   const user = await requireUser();
   const result = await resolveImportSave(await resolveSessionSecret(), user.id, input?.token, input?.entries);
   if (!result.ok) return { error: result.error };
-  return persist(user.id, result.classes, result.period);
+  // Null means the read failed: then it is not known to be the first save, and the lead time is left alone.
+  const before = await getClassSchedule(user.id);
+  return persist(user.id, result.classes, result.period, before !== null && before.classes.length === 0);
 }
 
 /**
@@ -95,18 +109,42 @@ export async function saveEditedSchedule(input: { entries: unknown }): Promise<S
   return persist(user.id, parsed.classes, { label: current.periodLabel, end: current.periodEnd });
 }
 
-async function persist(userId: string, classes: ScheduleClass[], period: SchedulePeriod): Promise<SaveState> {
+async function persist(userId: string, classes: ScheduleClass[], period: SchedulePeriod, firstSave = false): Promise<SaveState> {
   const ok = await replaceClassSchedule(userId, classes, period);
   if (!ok) return { error: 'No se pudo guardar el horario. Inténtalo de nuevo.' };
+  const defaultLead = firstSave ? await applyDefaultLead(userId) : undefined;
   revalidatePath('/horario');
-  return { saved: classes.length };
+  return defaultLead ? { saved: classes.length, defaultLead } : { saved: classes.length };
 }
 
-/** Removes the whole schedule of the session user (the confirmation happens in the browser). */
-export async function deleteSchedule(): Promise<void> {
+/**
+ * First schedule save: when class reminders are off (`class_reminder_minutes` null), switch them on with
+ * DEFAULT_CLASS_LEAD_MINUTES. Returns the minutes set, or undefined when nothing changed or the update failed
+ * (the schedule itself is saved either way).
+ */
+async function applyDefaultLead(userId: string): Promise<number | undefined> {
+  try {
+    const lead = await getClassReminderMinutes(userId);
+    if (!lead.available || lead.minutes !== null) return undefined;
+    return (await setClassReminderMinutes(userId, DEFAULT_CLASS_LEAD_MINUTES)) ? DEFAULT_CLASS_LEAD_MINUTES : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export interface DeleteState {
+  error?: string;
+}
+
+/**
+ * Removes the whole schedule of the session user (the confirmation happens in the browser). A failure comes back
+ * as `{ error }` so the page can show it in place instead of the error screen.
+ */
+export async function deleteSchedule(): Promise<DeleteState> {
   const user = await requireUser();
-  if (!(await deleteClassSchedule(user.id))) throw new Error('No se pudo borrar el horario.');
+  if (!(await deleteClassSchedule(user.id))) return { error: 'No se pudo borrar el horario. Inténtalo de nuevo.' };
   revalidatePath('/horario');
+  return {};
 }
 
 export interface LeadState {

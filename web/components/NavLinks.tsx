@@ -3,7 +3,7 @@
 import type { ReactElement } from 'react';
 import Link, { useLinkStatus } from 'next/link';
 import { usePathname } from 'next/navigation';
-import { buildNavItems, type NavIconName } from '@/lib/nav';
+import { LOGIN_PATH, buildNavItems, type NavIconName } from '@/lib/nav';
 import { BellIcon, ClockIcon, ShieldIcon, TasksIcon, UserIcon } from './Icons';
 
 const ICONS: Record<NavIconName, () => ReactElement> = {
@@ -38,13 +38,15 @@ export default function NavLinks({ isAdmin, variant }: { isAdmin: boolean; varia
       {buildNavItems(isAdmin, pathname).map(({ href, label, shortLabel, icon, current }) => {
         const Icon = ICONS[icon];
         return (
-          <Link key={href} href={href} className="nav-item" aria-current={current ? 'page' : undefined} aria-label={shortLabel ? label : undefined}>
+          <Link key={href} href={href} className="nav-item" aria-current={current ? 'page' : undefined}>
             <Icon />
             {shortLabel ? (
               <>
-                {/* Short label on phones so five tabs fit in 320px. */}
-                <span className="nav-label-short" aria-hidden="true">{shortLabel}</span>
-                <span className="nav-label-long" aria-hidden="true">{label}</span>
+                {/* Short label on phones so five tabs fit in 320px. Only one of the two is displayed at a time
+                    (CSS display: none hides the other from assistive tech too), so the accessible name is
+                    always the visible text (WCAG 2.5.3 label in name; voice control users say what they see). */}
+                <span className="nav-label-short">{shortLabel}</span>
+                <span className="nav-label-long">{label}</span>
               </>
             ) : (
               <span>{label}</span>
@@ -54,5 +56,22 @@ export default function NavLinks({ isAdmin, variant }: { isAdmin: boolean; varia
         );
       })}
     </nav>
+  );
+}
+
+/**
+ * Stand-in for the user navigation while the session query streams in (SiteHeader's Suspense fallback). It keeps
+ * the `.site-nav` element on the page so the `body:has(.site-nav)` padding rules do not change when the real nav
+ * arrives, reserves the inline nav and logout height in the header, and is empty for assistive tech. On the
+ * login page there is never a nav, so it renders nothing there.
+ */
+export function NavPlaceholder({ variant }: { variant: 'inline' | 'bar' }) {
+  const pathname = usePathname() ?? '';
+  if (pathname === LOGIN_PATH || pathname.startsWith(`${LOGIN_PATH}/`)) return null;
+  return (
+    <>
+      <div className={`site-nav site-nav--${variant} nav-placeholder`} aria-hidden="true" />
+      {variant === 'inline' && <span className="logout-placeholder" aria-hidden="true" />}
+    </>
   );
 }
