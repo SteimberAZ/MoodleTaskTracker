@@ -286,6 +286,21 @@ export async function waitForTestDelivery(
 }
 
 /**
+ * Path plus query of an `open-url` message from the service worker, only when it is a same-origin URL
+ * (relative or absolute); anything else is refused (null) so the page never routes somewhere foreign.
+ */
+export function openUrlTarget(raw: unknown, origin: string): string | null {
+  if (typeof raw !== 'string' || !raw || raw.length > 2000) return null;
+  try {
+    const url = new URL(raw, origin);
+    if (url.origin !== origin || (url.protocol !== 'https:' && url.protocol !== 'http:')) return null;
+    return `${url.pathname}${url.search}`;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Logout cleanup, run before the logout form posts: while the session cookie is still valid, removes this
  * device on the server, then unsubscribes it locally, so nobody's pushes keep arriving on a shared device.
  * Bounded by `timeoutMs` and never throws: logging out must never be blocked by it.

@@ -2,6 +2,7 @@ import { createECDH } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   enablePush,
+  openUrlTarget,
   pushLogoutCleanup,
   readDeviceState,
   requestTestPush,
@@ -422,5 +423,22 @@ describe('server status helpers', () => {
     expect(testDelivered({ last_success_at: at(12) }, Date.parse(at(11)))).toBe(true);
     expect(testDelivered({ last_success_at: at(10) }, Date.parse(at(11)))).toBe(false);
     expect(testDelivered(null, Date.parse(at(11)))).toBe(false);
+  });
+});
+
+describe('openUrlTarget (open-url messages from the service worker)', () => {
+  const ORIGIN = 'https://tareas.example.com';
+
+  it('keeps path and query of same-origin urls', () => {
+    expect(openUrlTarget(`${ORIGIN}/notificaciones?n=abc`, ORIGIN)).toBe('/notificaciones?n=abc');
+    expect(openUrlTarget('/tareas/1#x', ORIGIN)).toBe('/tareas/1');
+  });
+
+  it('refuses foreign origins, scheme tricks and non-strings', () => {
+    expect(openUrlTarget('https://evil.example/notificaciones', ORIGIN)).toBeNull();
+    expect(openUrlTarget('//evil.example/x', ORIGIN)).toBeNull();
+    expect(openUrlTarget('javascript:alert(1)', ORIGIN)).toBeNull();
+    expect(openUrlTarget('', ORIGIN)).toBeNull();
+    expect(openUrlTarget(42, ORIGIN)).toBeNull();
   });
 });
