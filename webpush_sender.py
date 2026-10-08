@@ -19,10 +19,11 @@ and the worker keeps delivering through ntfy. Nothing here raises into the worke
 Subscription health, kept in moodle_push_subscriptions:
   * accepted        -> last_success_at = now, failure_count = 0
   * HTTP 404 / 410  -> the browser unsubscribed: the row is deleted
-  * other HTTP errors and malformed subscriptions -> failure_count + 1 and last_failure_at;
+  * other HTTP 4xx errors and malformed subscriptions -> failure_count + 1 and last_failure_at;
     the 10th consecutive failure deletes the row
-  * network errors on our side, VAPID/config errors and unexpected exceptions say nothing about the
-    subscription: they are logged but never counted against it (an outage must not wipe subscriptions).
+  * network errors on our side, VAPID/config errors (HTTP 401/403), rate limiting (HTTP 429), push
+    service outages (HTTP 5xx) and unexpected exceptions say nothing about the subscription: they are
+    logged but never counted against it (an outage must not wipe subscriptions).
 """
 import base64
 import json
@@ -52,6 +53,9 @@ ELLIPSIS = "…"
 
 MAX_FAILURES = 10  # consecutive failed sends before a subscription is dropped
 GONE_STATUSES = (404, 410)
+# Rejected VAPID JWT (401/403) and rate limiting (429) come from our config or the push service, not
+# from the subscription; 5xx is a push-service outage. None of them count against the row.
+NOT_COUNTED_STATUSES = (401, 403, 429)
 # pywebpush applies NO timeout unless one is passed: a stalled push service would hang the worker.
 SEND_TIMEOUT_SECONDS = 10
 
@@ -287,6 +291,10 @@ class WebPushSender:
         if status is None and not isinstance(exc, (library_error, ValueError)):
             # Network trouble on our side, a VAPID/config error or a bug: not the subscription's fault.
             print(f"[WebPush] {label}: {type(exc).__name__}; not counted against the subscription.")
+            return PushResult.FAILED
+        if status is not None and (status in NOT_COUNTED_STATUSES or status >= 500):
+            print(f"[WebPush] {label}: HTTP {status}{_response_hint(exc)}; push service or VAPID config "
+                  "problem, not counted against the subscription.")
             return PushResult.FAILED
         if status is not None:
             reason = f"HTTP {status}{_response_hint(exc)}"

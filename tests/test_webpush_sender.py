@@ -237,10 +237,10 @@ def test_404_and_410_mean_gone_and_delete_the_row(push, status):
     assert db.updates == []
 
 
-@pytest.mark.parametrize("status", [400, 401, 403, 413, 429, 500, 503])
-def test_other_http_errors_fail_and_increment_the_counter(push, status):
+@pytest.mark.parametrize("status", [400, 413, 422])
+def test_subscription_http_errors_fail_and_increment_the_counter(push, status):
     db = FakeDb()
-    push.outcome = _http_error(status, text='{"reason":"BadJwtToken"}')
+    push.outcome = _http_error(status, text='{"reason":"BadRequest"}')
     sub = _sub(failure_count=3)
     assert _sender(db).send_push(sub, PAYLOAD) is PushResult.FAILED
     (sub_id, fields), = db.updates
@@ -250,16 +250,29 @@ def test_other_http_errors_fail_and_increment_the_counter(push, status):
     assert sub["failure_count"] == 4  # the caller's row reflects the new count
 
 
+@pytest.mark.parametrize("status", [401, 403, 429, 500, 502, 503])
+def test_vapid_rate_limit_and_outage_statuses_never_count_against_the_subscription(push, status, capsys):
+    db = FakeDb()
+    push.outcome = _http_error(status, text='{"reason":"BadJwtToken"}')
+    sub = _sub(failure_count=9)  # one more counted failure would delete it
+    sender = _sender(db)
+    for _ in range(ws.MAX_FAILURES + 2):
+        assert sender.send_push(sub, PAYLOAD) is PushResult.FAILED
+    assert db.updates == [] and db.deletes == []
+    assert sub["failure_count"] == 9
+    assert "not counted" in capsys.readouterr().out
+
+
 def test_failure_counter_starts_from_zero_when_the_row_has_none(push):
     db = FakeDb()
-    push.outcome = _http_error(500)
+    push.outcome = _http_error(400)
     _sender(db).send_push({"id": "s1", "endpoint": ENDPOINT, "p256dh": P256DH, "auth": AUTH}, PAYLOAD)
     assert db.updates[0][1]["failure_count"] == 1
 
 
 def test_the_tenth_consecutive_failure_deletes_the_subscription(push):
     db = FakeDb()
-    push.outcome = _http_error(500)
+    push.outcome = _http_error(400)
     sender = _sender(db)
     assert sender.send_push(_sub(failure_count=8), PAYLOAD) is PushResult.FAILED
     assert db.deletes == [] and db.updates[0][1]["failure_count"] == 9
@@ -271,7 +284,7 @@ def test_the_tenth_consecutive_failure_deletes_the_subscription(push):
 
 def test_repeated_failures_on_one_row_reach_the_limit(push):
     db = FakeDb()
-    push.outcome = _http_error(502)
+    push.outcome = _http_error(400)
     sender, sub = _sender(db), _sub()
     for _ in range(ws.MAX_FAILURES):
         sender.send_push(sub, PAYLOAD)
@@ -282,7 +295,7 @@ def test_repeated_failures_on_one_row_reach_the_limit(push):
 def test_a_success_in_between_resets_the_counter(push):
     db = FakeDb()
     sender = _sender(db)
-    push.outcome = _http_error(500)
+    push.outcome = _http_error(400)
     sender.send_push(_sub(failure_count=5), PAYLOAD)
     push.outcome = Resp(201)
     sender.send_push(_sub(failure_count=6), PAYLOAD)
@@ -388,7 +401,7 @@ def test_end_to_end_through_the_real_supabase_client_and_the_real_library(monkey
                 "failure_count": failures}
 
     rows = [row("s-ok", "ok", 3), row("s-gone", "gone", 0), row("s-last", "last", 9)]
-    verdict = {"https://push.example/ok": 201, "https://push.example/gone": 410, "https://push.example/last": 500}
+    verdict = {"https://push.example/ok": 201, "https://push.example/gone": 410, "https://push.example/last": 400}
     log = []
 
     monkeypatch.setattr(requests, "get", lambda url, params=None, headers=None, timeout=None:
