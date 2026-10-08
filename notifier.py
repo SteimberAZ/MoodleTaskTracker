@@ -4,6 +4,11 @@ import sys
 from typing import Dict, List, Optional
 
 
+def ntfy_base_url() -> str:
+    """ntfy server base URL; NTFY_SERVER overrides the public ntfy.sh (e.g. a self-hosted/tunneled server)."""
+    return (os.environ.get("NTFY_SERVER", "").strip() or "https://ntfy.sh").rstrip("/")
+
+
 def send_windows_notification(title: str, message: str, app_name: str = "Moodle Tracker"):
     """Envía una notificación de escritorio nativa en Windows mediante Toast Notification."""
     # 1. PowerShell Windows Runtime Toast (Nativo de Windows 10/11, máxima estabilidad)
@@ -77,13 +82,13 @@ def send_system_alert(
         try:
             import requests
             res = requests.post(
-                f"https://ntfy.sh/{topic}",
+                f"{ntfy_base_url()}/{topic}",
                 data=message.encode("utf-8"),
                 headers=headers,
                 timeout=10,
             )
             if res.status_code == 200:
-                print(f"[Notifier] Alerta de sistema enviada a ntfy.sh/{topic}")
+                print(f"[Notifier] Alerta de sistema enviada a {ntfy_base_url()}/{topic}")
             else:
                 print(f"[Notifier] Error ntfy ({res.status_code}): {res.text}")
         except Exception as e:
@@ -101,7 +106,7 @@ def post_ntfy(title: str, message: str, priority: str = "default", tags: str = "
     try:
         import requests
         res = requests.post(
-            f"https://ntfy.sh/{topic}",
+            f"{ntfy_base_url()}/{topic}",
             data=message.encode("utf-8"),
             headers={
                 # HTTP headers are latin-1; encode the UTF-8 bytes so non-ASCII titles do not raise.
@@ -113,7 +118,7 @@ def post_ntfy(title: str, message: str, priority: str = "default", tags: str = "
             timeout=10,
         )
         if res.status_code == 200:
-            print(f"[Notifier] Push enviado a ntfy.sh/{topic}")
+            print(f"[Notifier] Push enviado a {ntfy_base_url()}/{topic}")
             return True
         print(f"[Notifier] Error ntfy ({res.status_code}): {res.text}")
     except Exception as e:
@@ -176,13 +181,13 @@ def send_whatsapp_alert(
         try:
             import requests
             res = requests.post(
-                f"https://ntfy.sh/{topic}",
+                f"{ntfy_base_url()}/{topic}",
                 data=body.encode("utf-8"),
                 headers=headers,
                 timeout=10,
             )
             if res.status_code == 200:
-                print(f"[Notifier] Notificación Push enviada ({milestone}) a ntfy.sh/{topic}")
+                print(f"[Notifier] Notificación Push enviada ({milestone}) a {ntfy_base_url()}/{topic}")
             else:
                 print(f"[Notifier] Error ntfy ({res.status_code}): {res.text}")
         except Exception as e:

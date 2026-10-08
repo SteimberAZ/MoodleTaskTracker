@@ -1,6 +1,7 @@
 import os
 import sys
 import time
+from urllib.parse import urlparse
 from datetime import datetime
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -8,7 +9,7 @@ if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
 from moodle_client import MoodleClient
-from notifier import TaskNotificationManager, post_ntfy, send_system_alert
+from notifier import TaskNotificationManager, ntfy_base_url, post_ntfy, send_system_alert
 from storage import Storage
 from class_schedule import check_and_notify_upcoming_classes
 from custom_reminders import process_due_reminders
@@ -58,7 +59,9 @@ def run_worker():
     print("=" * 60)
     print("  🚀 MOODLE TRACKER - HEADLESS WORKER (TAREAS + CLASES UTM)")
     print(f"  🌐 URL: {base_url}")
-    print(f"  ☁️ Supabase Cloud: {'Conectado' if storage.supabase.is_configured else 'Desactivado'}")
+    db_host = urlparse(storage.supabase.url).netloc if storage.supabase.is_configured else ""
+    print(f"  🗄️ Base de datos: {db_host or 'Desactivada (solo SQLite local)'}")
+    print(f"  🔔 ntfy: {ntfy_base_url()}")
     print(f"  💓 Keep-Alive: cada {keep_alive_seconds // 60} minutos")
     print(f"  📋 Revisión de tareas: cada {tasks_check_mins} minutos")
     print("  🎓 Alertas de clases: 30 minutos antes de cada materia")
