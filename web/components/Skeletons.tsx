@@ -268,17 +268,21 @@ function GradeCardSkeleton() {
   );
 }
 
-/** `/estadisticas`: header, the four summary tiles and the course cards. */
+/**
+ * `/estadisticas`: header (its two-line description included), the four summary tiles and ONE course card.
+ * Showing more cards than the page may have made the content jump up when a short page (few or no grades yet)
+ * replaced a tall skeleton; a page with more courses only grows below the fold.
+ */
 export function StatsSkeleton() {
   return (
     <SkeletonShell>
-      <PageHeadSkeleton lines={1} />
+      <PageHeadSkeleton lines={2} />
       <div className="grade-summary">
         <Repeat times={4}>{(i) => <Sk key={i} className="sk-stat" />}</Repeat>
       </div>
       <section className="section">
         <ul className="list grade-list">
-          <Repeat times={3}>{(i) => <GradeCardSkeleton key={i} />}</Repeat>
+          <GradeCardSkeleton />
         </ul>
       </section>
       <TimezoneNoteSkeleton />
