@@ -731,7 +731,7 @@ def test_fetch_push_subscriptions_query_and_filtering(monkeypatch):
     rows = _client().fetch_push_subscriptions("uid-1")
     assert [r["id"] for r in rows] == ["s1"]
     assert seen == {"url": "https://sb.example/rest/v1/moodle_push_subscriptions",
-                    "params": {"user_id": "eq.uid-1", "select": "id,endpoint,p256dh,auth,failure_count"}}
+                    "params": {"user_id": "eq.uid-1", "select": "id,endpoint,p256dh,auth,failure_count,created_at,last_success_at,last_failure_at", "order": "updated_at.desc", "limit": "10"}}
 
 
 def test_fetch_push_test_requests_query(monkeypatch):
@@ -802,7 +802,7 @@ def test_fetch_admin_users_query(monkeypatch):
     monkeypatch.setattr(supabase_client.requests, "get", fake_get)
     assert [u["id"] for u in _client().fetch_admin_users()] == ["adm1"]
     assert seen == {"url": "https://sb.example/rest/v1/moodle_users",
-                    "params": {"is_admin": "eq.true", "active": "eq.true", "select": "id,ntfy_topic,ntfy_enabled"}}
+                    "params": {"is_admin": "eq.true", "active": "eq.true", "select": "id,ntfy_topic,ntfy_confirmed_at,ntfy_enabled"}}
     monkeypatch.setattr(supabase_client.requests, "get", lambda *a, **k: _Resp(500))
     with pytest.raises(RuntimeError):
         _client().fetch_admin_users()
@@ -842,9 +842,10 @@ def test_the_reminders_join_drops_ntfy_enabled_when_the_column_is_missing(monkey
     monkeypatch.setattr(supabase_client.requests, "get", fake_get)
     client = _client()
     assert client.fetch_due_reminders("2026-01-01T00:00:00+00:00") == [{"id": "r1"}]
-    assert selects == ["*,moodle_users(ntfy_topic,active,ntfy_enabled)", "*,moodle_users(ntfy_topic,active)"]
+    assert selects == ["*,moodle_users!inner(ntfy_topic,active,ntfy_confirmed_at,ntfy_enabled),task:moodle_tasks(status,is_dismissed)",
+                       "*,moodle_users!inner(ntfy_topic,active,ntfy_confirmed_at),task:moodle_tasks(status,is_dismissed)"]
     client.fetch_due_reminders("2026-01-01T00:00:00+00:00")
-    assert selects[2] == "*,moodle_users(ntfy_topic,active)"
+    assert selects[2] == "*,moodle_users!inner(ntfy_topic,active,ntfy_confirmed_at),task:moodle_tasks(status,is_dismissed)"
 
 
 def test_an_unrelated_bad_request_is_not_mistaken_for_the_missing_column(monkeypatch):

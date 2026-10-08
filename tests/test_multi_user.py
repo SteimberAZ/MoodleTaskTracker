@@ -442,7 +442,7 @@ def test_fetch_active_users_query_and_filtering(monkeypatch):
     assert seen["params"] == {
         "active": "eq.true",
         "token": "not.is.null",
-        "select": "id,moodle_url,site_userid,username,fullname,token,ntfy_topic,is_admin,last_error,last_error_at,last_login_at,ntfy_enabled",
+        "select": "id,moodle_url,site_userid,username,fullname,token,ntfy_topic,is_admin,last_error,last_error_at,last_login_at,ntfy_confirmed_at,last_synced_at,ntfy_enabled",
     }
 
 
@@ -478,7 +478,7 @@ def test_due_reminders_query_joins_owner_topic(monkeypatch):
                         lambda url, params=None, headers=None, timeout=None: seen.update(params=params) or _Resp(200, []))
     SupabaseClient(url="https://sb.example", key="k").fetch_due_reminders("2026-01-01T00:00:00+00:00")
     p = seen["params"]
-    assert p["select"] == "*,moodle_users(ntfy_topic,active,ntfy_enabled)"
+    assert p["select"] == "*,moodle_users!inner(ntfy_topic,active,ntfy_confirmed_at,ntfy_enabled),task:moodle_tasks(status,is_dismissed)"
     assert p["user_id"] == "not.is.null" and p["active"] == "eq.true"
     assert p["next_fire_at"] == "lte.2026-01-01T00:00:00+00:00"
 
