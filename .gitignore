@@ -5,10 +5,15 @@ __pycache__/
 build/
 dist/
 *.spec
+# Desktop builds (the legacy MoodleTracker.exe is already tracked; do not commit new binaries)
+*.exe
 
 # Base de datos local y cookies privadas
 moodle_tasks.db
 *.db
+*.db-journal
+# Backups made by the deploy runbook (moodle_tasks.db.bak, *.bak copies of the app)
+*.bak
 .env
 .env.*
 !.env.example
@@ -24,6 +29,8 @@ whatsapp_bot/auth_session/
 venv/
 env/
 .env/
+
+.pytest_cache/
 
 .vscode/
 .idea/
