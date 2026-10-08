@@ -14,12 +14,13 @@ export function jsonResponse(data: Record<string, unknown>, status = 200): NextR
 }
 
 export type PushRequest = { ok: true; user: SessionUser; body: unknown } | { ok: false; response: NextResponse };
+export type PushSession = { ok: true; user: SessionUser } | { ok: false; response: NextResponse };
 
 /**
- * Origin check, session check (JSON 401, no redirect) and a size-limited JSON body, in that order.
- * The middleware does not cover `/api/`, so authentication is enforced here for every handler.
+ * Origin check, then session check (JSON 401, no redirect; 503 when the session cannot be verified).
+ * Used as is by the GET handlers (`/api/push/status`), which have no body.
  */
-export async function authorizePushRequest(request: Request): Promise<PushRequest> {
+export async function authorizePushSession(request: Request): Promise<PushSession> {
   const headers = request.headers;
   if (
     !isSameOriginRequest({
@@ -39,6 +40,18 @@ export async function authorizePushRequest(request: Request): Promise<PushReques
     return { ok: false, response: jsonResponse({ error: 'Servicio no disponible.' }, 503) };
   }
   if (!user) return { ok: false, response: jsonResponse({ error: 'No autorizado.' }, 401) };
+  return { ok: true, user };
+}
+
+/**
+ * Origin check, session check (JSON 401, no redirect) and a size-limited JSON body, in that order.
+ * The middleware does not cover `/api/`, so authentication is enforced here for every handler.
+ */
+export async function authorizePushRequest(request: Request): Promise<PushRequest> {
+  const session = await authorizePushSession(request);
+  if (!session.ok) return session;
+  const { user } = session;
+  const headers = request.headers;
 
   if (!(headers.get('content-type') ?? '').toLowerCase().startsWith('application/json')) {
     return { ok: false, response: jsonResponse({ error: 'Se esperaba JSON.' }, 415) };
