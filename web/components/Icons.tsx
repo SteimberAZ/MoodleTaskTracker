@@ -60,6 +60,14 @@ export const LogOutIcon = () => (
   </Icon>
 );
 
+export const CalendarIcon = () => (
+  <Icon>
+    <rect x="3" y="5" width="18" height="16" rx="2" />
+    <path d="M3 10h18" />
+    <path d="M8 3v4M16 3v4" />
+  </Icon>
+);
+
 export const BellIcon = () => (
   <Icon>
     <path d="M6 8a6 6 0 1 1 12 0c0 7 3 8 3 8H3s3-1 3-8" />
