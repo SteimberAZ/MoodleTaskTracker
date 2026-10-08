@@ -21,6 +21,14 @@
 --       for moodle_app. anon/authenticated have no grants and no policies, so
 --       the public anon key cannot read moodle_credentials (it holds the
 --       Moodle web-service token). service_role bypasses RLS by design.
+--
+-- CHANGELOG (each section is appended and guarded, so the whole file stays re-runnable)
+--   1-5   base tables          6   multi-user mode        7   task details
+--   8     Web Push             9   class schedule         10  notification history
+--   11    hardening: push/ntfy visibility columns, no-op task update suppression,
+--         CHECK constraints, index cleanup, login throttle RPCs, atomic schedule
+--         replace. Apply note: run the WHOLE file in the SQL editor (or psql) as
+--         postgres, before deploying the worker/web versions that use it; safe to re-run.
 -- ==========================================================
 
 -- 0. Dedicated role
@@ -73,7 +81,7 @@ CREATE TABLE IF NOT EXISTS public.moodle_task_milestones (
 );
 
 CREATE INDEX IF NOT EXISTS idx_moodle_tasks_due    ON public.moodle_tasks (due_timestamp ASC);
-CREATE INDEX IF NOT EXISTS idx_moodle_tasks_status ON public.moodle_tasks (status);
+-- idx_moodle_tasks_status was dropped in section 11 (every task query filters by user_id first).
 
 -- 4. Custom reminders (created from the web app, delivered by the VPS worker via ntfy)
 CREATE TABLE IF NOT EXISTS public.moodle_custom_reminders (
@@ -332,7 +340,8 @@ CREATE INDEX IF NOT EXISTS idx_moodle_push_subscriptions_test
     ON public.moodle_push_subscriptions (test_requested_at)
     WHERE test_requested_at IS NOT NULL;
 
-ALTER TABLE public.moodle_users ADD COLUMN IF NOT EXISTS ntfy_enabled boolean NOT NULL DEFAULT true;
+-- Fresh installs start with the ntfy copy off; section 11 also moves the default of existing installs.
+ALTER TABLE public.moodle_users ADD COLUMN IF NOT EXISTS ntfy_enabled boolean NOT NULL DEFAULT false;
 
 -- Privileges + RLS (same model as above): moodle_app only.
 ALTER TABLE public.moodle_push_subscriptions ENABLE ROW LEVEL SECURITY;
@@ -447,6 +456,391 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON public.moodle_notification_log TO moodle
 DROP POLICY IF EXISTS moodle_app_all ON public.moodle_notification_log;
 CREATE POLICY moodle_app_all ON public.moodle_notification_log
     FOR ALL TO moodle_app USING (true) WITH CHECK (true);
+
+-- ==========================================================
+-- 11. Hardening: push/ntfy visibility, write amplification, constraints, login throttle.
+--     Every statement is guarded (IF NOT EXISTS / CREATE OR REPLACE / DO blocks that read the
+--     catalogs) and touches only public.moodle_* objects plus the built-in
+--     suppress_redundant_updates_trigger(). Until the worker and the web start using the new
+--     columns and functions, behavior is unchanged (except the ntfy_enabled default for NEW users).
+--
+--     moodle_settings keys (no DDL: key/value rows; moodle_app already has SELECT/INSERT/UPDATE/
+--     DELETE on the table, granted in the privileges block above, and the web reads it):
+--       'worker_status'    JSON string, the worker heartbeat written every tick:
+--                          {at, version, webpush_enabled, push_status, last_push_ok_at,
+--                           push_counts, users_ok, users_err, last_round_mode, tick_seconds,
+--                           sync_seconds, delivery_lag_seconds}
+--       'vapid_public_key' base64url VAPID public key the worker loaded, written at worker startup
+--                          (the web compares it with NEXT_PUBLIC_VAPID_PUBLIC_KEY).
+-- ==========================================================
+
+-- 11.1 moodle_users
+-- ntfy_confirmed_at: set when the user proves they receive ntfy (confirmed on /cuenta). The worker
+-- counts an ntfy copy as "delivered" only when it is set, so ntfy can no longer mask push failures.
+ALTER TABLE public.moodle_users ADD COLUMN IF NOT EXISTS ntfy_confirmed_at timestamptz;
+-- last_synced_at: written by the worker after a successful per-user Moodle sync.
+ALTER TABLE public.moodle_users ADD COLUMN IF NOT EXISTS last_synced_at timestamptz;
+-- New users start with the ntfy copy off (Web Push is the primary channel). Existing rows keep
+-- their current value.
+ALTER TABLE public.moodle_users ALTER COLUMN ntfy_enabled SET DEFAULT false;
+-- Owner decision: admins who already use ntfy are treated as confirmed. Nobody else is backfilled.
+-- Only rows still NULL are touched, so re-running it never moves an existing confirmation.
+UPDATE public.moodle_users
+SET ntfy_confirmed_at = now()
+WHERE is_admin AND ntfy_enabled AND ntfy_confirmed_at IS NULL;
+
+-- 11.2 moodle_push_subscriptions: why the last delivery to this device failed (the worker caps it
+-- at 120 characters; the CHECK leaves headroom).
+ALTER TABLE public.moodle_push_subscriptions ADD COLUMN IF NOT EXISTS last_failure_reason text;
+
+-- 11.3 moodle_notification_log: the Web Push outcome of a history row, so a delivery that only
+-- reached ntfy no longer looks like a healthy push.
+--   ok         every device accepted it        partial    some devices accepted it
+--   failed     no device accepted it           no_devices the user has no subscription
+--   read_error the devices could not be read   disabled   the worker's Web Push sender is off
+--   NULL       rows written before this column existed (or by an older worker)
+-- The status CHECK ('sent', 'failed') is unchanged.
+ALTER TABLE public.moodle_notification_log ADD COLUMN IF NOT EXISTS push_state text;
+
+-- 11.4 moodle_tasks
+-- missing_since: set by the worker when a task stops coming back from Moodle (deleted or hidden
+-- activity); the worker sends it as null again when the task reappears.
+ALTER TABLE public.moodle_tasks ADD COLUMN IF NOT EXISTS missing_since timestamptz;
+
+-- The worker stops sending first_seen: new rows get the insert time (UNIX seconds, like the other
+-- BIGINT stamps of this table) and existing rows keep theirs.
+ALTER TABLE public.moodle_tasks ALTER COLUMN first_seen SET DEFAULT (extract(epoch FROM now()))::bigint;
+
+-- The worker upserts every fetched task each round and stamps details_updated_at with the fetch
+-- time. Keep the previous stamp when the details themselves did not change, so an unchanged row is
+-- byte-identical and moodle_tasks_z_skip_noop drops the update (no new tuple, no WAL, no bloat).
+CREATE OR REPLACE FUNCTION public.moodle_tasks_keep_details_stamp()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path = public
+AS $$
+BEGIN
+    IF OLD.details_updated_at IS NOT NULL
+       AND NEW.description IS NOT DISTINCT FROM OLD.description
+       AND NEW.teachers IS NOT DISTINCT FROM OLD.teachers THEN
+        NEW.details_updated_at := OLD.details_updated_at;
+    END IF;
+    RETURN NEW;
+END
+$$;
+
+REVOKE EXECUTE ON FUNCTION public.moodle_tasks_keep_details_stamp() FROM PUBLIC, anon, authenticated;
+
+-- Row triggers of the same event fire in name order: "a_" runs before "z_", so the stamp is
+-- restored before the redundancy check compares the old and new rows.
+DROP TRIGGER IF EXISTS moodle_tasks_a_keep_details_stamp ON public.moodle_tasks;
+CREATE TRIGGER moodle_tasks_a_keep_details_stamp
+    BEFORE UPDATE ON public.moodle_tasks
+    FOR EACH ROW EXECUTE FUNCTION public.moodle_tasks_keep_details_stamp();
+
+-- Scoped with "OF title" so it only fires for the worker's upserts (their SET list always holds
+-- title, NOT NULL). The web's mute PATCH sets only is_dismissed with return=representation: a
+-- suppressed update returns no row, so re-muting an already muted task would look like "not found".
+DROP TRIGGER IF EXISTS moodle_tasks_z_skip_noop ON public.moodle_tasks;
+CREATE TRIGGER moodle_tasks_z_skip_noop
+    BEFORE UPDATE OF title ON public.moodle_tasks
+    FOR EACH ROW EXECUTE FUNCTION suppress_redundant_updates_trigger();
+
+-- 11.5 Indexes
+-- Every task query filters by user_id first (idx_moodle_tasks_user_due), so the low-cardinality
+-- status index is pure write cost. To confirm it is unused before applying, run:
+--   SELECT indexrelname, idx_scan FROM pg_stat_user_indexes
+--   WHERE relname = 'moodle_tasks' ORDER BY indexrelname;
+DROP INDEX IF EXISTS public.idx_moodle_tasks_status;
+-- idx_moodle_tasks_due is kept.
+
+-- Reminders linked to a task: ON DELETE SET NULL and the per-task lookups scan by task_id.
+CREATE INDEX IF NOT EXISTS idx_moodle_custom_reminders_task
+    ON public.moodle_custom_reminders (task_id)
+    WHERE task_id IS NOT NULL;
+
+-- 11.6 CHECK constraints
+-- Each one is added NOT VALID (new and updated rows are checked right away) and then validated.
+-- If existing rows violate it, the validation is skipped with a WARNING instead of aborting the
+-- file: fix the rows the SELECT above it finds and re-run the file to validate it.
+
+-- Violating rows: SELECT id, status FROM public.moodle_tasks WHERE status NOT IN ('pending', 'submitted');
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'moodle_tasks_status_check'
+          AND conrelid = 'public.moodle_tasks'::regclass
+    ) THEN
+        ALTER TABLE public.moodle_tasks
+            ADD CONSTRAINT moodle_tasks_status_check
+            CHECK (status IN ('pending', 'submitted')) NOT VALID;
+    END IF;
+    BEGIN
+        ALTER TABLE public.moodle_tasks VALIDATE CONSTRAINT moodle_tasks_status_check;
+    EXCEPTION WHEN check_violation THEN
+        RAISE WARNING 'moodle_tasks_status_check stays NOT VALID: existing rows violate it';
+    END;
+END
+$$;
+
+-- is_dismissed is an INTEGER flag (0 = visible, 1 = muted from the web).
+-- Violating rows: SELECT id, is_dismissed FROM public.moodle_tasks WHERE is_dismissed NOT IN (0, 1);
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'moodle_tasks_is_dismissed_check'
+          AND conrelid = 'public.moodle_tasks'::regclass
+    ) THEN
+        ALTER TABLE public.moodle_tasks
+            ADD CONSTRAINT moodle_tasks_is_dismissed_check
+            CHECK (is_dismissed IN (0, 1)) NOT VALID;
+    END IF;
+    BEGIN
+        ALTER TABLE public.moodle_tasks VALIDATE CONSTRAINT moodle_tasks_is_dismissed_check;
+    EXCEPTION WHEN check_violation THEN
+        RAISE WARNING 'moodle_tasks_is_dismissed_check stays NOT VALID: existing rows violate it';
+    END;
+END
+$$;
+
+-- Violating rows: SELECT task_id, milestone FROM public.moodle_task_milestones
+--   WHERE milestone NOT IN ('new', '3d', '2d', '1d', '8h');
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'moodle_task_milestones_milestone_check'
+          AND conrelid = 'public.moodle_task_milestones'::regclass
+    ) THEN
+        ALTER TABLE public.moodle_task_milestones
+            ADD CONSTRAINT moodle_task_milestones_milestone_check
+            CHECK (milestone IN ('new', '3d', '2d', '1d', '8h')) NOT VALID;
+    END IF;
+    BEGIN
+        ALTER TABLE public.moodle_task_milestones VALIDATE CONSTRAINT moodle_task_milestones_milestone_check;
+    EXCEPTION WHEN check_violation THEN
+        RAISE WARNING 'moodle_task_milestones_milestone_check stays NOT VALID: existing rows violate it';
+    END;
+END
+$$;
+
+-- Violating rows: SELECT id, failure_count FROM public.moodle_push_subscriptions WHERE failure_count < 0;
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'moodle_push_subscriptions_failure_count_check'
+          AND conrelid = 'public.moodle_push_subscriptions'::regclass
+    ) THEN
+        ALTER TABLE public.moodle_push_subscriptions
+            ADD CONSTRAINT moodle_push_subscriptions_failure_count_check
+            CHECK (failure_count >= 0) NOT VALID;
+    END IF;
+    BEGIN
+        ALTER TABLE public.moodle_push_subscriptions VALIDATE CONSTRAINT moodle_push_subscriptions_failure_count_check;
+    EXCEPTION WHEN check_violation THEN
+        RAISE WARNING 'moodle_push_subscriptions_failure_count_check stays NOT VALID: existing rows violate it';
+    END;
+END
+$$;
+
+-- Violating rows: SELECT id, char_length(last_failure_reason) FROM public.moodle_push_subscriptions
+--   WHERE char_length(last_failure_reason) > 200;
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'moodle_push_subscriptions_last_failure_reason_check'
+          AND conrelid = 'public.moodle_push_subscriptions'::regclass
+    ) THEN
+        ALTER TABLE public.moodle_push_subscriptions
+            ADD CONSTRAINT moodle_push_subscriptions_last_failure_reason_check
+            CHECK (char_length(last_failure_reason) <= 200) NOT VALID;
+    END IF;
+    BEGIN
+        ALTER TABLE public.moodle_push_subscriptions VALIDATE CONSTRAINT moodle_push_subscriptions_last_failure_reason_check;
+    EXCEPTION WHEN check_violation THEN
+        RAISE WARNING 'moodle_push_subscriptions_last_failure_reason_check stays NOT VALID: existing rows violate it';
+    END;
+END
+$$;
+
+-- push_total -1 is valid: the user's devices could not be read (see section 10), with push_ok 0.
+-- Violating rows: SELECT id, push_ok, push_total FROM public.moodle_notification_log
+--   WHERE NOT (push_total >= -1 AND push_ok >= 0 AND push_ok <= greatest(push_total, 0));
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'moodle_notification_log_push_counts_check'
+          AND conrelid = 'public.moodle_notification_log'::regclass
+    ) THEN
+        ALTER TABLE public.moodle_notification_log
+            ADD CONSTRAINT moodle_notification_log_push_counts_check
+            CHECK (push_total >= -1 AND push_ok >= 0 AND push_ok <= greatest(push_total, 0)) NOT VALID;
+    END IF;
+    BEGIN
+        ALTER TABLE public.moodle_notification_log VALIDATE CONSTRAINT moodle_notification_log_push_counts_check;
+    EXCEPTION WHEN check_violation THEN
+        RAISE WARNING 'moodle_notification_log_push_counts_check stays NOT VALID: existing rows violate it';
+    END;
+END
+$$;
+
+-- Violating rows: SELECT id, push_state FROM public.moodle_notification_log WHERE push_state NOT IN
+--   ('ok', 'partial', 'failed', 'no_devices', 'read_error', 'disabled');
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'moodle_notification_log_push_state_check'
+          AND conrelid = 'public.moodle_notification_log'::regclass
+    ) THEN
+        ALTER TABLE public.moodle_notification_log
+            ADD CONSTRAINT moodle_notification_log_push_state_check
+            CHECK (push_state IS NULL OR push_state IN ('ok', 'partial', 'failed', 'no_devices', 'read_error', 'disabled')) NOT VALID;
+    END IF;
+    BEGIN
+        ALTER TABLE public.moodle_notification_log VALIDATE CONSTRAINT moodle_notification_log_push_state_check;
+    EXCEPTION WHEN check_violation THEN
+        RAISE WARNING 'moodle_notification_log_push_state_check stays NOT VALID: existing rows violate it';
+    END;
+END
+$$;
+
+-- 11.7 Login throttle.
+-- The web keys each login attempt by a hash (never the raw username or IP) and asks
+-- moodle_login_gate() first: it returns the seconds the key is still blocked (0 = allowed).
+-- moodle_login_result() then records the outcome: success clears the key; the 5th failure inside
+-- a 15-minute window blocks it for 15 minutes. Rows idle for more than a day are pruned on the fly.
+CREATE TABLE IF NOT EXISTS public.moodle_login_failures (
+    key_hash      text PRIMARY KEY,
+    failures      integer NOT NULL DEFAULT 0,
+    window_start  timestamptz NOT NULL DEFAULT now(),
+    blocked_until timestamptz
+);
+
+ALTER TABLE public.moodle_login_failures ENABLE ROW LEVEL SECURITY;
+
+REVOKE ALL ON public.moodle_login_failures FROM PUBLIC, anon, authenticated;
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.moodle_login_failures TO moodle_app;
+
+DROP POLICY IF EXISTS moodle_app_all ON public.moodle_login_failures;
+CREATE POLICY moodle_app_all ON public.moodle_login_failures
+    FOR ALL TO moodle_app USING (true) WITH CHECK (true);
+
+CREATE OR REPLACE FUNCTION public.moodle_login_gate(p_key_hash text)
+RETURNS integer
+LANGUAGE sql
+STABLE
+SECURITY INVOKER
+SET search_path = public
+AS $$
+    SELECT COALESCE(
+        (SELECT greatest(0, ceil(extract(epoch FROM (f.blocked_until - now()))))::integer
+         FROM public.moodle_login_failures f
+         WHERE f.key_hash = p_key_hash),
+        0
+    );
+$$;
+
+CREATE OR REPLACE FUNCTION public.moodle_login_result(p_key_hash text, p_success boolean)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path = public
+AS $$
+BEGIN
+    IF p_key_hash IS NULL OR p_key_hash = '' THEN
+        RETURN;
+    END IF;
+
+    -- Opportunistic cleanup of stale keys (a block lasts 15 minutes, far less than a day).
+    DELETE FROM public.moodle_login_failures
+    WHERE window_start < now() - interval '1 day';
+
+    IF p_success THEN
+        DELETE FROM public.moodle_login_failures WHERE key_hash = p_key_hash;
+        RETURN;
+    END IF;
+
+    INSERT INTO public.moodle_login_failures AS f (key_hash, failures, window_start, blocked_until)
+    VALUES (p_key_hash, 1, now(), NULL)
+    ON CONFLICT (key_hash) DO UPDATE SET
+        failures = CASE
+            WHEN f.window_start < now() - interval '15 minutes' THEN 1
+            ELSE f.failures + 1
+        END,
+        window_start = CASE
+            WHEN f.window_start < now() - interval '15 minutes' THEN now()
+            ELSE f.window_start
+        END,
+        blocked_until = CASE
+            WHEN f.window_start >= now() - interval '15 minutes' AND f.failures + 1 >= 5
+                THEN now() + interval '15 minutes'
+            ELSE f.blocked_until
+        END;
+END
+$$;
+
+REVOKE EXECUTE ON FUNCTION public.moodle_login_gate(text) FROM PUBLIC, anon, authenticated;
+REVOKE EXECUTE ON FUNCTION public.moodle_login_result(text, boolean) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.moodle_login_gate(text) TO moodle_app;
+GRANT EXECUTE ON FUNCTION public.moodle_login_result(text, boolean) TO moodle_app;
+
+-- 11.8 Atomic class schedule replace (optional RPC; the web falls back to insert-then-delete when
+-- it is missing). Deletes the user's rows and inserts the new ones in one transaction, so a reader
+-- never sees an empty or doubled schedule. Each element of p_rows carries the columns below; a
+-- user_id inside the rows is ignored (p_user_id wins), id and created_at take their defaults.
+CREATE OR REPLACE FUNCTION public.moodle_replace_class_schedule(p_user_id uuid, p_rows jsonb)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path = public
+AS $$
+BEGIN
+    IF p_user_id IS NULL THEN
+        RAISE EXCEPTION 'p_user_id is required' USING ERRCODE = '22004';
+    END IF;
+    IF p_rows IS NULL OR jsonb_typeof(p_rows) <> 'array' THEN
+        RAISE EXCEPTION 'p_rows must be a JSON array' USING ERRCODE = '22023';
+    END IF;
+
+    DELETE FROM public.moodle_class_schedule WHERE user_id = p_user_id;
+
+    INSERT INTO public.moodle_class_schedule (
+        user_id, subject, level, parallel, credits, teacher, department, weekday,
+        start_time, end_time, place, room_code, room_type, floor, period_label, period_end
+    )
+    SELECT
+        p_user_id, r.subject, r.level, r.parallel, r.credits, r.teacher, r.department, r.weekday,
+        r.start_time, r.end_time, r.place, r.room_code, r.room_type, r.floor, r.period_label, r.period_end
+    FROM jsonb_to_recordset(p_rows) AS r(
+        subject      text,
+        level        integer,
+        parallel     text,
+        credits      integer,
+        teacher      text,
+        department   text,
+        weekday      smallint,
+        start_time   time,
+        end_time     time,
+        place        text,
+        room_code    text,
+        room_type    text,
+        floor        text,
+        period_label text,
+        period_end   date
+    );
+END
+$$;
+
+REVOKE EXECUTE ON FUNCTION public.moodle_replace_class_schedule(uuid, jsonb) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.moodle_replace_class_schedule(uuid, jsonb) TO moodle_app;
 
 -- Ask PostgREST to reload its schema cache so the new tables and columns are served right away.
 NOTIFY pgrst, 'reload schema';
