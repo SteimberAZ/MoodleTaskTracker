@@ -1,14 +1,30 @@
 import { NextResponse, type NextRequest } from 'next/server';
-import { SESSION_COOKIE, resolveSessionSecret, verifySession } from '@/lib/session-token';
+import {
+  SESSION_COOKIE,
+  SESSION_COOKIE_OPTIONS,
+  resolveSessionSecret,
+  shouldRenewSession,
+  signSession,
+  verifySessionWithExp,
+} from '@/lib/session-token';
 
 /**
  * Cheap gate: checks the cookie signature and expiry only (no database access).
  * Whether the user still exists and is active is enforced by `requireUser()` in each page and action.
+ * A valid session in its last week is re-signed for another full period (rolling session), so people who
+ * keep using the app are never logged out.
  */
 export async function middleware(request: NextRequest) {
   if (request.nextUrl.pathname === '/login') return NextResponse.next();
-  const userId = await verifySession(await resolveSessionSecret(), request.cookies.get(SESSION_COOKIE)?.value);
-  if (userId) return NextResponse.next();
+  const secret = await resolveSessionSecret();
+  const session = await verifySessionWithExp(secret, request.cookies.get(SESSION_COOKIE)?.value);
+  if (session) {
+    const response = NextResponse.next();
+    if (secret && shouldRenewSession(session.exp)) {
+      response.cookies.set(SESSION_COOKIE, await signSession(secret, session.userId), SESSION_COOKIE_OPTIONS);
+    }
+    return response;
+  }
   return NextResponse.redirect(new URL('/login', request.url));
 }
 

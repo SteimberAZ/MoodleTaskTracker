@@ -1,7 +1,7 @@
 import 'server-only';
 import { cookies } from 'next/headers';
 import { redirect } from 'next/navigation';
-import { SESSION_COOKIE, SESSION_MAX_AGE_SECONDS, resolveSessionSecret, signSession, verifySession } from './session-token';
+import { SESSION_COOKIE, SESSION_COOKIE_OPTIONS, resolveSessionSecret, signSession, verifySession } from './session-token';
 
 export function requireEnv(name: string): string {
   const value = process.env[name];
@@ -27,13 +27,7 @@ export async function startSession(userId: string): Promise<void> {
   if (!secret) throw new Error('Missing SESSION_SECRET or MOODLE_DB_JWT');
   const token = await signSession(secret, userId);
   const store = await cookies();
-  store.set(SESSION_COOKIE, token, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'lax',
-    path: '/',
-    maxAge: SESSION_MAX_AGE_SECONDS,
-  });
+  store.set(SESSION_COOKIE, token, SESSION_COOKIE_OPTIONS);
 }
 
 export async function endSession(): Promise<void> {
