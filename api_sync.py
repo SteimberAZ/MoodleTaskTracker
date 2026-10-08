@@ -270,8 +270,9 @@ def reconcile_missing_tasks(
     and absent from ``fetched``. An assignment among them is re-checked once per round (while it is
     not flagged yet): submitted -> saved as submitted. The rest count one absent round each; after
     ``MISSING_ROUNDS`` in a row they are flagged through ``supabase.mark_tasks_missing`` when the
-    data layer has it. A row that reappears drops its counter. Raises on a Moodle error so the
-    caller skips the whole pass (nothing is half-applied).
+    data layer has it. A row that reappears drops its counter. An assignment Moodle no longer knows
+    (any other answered error) counts as absent. Raises on a network or token error so the caller
+    skips the whole pass (nothing is half-applied).
     """
     now = time.time() if now is None else now
     previous = previous or {}
@@ -294,7 +295,14 @@ def reconcile_missing_tasks(
             if checks and RECONCILE_DELAY:
                 time.sleep(RECONCILE_DELAY)
             checks += 1
-            status, used_id = client._assign_status((prev or {}).get("assign_id"), cmid)
+            try:
+                status, used_id = client._assign_status((prev or {}).get("assign_id"), cmid)
+            except MoodleApiError as e:
+                if getattr(e, "is_network", False) or e.code in TOKEN_ERROR_CODES:
+                    raise  # Moodle unreachable or the token died: skip the whole pass
+                # Moodle answered but no longer knows this assignment (deleted, hidden, invalidrecord):
+                # it is absent like any other vanished task.
+                status, used_id = None, None
             if status == "submitted":
                 task = dict(prev or row)
                 task.update(status="submitted", status_source="api", user_id=user_id)

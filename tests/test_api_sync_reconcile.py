@@ -343,6 +343,15 @@ def test_a_moodle_error_during_the_recheck_applies_nothing(tmp_path):
     assert _counts(s) == {} and db.marked == []
 
 
+def test_a_deleted_assignment_is_flagged_like_any_vanished_task(tmp_path):
+    s, db = _storage(tmp_path), Db()
+    _sync(s, db, Client([_task("a", cmid=77), _task("q", module="quiz")]))
+    for _ in range(2):
+        client = Client([], statuses={77: MoodleApiError("gone", code="invalidrecord")})
+        assert _sync(s, db, client) == "ok"
+    assert db.marked == [(USER["id"], ["a", "q"])]
+
+
 def test_old_submitted_and_muted_rows_are_not_candidates(tmp_path):
     s, db = _storage(tmp_path), Db()
     rows = [_task("old", module="quiz", due_in=-8 * 86400), _task("sub", module="quiz", status="submitted"),
