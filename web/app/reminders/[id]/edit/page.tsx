@@ -1,10 +1,11 @@
+import type { Metadata } from 'next';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
-import { requireUser } from '@/lib/auth';
-import { getReminder } from '@/lib/reminders';
+import { withUser } from '@/lib/auth';
+import { getReminderWithTask } from '@/lib/reminders';
 import { splitInterval } from '@/lib/schedule';
 import { dateToGuayaquilInput } from '@/lib/time';
-import { listPendingTasks, listTasksByIds, type MoodleTask } from '@/lib/tasks';
+import { listPendingTasks, type MoodleTask } from '@/lib/tasks';
 import { saveReminder } from '@/app/actions';
 import { ChevronLeftIcon } from '@/components/Icons';
 import ReminderForm from '@/components/ReminderForm';
@@ -12,18 +13,19 @@ import { REMINDERS_PATH } from '@/lib/nav';
 
 export const dynamic = 'force-dynamic';
 
+export const metadata: Metadata = { title: 'Editar recordatorio' };
+
 export default async function EditReminderPage({ params }: { params: Promise<{ id: string }> }) {
-  const user = await requireUser();
   const { id } = await params;
-  const reminder = await getReminder(user.id, id);
+  // Both reads start together; the linked task comes embedded in the reminder row.
+  const [, [reminder, tasks]] = await withUser((userId) =>
+    Promise.all([getReminderWithTask(userId, id), listPendingTasks(userId).catch((): MoodleTask[] => [])]),
+  );
   if (!reminder) notFound();
   const { amount, unit } = splitInterval(reminder.interval_minutes);
 
-  const tasks: MoodleTask[] = await listPendingTasks(user.id).catch(() => []);
   // Keep the linked task selectable even when it is no longer pending.
-  if (reminder.task_id && !tasks.some((t) => t.id === reminder.task_id)) {
-    tasks.push(...(await listTasksByIds(user.id, [reminder.task_id]).catch(() => [])));
-  }
+  if (reminder.task && !tasks.some((t) => t.id === reminder.task!.id)) tasks.push(reminder.task);
 
   return (
     <>

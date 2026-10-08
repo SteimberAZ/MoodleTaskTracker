@@ -9,12 +9,19 @@ import {
   deleteReminder as removeReminder,
   getReminder,
   updateReminder,
+  updateReminderIfActive,
 } from '@/lib/reminders';
 import { REMINDERS_PATH } from '@/lib/nav';
 import { isSafeId } from '@/lib/queries';
 import { getOwnedTask, setTaskMuted } from '@/lib/tasks';
 import { computeNextFire } from '@/lib/schedule';
 import { validateReminderForm, type FieldErrors, type ReminderFormInput } from '@/lib/validate';
+
+/** Result of an inline action (mute, delete): the client keeps focus and shows `error` on failure. */
+export interface ActionResult {
+  ok: boolean;
+  error?: string;
+}
 
 export interface FormState {
   error?: string;
@@ -25,6 +32,16 @@ export interface FormState {
 export async function logout(): Promise<void> {
   await endSession();
   redirect('/login');
+}
+
+/**
+ * "Reconectar Moodle" on the disconnected banner: ends the session and opens the login form for the same
+ * account, so the new token is stored on the next sign-in.
+ */
+export async function reconnectMoodle(): Promise<void> {
+  const user = await requireUser();
+  await endSession();
+  redirect(`/login?u=${encodeURIComponent(user.username)}`);
 }
 
 function readForm(formData: FormData): ReminderFormInput {
@@ -97,37 +114,63 @@ export async function saveReminder(
     return { error: 'No se pudo guardar. Inténtalo de nuevo.', values };
   }
   revalidatePath(REMINDERS_PATH);
-  redirect(REMINDERS_PATH);
+  redirect(`${REMINDERS_PATH}?ok=saved`);
 }
 
-/** Mutes (`muted = true`) or restores a task. Always scoped to the session user; unknown ids are a no-op. */
-export async function setTaskMute(taskId: string, muted: boolean): Promise<void> {
+/**
+ * Mutes (`muted = true`) or restores a task. Always scoped to the session user. It writes the target state
+ * (not a toggle), so a repeated submit is harmless.
+ */
+export async function setTaskMute(taskId: string, muted: boolean): Promise<ActionResult> {
   const user = await requireUser();
-  await setTaskMuted(user.id, taskId, muted);
+  try {
+    if (!(await setTaskMuted(user.id, taskId, muted))) return { ok: false, error: 'La tarea ya no existe.' };
+  } catch {
+    return { ok: false, error: 'No se pudo actualizar la tarea. Inténtalo de nuevo.' };
+  }
   revalidatePath('/');
   if (isSafeId(taskId)) revalidatePath(`/tareas/${taskId}`);
+  return { ok: true };
 }
 
-export async function toggleReminder(id: string): Promise<void> {
+/**
+ * Pauses (`active = false`) or resumes a reminder. A no-op when the row is already in that state, and the
+ * write itself is conditional on the state that was read, so a double tap cannot undo it. `next_fire_at`
+ * is only recomputed when resuming.
+ */
+export async function setReminderActive(id: string, active: boolean): Promise<void> {
   const user = await requireUser();
-  const existing = await getReminder(user.id, id);
-  if (!existing) return;
-  if (existing.active) {
-    await updateReminder(user.id, id, { active: false });
-  } else {
-    const next = computeNextFire({
-      startsAt: new Date(existing.starts_at),
-      endsAt: new Date(existing.ends_at),
-      intervalMinutes: existing.interval_minutes,
-      now: new Date(),
-    });
-    await updateReminder(user.id, id, { active: next.active, next_fire_at: next.nextFireAt.toISOString() });
+  try {
+    const existing = await getReminder(user.id, id);
+    if (!existing || existing.active === active) return;
+    if (!active) {
+      await updateReminderIfActive(user.id, id, true, { active: false });
+    } else {
+      const next = computeNextFire({
+        startsAt: new Date(existing.starts_at),
+        endsAt: new Date(existing.ends_at),
+        intervalMinutes: existing.interval_minutes,
+        now: new Date(),
+      });
+      await updateReminderIfActive(user.id, id, false, {
+        active: next.active,
+        next_fire_at: next.nextFireAt.toISOString(),
+      });
+    }
+  } catch {
+    // The card re-renders with the stored state, which is the honest feedback here.
   }
   revalidatePath(REMINDERS_PATH);
 }
 
-export async function deleteReminder(id: string): Promise<void> {
+/** Deletes a reminder of the session user. Deleting one that is already gone counts as done. */
+export async function deleteReminder(id: string): Promise<ActionResult> {
   const user = await requireUser();
-  await removeReminder(user.id, id);
+  try {
+    await removeReminder(user.id, id);
+  } catch {
+    return { ok: false, error: 'No se pudo eliminar el recordatorio. Inténtalo de nuevo.' };
+  }
   revalidatePath(REMINDERS_PATH);
+  return { ok: true };
 }

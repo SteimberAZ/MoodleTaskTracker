@@ -9,13 +9,16 @@ interface Props {
   label: string;
 }
 
-/** Anterior / "Página X de Y" / Siguiente. Plain links, so it works without client JS. */
+/**
+ * Anterior / "Página X de Y" / Siguiente. Plain links, so it works without client JS. Links scroll like a
+ * normal navigation: to the list anchor in `hrefFor` ("#tareas"), else to the top, so the new page is in view.
+ */
 export default function Pagination({ page, pages, hrefFor, label }: Props) {
   if (pages <= 1) return null;
   return (
     <nav className="pager" aria-label={label}>
       {page > 1 ? (
-        <Link href={hrefFor(page - 1)} className="btn" rel="prev" scroll={false}>
+        <Link href={hrefFor(page - 1)} className="btn" rel="prev">
           <ChevronLeftIcon />
           <span>Anterior</span>
         </Link>
@@ -29,7 +32,7 @@ export default function Pagination({ page, pages, hrefFor, label }: Props) {
         Página {page} de {pages}
       </span>
       {page < pages ? (
-        <Link href={hrefFor(page + 1)} className="btn" rel="next" scroll={false}>
+        <Link href={hrefFor(page + 1)} className="btn" rel="next">
           <span>Siguiente</span>
           <ChevronRightIcon />
         </Link>

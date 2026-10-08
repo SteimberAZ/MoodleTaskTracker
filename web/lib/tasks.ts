@@ -1,17 +1,23 @@
 import 'server-only';
-import { dbJson, dbJsonCounted } from './db';
-import { clampPage } from './pagination';
+import { cache } from 'react';
+import { dbFetch, dbJson } from './db';
+import { clampPage, parseContentRange, TASK_PAGE_SIZE } from './pagination';
 import { parseMilestoneRows, type SentMap } from './auto-reminders';
-import { ownedTaskQuery, ownedTasksInQuery, scopedQuery } from './queries';
+import { ownedTaskQuery, scopedQuery, userRowQuery } from './queries';
 import {
+  DETAIL_COLUMNS,
   LEGACY_COLUMNS,
   LIST_COLUMNS,
+  MILESTONES_EMBED,
   countTasksByFilter,
+  isMissingSinceSupported,
+  isUnknownColumnError,
+  markMissingSinceUnsupported,
   muteTaskRequest,
   taskCountsQuery,
   taskDetailQuery,
-  taskMilestonesQuery,
   taskListQuery,
+  withEmbed,
   type TaskCountRow,
   type TaskFilter,
 } from './task-query';
@@ -37,10 +43,111 @@ export interface MoodleTaskDetail extends MoodleTask {
   description?: string | null;
   teachers?: unknown;
   details_updated_at?: string | null;
+  /** Automatic-alert milestones already recorded; null when they could not be read (schedule only). */
+  milestones: SentMap | null;
 }
 
 const COLUMNS = 'select=id,title,course,due_date_str,due_timestamp,task_url,status';
 const FAILURE = 'No se pudieron cargar las tareas.';
+
+/**
+ * A failed read with what PostgREST said about it. `status` 0 means the request never got an answer
+ * (network error or timeout). The body is parsed for `code`/`message` only and never logged.
+ */
+export class DbReadError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code: string | null,
+    readonly detail: string,
+  ) {
+    super(message);
+    this.name = 'DbReadError';
+  }
+
+  get unknownColumn(): boolean {
+    return isUnknownColumnError(this.status, this.code);
+  }
+
+  mentions(column: string): boolean {
+    return this.detail.includes(column);
+  }
+}
+
+async function errorFrom(res: Response, failure: string): Promise<DbReadError> {
+  let code: string | null = null;
+  let detail = '';
+  try {
+    const body = (await res.json()) as { code?: unknown; message?: unknown };
+    if (typeof body.code === 'string') code = body.code;
+    if (typeof body.message === 'string') detail = body.message;
+  } catch {
+    // Not JSON: status alone decides.
+  }
+  // Status and code only: error bodies can echo row data.
+  console.error('Supabase request failed', res.status, code ?? '');
+  return new DbReadError(failure, res.status, code, detail);
+}
+
+/**
+ * GET through `dbFetch` (session re-check, platform timeout) that keeps the PostgREST error code, so callers
+ * can tell "this column does not exist yet" from an outage. With `counted` it also reads the exact total.
+ */
+export async function dbRead<T>(
+  path: string,
+  failure: string,
+  counted = false,
+): Promise<{ rows: T[]; total: number }> {
+  let res: Response;
+  try {
+    res = await dbFetch(path, counted ? { headers: { Prefer: 'count=exact' } } : {});
+  } catch (error) {
+    // `redirect()` from the session check must keep propagating.
+    if (error instanceof Error && 'digest' in error) throw error;
+    console.error('Supabase request failed', error instanceof Error ? error.name : 'unknown');
+    throw new DbReadError(failure, 0, null, '');
+  }
+  const total = counted ? parseContentRange(res.headers.get('content-range')) : null;
+  if (counted && res.status === 416) return { rows: [], total: total ?? 0 };
+  if (!res.ok) throw await errorFrom(res, failure);
+  const text = await res.text();
+  const rows = (text ? JSON.parse(text) : []) as T[];
+  return { rows, total: total ?? rows.length };
+}
+
+interface ColumnPlan {
+  legacy: boolean;
+  missingSince: boolean;
+}
+
+/**
+ * Runs a read and, only when PostgREST rejects a column, retries without it: first `missing_since` (and the
+ * module flag remembers that), then the pre-migration column set. Every other failure is thrown as is.
+ */
+async function readWithColumnFallback<T>(
+  build: (plan: ColumnPlan) => string,
+  failure: string,
+  counted: boolean,
+  usesMissingSince: boolean,
+): Promise<{ rows: T[]; total: number }> {
+  let plan: ColumnPlan = { legacy: false, missingSince: usesMissingSince && isMissingSinceSupported() };
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    try {
+      return await dbRead<T>(build(plan), failure, counted);
+    } catch (error) {
+      if (!(error instanceof DbReadError) || !error.unknownColumn) throw error;
+      if (plan.missingSince && (error.mentions('missing_since') || plan.legacy)) {
+        markMissingSinceUnsupported();
+        plan = { ...plan, missingSince: false };
+      } else if (!plan.legacy) {
+        plan = { ...plan, legacy: true };
+      } else {
+        throw error;
+      }
+    }
+  }
+  throw new DbReadError(failure, 400, null, '');
+}
 
 /** Active tasks of one user: not submitted, not dismissed, deadline in the future. Soonest first. */
 export function listPendingTasks(userId: string, nowSeconds = Math.floor(Date.now() / 1000)): Promise<MoodleTask[]> {
@@ -65,49 +172,53 @@ export interface TaskPage {
   page: number;
 }
 
-/** One page of a tab (8 per page) plus the exact total. An out-of-range page falls back to the last one. */
+/** One page of a tab (15 per page) plus the exact total. An out-of-range page falls back to the last one. */
 export async function listTasksPage(
   userId: string,
   filter: TaskFilter,
   page: number,
   nowSeconds = Math.floor(Date.now() / 1000),
 ): Promise<TaskPage> {
-  const read = (columns: string, p: number) =>
-    dbJsonCounted<MoodleTask>(`moodle_tasks${taskListQuery(userId, filter, nowSeconds, p, columns)}`, FAILURE);
+  const read = (p: number) =>
+    readWithColumnFallback<MoodleTask>(
+      (plan) =>
+        `moodle_tasks${taskListQuery(userId, filter, nowSeconds, p, plan.legacy ? LEGACY_COLUMNS : LIST_COLUMNS, {
+          missingSince: plan.missingSince,
+        })}`,
+      FAILURE,
+      true,
+      true,
+    );
 
-  // Falls back to the pre-migration columns (no `module`) when the database has not been migrated yet.
-  let columns = LIST_COLUMNS;
-  let first: Awaited<ReturnType<typeof read>>;
-  try {
-    first = await read(columns, page);
-  } catch {
-    columns = LEGACY_COLUMNS;
-    first = await read(columns, page);
-  }
-
-  const served = clampPage(page, first.total);
+  const first = await read(page);
+  const served = clampPage(page, first.total, TASK_PAGE_SIZE);
   if (served === page) return { tasks: first.rows, total: first.total, page };
-  const again = await read(columns, served);
+  const again = await read(served);
   return { tasks: again.rows, total: again.total, page: served };
+}
+
+export interface TaskCounts {
+  byFilter: Record<TaskFilter, number>;
+  /** Every task row of the user, in any state (0 means the first sync has not brought anything yet). */
+  total: number;
 }
 
 /** Chip counters. Never throws: the list still works without them. */
 export async function countTasks(
   userId: string,
   nowSeconds = Math.floor(Date.now() / 1000),
-): Promise<Record<TaskFilter, number> | null> {
+): Promise<TaskCounts | null> {
   try {
-    const rows = await dbJson<TaskCountRow[]>(`moodle_tasks${taskCountsQuery(userId)}`, {}, FAILURE);
-    return countTasksByFilter(rows, nowSeconds);
+    const { rows } = await readWithColumnFallback<TaskCountRow>(
+      (plan) => `moodle_tasks${taskCountsQuery(userId, { missingSince: plan.missingSince })}`,
+      FAILURE,
+      false,
+      true,
+    );
+    return { byFilter: countTasksByFilter(rows, nowSeconds), total: rows.length };
   } catch {
     return null;
   }
-}
-
-/** The user's tasks by id regardless of state (a linked reminder's task may already be past due). */
-export async function listTasksByIds(userId: string, ids: string[]): Promise<MoodleTask[]> {
-  if (ids.length === 0) return [];
-  return dbJson<MoodleTask[]>(`moodle_tasks${ownedTasksInQuery(userId, ids, COLUMNS)}`, {}, FAILURE);
 }
 
 /** A single task, only if it belongs to the user. */
@@ -122,36 +233,76 @@ export async function getOwnedTask(userId: string, taskId: string): Promise<Mood
   return rows[0] ?? null;
 }
 
-/** Full task for the detail page, only if it belongs to the user (null otherwise, including malformed ids). */
-export async function getTaskDetail(userId: string, taskId: string): Promise<MoodleTaskDetail | null> {
-  let query: string;
-  let legacyQuery: string;
+type DetailRow = Omit<MoodleTaskDetail, 'milestones'> & { moodle_task_milestones?: unknown };
+
+/**
+ * Full task for the detail page with its recorded milestones embedded, only if it belongs to the user (null
+ * otherwise, including malformed ids). Cached per request so `generateMetadata` and the page share one read.
+ * When the embed is rejected the plain row is read instead and `milestones` is null.
+ */
+export const getTaskDetail = cache(async (userId: string, taskId: string): Promise<MoodleTaskDetail | null> => {
   try {
-    query = taskDetailQuery(userId, taskId);
-    legacyQuery = taskDetailQuery(userId, taskId, LEGACY_COLUMNS);
+    taskDetailQuery(userId, taskId);
   } catch {
     return null;
   }
-  // Falls back to the pre-migration columns when the detail columns do not exist yet.
-  const rows = await dbJson<MoodleTaskDetail[]>(`moodle_tasks${query}`, {}, FAILURE).catch(() =>
-    dbJson<MoodleTaskDetail[]>(`moodle_tasks${legacyQuery}`, {}, FAILURE),
-  );
-  return rows[0] ?? null;
+
+  const plain = async (): Promise<MoodleTaskDetail | null> => {
+    const { rows } = await readWithColumnFallback<DetailRow>(
+      (plan) => `moodle_tasks${taskDetailQuery(userId, taskId, plan.legacy ? LEGACY_COLUMNS : DETAIL_COLUMNS)}`,
+      FAILURE,
+      false,
+      false,
+    );
+    return rows[0] ? { ...rows[0], milestones: null } : null;
+  };
+
+  let rows: DetailRow[];
+  try {
+    ({ rows } = await dbRead<DetailRow>(
+      `moodle_tasks${taskDetailQuery(userId, taskId, withEmbed(DETAIL_COLUMNS, MILESTONES_EMBED))}`,
+      FAILURE,
+    ));
+  } catch (error) {
+    // An answered 4xx means the embed (or a column) was rejected; outages are not retried.
+    if (error instanceof DbReadError && error.status >= 400 && error.status < 500) return plain();
+    throw error;
+  }
+  const row = rows[0];
+  if (!row) return null;
+  const { moodle_task_milestones: embedded, ...task } = row;
+  return { ...task, milestones: Array.isArray(embedded) ? parseMilestoneRows(embedded) : null };
+});
+
+export interface TaskSyncState {
+  createdAt: string | null;
+  lastLoginAt: string | null;
+  /** Undefined when the column does not exist yet (worker or SQL not deployed). */
+  lastSyncedAt?: string | null;
 }
 
-/**
- * Automatic-alert milestones already recorded for a task. `moodle_task_milestones` has no owner column, so
- * the argument must be a task returned by `getTaskDetail` (owner-scoped); never pass an id taken from input.
- * Returns null (unknown) when the table is missing or the read fails: the page then shows the schedule only.
- */
-export async function getTaskMilestones(ownedTask: Pick<MoodleTask, 'id'>): Promise<SentMap | null> {
+/** Sync markers of the session user for the first-sync notice. Never throws (null = unknown). */
+export async function getTaskSyncState(userId: string): Promise<TaskSyncState | null> {
+  type Row = { created_at?: string | null; last_login_at?: string | null; last_synced_at?: string | null };
   try {
-    const rows = await dbJson<unknown>(
-      `moodle_task_milestones${taskMilestonesQuery(ownedTask.id)}`,
-      {},
-      'No se pudieron cargar los avisos.',
+    const { rows } = await readWithColumnFallback<Row>(
+      (plan) =>
+        `moodle_users${userRowQuery(
+          userId,
+          plan.legacy ? 'select=created_at,last_login_at' : 'select=created_at,last_login_at,last_synced_at',
+          'limit=1',
+        )}`,
+      'No se pudo leer el estado de sincronización.',
+      false,
+      false,
     );
-    return parseMilestoneRows(rows);
+    const row = rows[0];
+    if (!row) return null;
+    return {
+      createdAt: row.created_at ?? null,
+      lastLoginAt: row.last_login_at ?? null,
+      ...('last_synced_at' in row ? { lastSyncedAt: row.last_synced_at ?? null } : {}),
+    };
   } catch {
     return null;
   }
