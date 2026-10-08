@@ -1,7 +1,7 @@
 """Delivery of custom reminders stored in Supabase (table moodle_custom_reminders) to their owners."""
 import re
 from datetime import datetime, timedelta, timezone
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, Optional, Tuple
 
 _TS_RE = re.compile(
     r"^(?P<base>\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2})(?:\.(?P<frac>\d+))?(?P<tz>Z|[+-]\d{2}(?::?\d{2})?)?$"
@@ -112,11 +112,17 @@ def owner_topic(reminder: Dict) -> Optional[str]:
     return owner["ntfy_topic"] if owner else None
 
 
+# reminder id -> (next_fire_at that was already delivered, patch that still has to land). Filled when
+# the PATCH after a successful delivery fails, so the next tick retries the patch instead of resending.
+_UNPATCHED: Dict[str, Tuple[str, Dict]] = {}
+
+
 def process_due_reminders(
     client,
     send: Optional[Callable[[str, str, str], bool]] = None,
     now: Optional[datetime] = None,
     deliver: Optional[Callable[[Dict, Dict, str, str], bool]] = None,
+    unpatched: Optional[Dict[str, Tuple[str, Dict]]] = None,
 ) -> int:
     """Fetch due reminders, notify their owners and update them. Returns the number sent.
 
@@ -124,14 +130,28 @@ def process_due_reminders(
     see delivery.deliver_to_user); ``send(title, body, topic)`` is the ntfy-only alternative. Either
     returns True when the reminder got through; otherwise the row stays untouched and the next tick
     retries. Rows without an active owner are left untouched.
+
+    When the update after a delivery fails, the delivered ``next_fire_at`` and its patch are kept in
+    ``unpatched`` (process-wide by default): later ticks only retry the patch, never the delivery,
+    while the row still shows that same ``next_fire_at``.
     """
     if send is None and deliver is None:
         raise ValueError("process_due_reminders needs send or deliver")
     if not client.is_configured:
         return 0
+    pending = _UNPATCHED if unpatched is None else unpatched
     now = now or datetime.now(timezone.utc)
     sent = 0
     for reminder in client.fetch_due_reminders(to_iso(now)):
+        rid = str(reminder.get("id"))
+        held = pending.get(rid)
+        if held is not None:
+            if held[0] == str(reminder.get("next_fire_at")):
+                # Already delivered for this fire time: only the update is missing.
+                if client.update_reminder(reminder["id"], held[1]) is not False:
+                    pending.pop(rid, None)
+                continue
+            pending.pop(rid, None)  # the row moved on (edited or patched elsewhere)
         owner = owner_user(reminder)
         if owner is None:
             continue
@@ -149,5 +169,9 @@ def process_due_reminders(
                 # Leave the row untouched so the next tick retries.
                 continue
             sent += 1
+            if client.update_reminder(reminder["id"], decision["patch"]) is False:
+                print(f"[Reminders] {rid[:8]}: delivered but not updated; the update is retried, not the send.")
+                pending[rid] = (str(reminder.get("next_fire_at")), decision["patch"])
+            continue
         client.update_reminder(reminder["id"], decision["patch"])
     return sent

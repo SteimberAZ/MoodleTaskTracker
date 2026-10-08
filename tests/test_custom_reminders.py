@@ -199,3 +199,44 @@ def test_one_skipped_reminder_does_not_block_the_next():
     sent = []
     assert process_due_reminders(client, lambda t, b, topic: sent.append(topic) or True, now=NOW) == 1
     assert sent == ["utm-owner1"]
+
+
+class FlakyPatchClient(FakeClient):
+    """The GET works but the PATCH fails until ``patch_ok`` is set."""
+
+    def __init__(self, rows):
+        super().__init__(rows)
+        self.patch_ok = False
+
+    def update_reminder(self, rid, fields):
+        self.updates.append((rid, fields))
+        return self.patch_ok
+
+
+def test_a_failed_patch_after_delivery_is_retried_without_resending():
+    client = FlakyPatchClient([_reminder()])
+    sent, pending = [], {}
+    send = lambda t, b, topic: sent.append(t) or True
+
+    assert process_due_reminders(client, send, now=NOW, unpatched=pending) == 1
+    assert "r1" in pending
+    # Next ticks: the row is still due (PATCH lost) but nothing is delivered again.
+    assert process_due_reminders(client, send, now=NOW, unpatched=pending) == 0
+    assert process_due_reminders(client, send, now=NOW, unpatched=pending) == 0
+    assert sent == ["Drink water"]
+    assert len(client.updates) == 3 and client.updates[1][1] == client.updates[0][1]  # same patch retried
+
+    client.patch_ok = True
+    process_due_reminders(client, send, now=NOW, unpatched=pending)
+    assert pending == {} and sent == ["Drink water"]
+
+
+def test_a_row_that_moved_on_is_delivered_again():
+    client = FlakyPatchClient([_reminder()])
+    sent, pending = [], {}
+    send = lambda t, b, topic: sent.append(t) or True
+    process_due_reminders(client, send, now=NOW, unpatched=pending)
+    client.patch_ok = True
+    client.rows = [_reminder(next_fire_at="2026-01-01T11:30:00Z")]  # edited elsewhere, still due
+    assert process_due_reminders(client, send, now=NOW, unpatched=pending) == 1
+    assert pending == {} and len(sent) == 2
