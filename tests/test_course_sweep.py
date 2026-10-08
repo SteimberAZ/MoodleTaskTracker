@@ -87,7 +87,8 @@ def _client(http):
 
 @pytest.fixture(autouse=True)
 def _clear_caches():
-    caches = (moodle_api._SWEEP_CACHE, moodle_api._TEACHERS_CACHE, moodle_api._ASSIGN_INSTANCE_CACHE)
+    caches = (moodle_api._SWEEP_CACHE, moodle_api._TEACHERS_CACHE, moodle_api._ASSIGN_INSTANCE_CACHE,
+              moodle_api._COURSES_CACHE, moodle_api._GRADES_CACHE)
     for cache in caches:
         cache.clear()
     yield

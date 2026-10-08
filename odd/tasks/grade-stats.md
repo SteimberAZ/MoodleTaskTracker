@@ -9,7 +9,7 @@ Route: workflow (Opus high plans and reviews; Sonnet writes the worker/SQL/notif
 ## Tasks
 - [x] Plan (Opus high)
 - [x] T1 SQL table moodle_grade_items + Supabase client grade methods (sonnet, delegated) - commit: feat(db): add the moodle_grade_items table and its Supabase client methods
-- [ ] T2 Moodle grade fetch in moodle_api.py (sonnet, delegated)
+- [x] T2 Moodle grade fetch in moodle_api.py (sonnet, delegated) - commit: feat(worker): fetch every current course's grade items from Moodle once per sweep cadence
 - [ ] T3 Grade sync, graded-task alerts and the api_sync hook (sonnet, delegated)
 - [ ] T4 Web grade computation and data access (sonnet, delegated)
 - [ ] T5 Web Estadisticas page, nav tab and loading skeleton (haiku, delegated)

@@ -8,9 +8,12 @@ Politeness: every client shares one ``requests.Session`` (keep-alive, an identif
 uses split connect/read timeouts, and stops reading assignment statuses after a couple of
 consecutive network failures instead of hammering an unreachable site. The course sweep batches
 all enrolled courses into one call per function and reuses its result for ``SWEEP_TTL_SECONDS``.
+The grade fetch reads one grade report per current course at most once per ``SWEEP_TTL_SECONDS``,
+reusing the sweep's course list.
 """
 import hashlib
 import html
+import math
 import re
 import time
 from datetime import datetime, timedelta, timezone
@@ -69,6 +72,13 @@ SWEEP_COURSE_MAX_AGE_DAYS = 180  # courses without end date older than this (by 
 # (base_url, user_id) -> {"at": float, "tasks": [task dicts], "complete": bool,
 #                         "reads": {cmid: (last attempt time, last known status)}}
 _SWEEP_CACHE: Dict[tuple, Dict] = {}
+# (base_url, user_id) -> (time read, current enrolled courses). Written by every enrolled-course read, so the grade
+# fetch reuses the course list the course sweep just read instead of asking Moodle again.
+_COURSES_CACHE: Dict[tuple, tuple] = {}
+# (base_url, user_id) -> time of the last grade fetch attempt (successful or not): at most one per SWEEP_TTL_SECONDS.
+_GRADES_CACHE: Dict[tuple, float] = {}
+# Grade report item types that are stored (outcomes and anything unknown are skipped).
+GRADE_ITEM_TYPES = ("course", "category", "mod", "manual")
 
 
 def _now() -> float:
@@ -347,6 +357,23 @@ class MoodleApiClient:
         self.site_userid = uid
         return uid
 
+    def _current_courses(self, now: float, use_cache: bool = False) -> Optional[List[Dict]]:
+        """Current enrolled courses, newest first, at most SWEEP_MAX_COURSES; None when Moodle answered something
+        that is not a list. May raise (MoodleApiError)."""
+        key = (self.base_url, self.user_id)
+        entry = _COURSES_CACHE.get(key)
+        if use_cache and entry and now - entry[0] < SWEEP_TTL_SECONDS:
+            return [dict(c) for c in entry[1]]
+        uid = self._site_userid()
+        payload = self.call("core_enrol_get_users_courses", userid=uid)
+        if not isinstance(payload, list):
+            return None
+        current = [c for c in payload if course_is_current(c, now) and str(c.get("id") or "").isdigit()]
+        current.sort(key=lambda c: int(c.get("startdate") or 0), reverse=True)
+        current = current[:SWEEP_MAX_COURSES]
+        _COURSES_CACHE[key] = (now, [dict(c) for c in current])
+        return current
+
     def _sweep_status(self, task: Dict) -> Optional[str]:
         """'submitted' | 'pending' for a swept assignment or quiz, None when it cannot be read."""
         if task.get("module") == "assign":
@@ -367,12 +394,7 @@ class MoodleApiClient:
         updated in place: the status budget rotates across rounds, and a task that is not read this round
         keeps the status it had before instead of reverting to pending.
         """
-        uid = self._site_userid()
-        payload = self.call("core_enrol_get_users_courses", userid=uid)
-        courses = payload if isinstance(payload, list) else []
-        current = [c for c in courses if course_is_current(c, now) and str(c.get("id") or "").isdigit()]
-        current.sort(key=lambda c: int(c.get("startdate") or 0), reverse=True)
-        current = current[:SWEEP_MAX_COURSES]
+        current = self._current_courses(now) or []
         if not current:
             return []
         by_id = {int(c["id"]): c for c in current}
@@ -468,8 +490,156 @@ class MoodleApiClient:
         # Copies, so callers mutating the returned dicts never change the cache.
         return [dict(t, teachers=list(t.get("teachers") or [])) for t in tasks]
 
+    # ---- grades ------------------------------------------------------------------------
+
+    def grades_due(self, now: Optional[float] = None) -> bool:
+        """Whether a grade fetch may run now: needs a user, and none was attempted within SWEEP_TTL_SECONDS."""
+        if not self.user_id:
+            return False
+        now = now if now is not None else _now()
+        last = _GRADES_CACHE.get((self.base_url, self.user_id))
+        return last is None or now - last >= SWEEP_TTL_SECONDS
+
+    def fetch_course_grades(self, now: Optional[float] = None, delay: float = 0.2) -> Optional[Dict]:
+        """Grade items of every current enrolled course, at most once per SWEEP_TTL_SECONDS per user.
+
+        Never raises. Returns None when not due, when the course list cannot be read, or when the token was
+        rejected; otherwise {'courses': [{'id', 'fullname', 'shortname'}], 'items': {course id: [rows of
+        parse_grade_items]}, 'failed': [course ids whose grades could not be read], 'complete': bool}.
+        """
+        now = now if now is not None else _now()
+        if not self.grades_due(now):
+            return None
+        # Stamped before any call: a failing Moodle is retried after the TTL, not on every sync.
+        _GRADES_CACHE[(self.base_url, self.user_id)] = now
+        try:
+            try:
+                uid = self._site_userid()
+                courses = self._current_courses(now, use_cache=True)
+            except Exception as e:  # noqa: BLE001 - grades are optional
+                code = getattr(e, "code", "") or type(e).__name__
+                print(f"[MoodleApi] grade fetch skipped: could not read the enrolled courses ({code})")
+                return None
+            if courses is None:
+                print("[MoodleApi] grade fetch skipped: could not read the enrolled courses (badresponse)")
+                return None
+            items: Dict[int, List[Dict]] = {}
+            failed: List[int] = []
+            network_errors = 0
+            for i, c in enumerate(courses):
+                cid = int(c["id"])
+                if network_errors >= STATUS_NETWORK_ERROR_LIMIT:
+                    failed.append(cid)
+                    continue
+                if i and delay:
+                    time.sleep(delay)
+                try:
+                    payload = self.call("gradereport_user_get_grade_items", courseid=cid, userid=uid)
+                except MoodleApiError as e:
+                    if e.code == "invalidtoken":
+                        print("[MoodleApi] grade fetch stopped: token rejected")
+                        return None
+                    # An 'accessexception' means this course's report is not allowed, not a bad token.
+                    network_errors = network_errors + 1 if e.is_network else 0
+                    print(f"[MoodleApi] grades of course {cid} not read: {e.code or 'error'}")
+                    failed.append(cid)
+                    continue
+                network_errors = 0
+                rows = parse_grade_items(payload, c, uid)
+                if rows is None:
+                    failed.append(cid)
+                else:
+                    items[cid] = rows
+            return {
+                "courses": [{"id": int(c["id"]), "fullname": c.get("fullname"), "shortname": c.get("shortname")}
+                            for c in courses],
+                "items": items,
+                "failed": failed,
+                "complete": not failed,
+            }
+        except Exception as e:  # noqa: BLE001 - a grade failure must never break the sync
+            print(f"[MoodleApi] grade fetch failed ({type(e).__name__})")
+            return None
+
 
 # ---- pure mapping helpers ------------------------------------------------------------------
+
+
+def _float_or_none(value: Any) -> Optional[float]:
+    """A finite float from a number or numeric string, None for anything else (bool, '', NaN, inf)."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _int_or_none(value: Any) -> Optional[int]:
+    """An int from an int or a digit string, None for anything else (bool included)."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+    return None
+
+
+def parse_grade_items(payload: Any, course: Dict, site_userid: Optional[int] = None) -> Optional[List[Dict]]:
+    """Grade rows from a gradereport_user_get_grade_items response.
+
+    None when the answer is malformed (the caller treats the course as failed). Items hidden from the student
+    and unknown item types are never kept, and neither is the feedback text.
+    """
+    if not isinstance(payload, dict) or not isinstance(payload.get("usergrades"), list):
+        return None
+    entries = [e for e in payload["usergrades"] if isinstance(e, dict)]
+    entry = None
+    if site_userid is not None:
+        entry = next((e for e in entries if _int_or_none(e.get("userid")) == site_userid), None)
+    elif entries:
+        entry = entries[0]
+    if entry is None:
+        return []
+    report_depth = _int_or_none(entry.get("maxdepth"))
+    course_name = str(course.get("fullname") or course.get("shortname") or "Materia no especificada")
+    rows: List[Dict] = []
+    seen: set = set()
+    for i, it in enumerate(entry.get("gradeitems") or []):
+        if not isinstance(it, dict):
+            continue
+        itemtype = it.get("itemtype")
+        if itemtype not in GRADE_ITEM_TYPES:
+            continue
+        item_id = _int_or_none(it.get("id"))
+        if item_id is None or item_id in seen:
+            continue
+        if it.get("gradeishidden") or it.get("gradehiddenbydate") or it.get("hidden"):
+            continue  # grades hidden from the student are never stored
+        seen.add(item_id)
+        rows.append({
+            "course_id": int(course["id"]),
+            "item_id": item_id,
+            "course_name": course_name,
+            "item_name": html.unescape(str(it.get("itemname") or "")).strip() or None,
+            "item_type": itemtype,
+            "item_module": str(it.get("itemmodule") or "") or None,
+            "cmid": _int_or_none(it.get("cmid")),
+            "item_instance": _int_or_none(it.get("iteminstance")),
+            "category_id": _int_or_none(it.get("categoryid")),
+            "sort_order": i,
+            "report_depth": report_depth,
+            "grade_raw": _float_or_none(it.get("graderaw")),
+            "grade_min": _float_or_none(it.get("grademin")),
+            "grade_max": _float_or_none(it.get("grademax")),
+            "grade_formatted": str(it.get("gradeformatted") or "") or None,
+            "percentage_formatted": str(it.get("percentageformatted") or "") or None,
+            "weight_raw": _float_or_none(it.get("weightraw")),
+            "graded_at": _int_or_none(it.get("gradedategraded")) or None,
+        })
+    return rows
 
 
 def parse_assign_submission_status(payload: Any) -> Optional[str]:
