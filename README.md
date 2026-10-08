@@ -173,11 +173,11 @@ Orden: **esquema → worker → web**. Haz el respaldo antes de tocar nada.
 
 1. Detén el worker: `pm2 stop utm-moodle-tracker`.
 2. Vuelve al código anterior:
-   - Con git: `git checkout $(cat ../app.prev-commit)`.
-   - Con copia de archivos: restaura `/ruta/app.bak`.
+   - Con git: `git checkout $(cat ../app.prev-commit)`. Queda en un commit suelto: antes del próximo deploy vuelve a la rama con `git checkout main`.
+   - Con copia de archivos: `mv /ruta/app /ruta/app.fallido && mv /ruta/app.bak /ruta/app`.
 3. Restaura la base local: `cp moodle_tasks.db.bak moodle_tasks.db`.
 4. Reinstala las dependencias: `venv/bin/pip install -r requirements-worker.txt`.
-5. Arranca de nuevo: `pm2 startOrReload deploy/ecosystem.config.js`.
+5. Arranca de nuevo: `pm2 restart utm-moodle-tracker`. Usa `restart` y no el archivo de configuración: una versión anterior puede no tener `deploy/ecosystem.config.js`, y pm2 conserva la definición del proceso.
 
 Los cambios de `supabase_schema.sql` agregan columnas y funciones (`IF NOT EXISTS`), así que normalmente no hace falta revertir el SQL.
 
