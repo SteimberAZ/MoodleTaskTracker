@@ -409,6 +409,8 @@ body:has(.site-nav) .container {
   text-transform: uppercase;
 }
 .task-group-heading:first-child { margin-top: 0; }
+/* Grouped list (pkg-web-tasks wraps each heading and its list in .task-group): the gap goes between groups. */
+.task-group + .task-group { margin-top: 20px; }
 
 /* Compact task and reminder cards. */
 .task-card, .reminder-card { position: relative; display: flex; flex-direction: column; gap: 4px; padding: 12px 14px 14px; }
@@ -988,8 +990,6 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 2px
 /* ============================== Schedule: picker, loading, editor, action bar ============================== */
 .save-banner { display: grid; gap: 4px; margin: 0; }
 .save-banner:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
-/* Headings that only receive focus programmatically (step changes, error screens) need no ring. */
-:is(h1, h2, h3)[tabindex='-1']:focus { outline: none; }
 .save-banner span { font-weight: 500; color: var(--text); }
 
 .picker { max-width: 640px; }
