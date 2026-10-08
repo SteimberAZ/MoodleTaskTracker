@@ -5,6 +5,7 @@ All functions return plain dicts shaped like the ones produced by ``MoodleClient
 ``Storage`` and ``TaskNotificationManager`` work unchanged.
 """
 import hashlib
+import html
 import os
 import re
 import time
@@ -12,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional
 
 import requests
+from bs4 import BeautifulSoup
 
 DEFAULT_MOODLE_URL = "https://evirtual.utm.edu.ec"
 
@@ -28,6 +30,19 @@ _ASSIGN_INSTANCE_CACHE: Dict[tuple, int] = {}
 
 # Max characters of a Moodle error message written to the logs.
 _LOG_MSG_MAX = 200
+
+# Max characters of a task description kept (plain text).
+DESCRIPTION_MAX = 4000
+
+# (base_url, course id) -> (expires_at, teacher names). Shared by every client for the process, so
+# a sync round makes at most one core_course_get_courses_by_field call per course.
+_TEACHERS_CACHE: Dict[tuple, tuple] = {}
+TEACHERS_TTL = 12 * 3600  # successful lookups
+TEACHERS_ERROR_TTL = 300  # failed lookups are retried after a short pause, not on every user
+
+
+def _now() -> float:
+    return time.time()
 
 
 class MoodleApiError(Exception):
@@ -158,6 +173,43 @@ class MoodleApiClient:
     def fetch_assign_status(self, assign_id: Optional[int], course_module_id: Optional[int] = None) -> Optional[str]:
         return self._assign_status(assign_id, course_module_id)[0]
 
+    def fetch_course_teachers(self, course_id: Optional[int]) -> List[str]:
+        """Names of the course contacts (teachers), cached per (site, course) for ~12 hours.
+
+        Never raises: any failure is logged once and yields ``[]`` (or the last known list when a
+        stale cache entry exists), so task details can never break a sync.
+        """
+        if not course_id:
+            return []
+        key = (self.base_url, int(course_id))
+        entry = _TEACHERS_CACHE.get(key)
+        if entry and entry[0] > _now():
+            return list(entry[1])
+        try:
+            payload = self.call("core_course_get_courses_by_field", field="id", value=int(course_id))
+            courses = payload.get("courses") if isinstance(payload, dict) else None
+            contacts = courses[0].get("contacts") if courses and isinstance(courses[0], dict) else None
+            names: List[str] = []
+            for c in contacts or []:
+                name = " ".join(str((c or {}).get("fullname") or "").split()) if isinstance(c, dict) else ""
+                if name and name not in names:
+                    names.append(name)
+        except Exception as e:  # noqa: BLE001 - details are optional
+            code = getattr(e, "code", "") or type(e).__name__
+            print(f"[MoodleApi] could not read teachers of course {course_id}: {code}: {str(e)[:_LOG_MSG_MAX]}")
+            stale = list(entry[1]) if entry else []
+            _TEACHERS_CACHE[key] = (_now() + TEACHERS_ERROR_TTL, stale)
+            return stale
+        _TEACHERS_CACHE[key] = (_now() + TEACHERS_TTL, names)
+        return list(names)
+
+    def _attach_details(self, tasks: List[Dict]) -> None:
+        """Add teachers and the details timestamp to every task fetched from the API."""
+        stamp = datetime.now(timezone.utc).isoformat()
+        for task in tasks:
+            task["teachers"] = self.fetch_course_teachers(task.get("course_id"))
+            task["details_updated_at"] = stamp
+
     def fetch_tasks(self, now: Optional[float] = None, delay: float = 0.2) -> List[Dict]:
         """Fetch events, map them to task dicts and resolve submission status.
 
@@ -170,6 +222,7 @@ class MoodleApiClient:
             task = event_to_task(ev, self.base_url, user_id=self.user_id)
             if task:
                 tasks.append(task)
+        self._attach_details(tasks)
         checked = 0
         for task in tasks:
             cmid = task.get("course_module_id")
@@ -215,6 +268,18 @@ def parse_assign_submission_status(payload: Any) -> Optional[str]:
     if statuses:
         return "pending"  # draft / new / reopened
     return None
+
+
+def html_to_text(raw: Any, limit: int = DESCRIPTION_MAX) -> str:
+    """Plain text of an HTML fragment: tags stripped, entities unescaped, whitespace collapsed."""
+    if not raw:
+        return ""
+    soup = BeautifulSoup(str(raw), "html.parser")
+    for tag in soup(["script", "style"]):
+        tag.decompose()
+    text = html.unescape(soup.get_text(" "))
+    text = " ".join(text.replace(" ", " ").split())
+    return text[:limit]
 
 
 def _format_due(ts: int) -> str:
@@ -279,6 +344,9 @@ def event_to_task(ev: Dict, base_url: str = "", user_id: Optional[str] = None) -
         "assign_id": assign_id,
         "course_module_id": cmid,
         "event_id": ev.get("id"),
+        "module": module or None,
+        "course_id": int(course["id"]) if str(course.get("id") or "").isdigit() else None,
+        "description": html_to_text(ev.get("description")),
     }
     if user_id:
         task["user_id"] = str(user_id)

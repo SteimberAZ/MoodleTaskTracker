@@ -67,6 +67,29 @@ def _report_error(supabase: Any, creds: Credentials, message: Optional[str], use
         print(f"[ApiSync] could not update moodle_credentials: {e}")
 
 
+def _apply_web_mutes(storage, supabase: Any, user_id: str, tasks: List[Dict], label: str) -> bool:
+    """Mark the tasks this user muted on the web as dismissed (in memory and in local SQLite).
+
+    Supabase is the source of truth for ``is_dismissed``. Returns False when the mutes could not be
+    read: the caller must then skip notifications for this user so muted tasks are not spammed.
+    Without a configured Supabase there is no web to mute from, so notifications proceed.
+    """
+    fetch = getattr(supabase, "fetch_muted_task_ids", None)
+    if not fetch or not getattr(supabase, "is_configured", False):
+        return True
+    try:
+        muted = {str(i) for i in fetch(user_id)}
+    except Exception as e:
+        print(f"{label} could not read muted tasks: {e}")
+        return False
+    for t in tasks:
+        t["is_dismissed"] = 1 if str(t["id"]) in muted else 0
+    storage.apply_dismissed(user_id, muted)
+    if muted:
+        print(f"{label} {len(muted)} task(s) muted from the web.")
+    return True
+
+
 def sync_tasks_via_api(
     storage,
     creds: Credentials,
@@ -112,13 +135,19 @@ def sync_tasks_via_api(
             for t in tasks:
                 t["user_id"] = user_id  # the owner is authoritative; never trust the client
         new_tasks, _ = storage.save_tasks(tasks)
+        notify = True
+        if user_id:
+            notify = _apply_web_mutes(storage, supabase, user_id, tasks, label)
         if apply_migration_guard(storage, tasks, user_id):
             print(f"{label} first sync: {len(tasks)} existing tasks marked as already announced.")
         mirror_ok = getattr(storage, "last_task_mirror_ok", None)
         mirror = {True: "ok", False: "FAILED"}.get(mirror_ok, "n/a")
         print(f"{label} {len(tasks)} tasks fetched, {len(new_tasks)} new (supabase mirror: {mirror}).")
         if user_id:
-            process(tasks, storage, new_tasks=new_tasks, topic=route["topic"], desktop=False)
+            if notify:
+                process(tasks, storage, new_tasks=new_tasks, topic=route["topic"], desktop=False)
+            else:
+                print(f"{label} notifications skipped this round (muted tasks unknown).")
         else:
             process(tasks, storage, new_tasks=new_tasks)
     except Exception as e:

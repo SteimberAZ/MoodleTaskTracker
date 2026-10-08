@@ -114,6 +114,10 @@ class SupabaseClient:
 
         PostgREST rejects a bulk insert whose rows have different key sets (PGRST102), so the
         optional web-service columns are always present and null when unknown.
+
+        ``is_dismissed`` is deliberately absent: the web owns "muted" (Supabase is the source of
+        truth), and with merge-duplicates an omitted column keeps the stored value on update while
+        new rows get the column default (0).
         """
         return {
             "id": str(t["id"]),
@@ -126,11 +130,16 @@ class SupabaseClient:
             "first_seen": t.get("first_seen", 0),
             "last_updated": t.get("last_updated", 0),
             "is_notified": t.get("is_notified", 0),
-            "is_dismissed": t.get("is_dismissed", 0),
             # Every row needs an owner (moodle_tasks.user_id is NOT NULL).
             "user_id": t["user_id"],
             "assign_id": t.get("assign_id"),
             "course_module_id": t.get("course_module_id"),
+            # Details for the web (teachers is a JSON array of names, NOT NULL in the schema).
+            "description": t.get("description"),
+            "course_id": t.get("course_id"),
+            "module": t.get("module"),
+            "teachers": list(t.get("teachers") or []),
+            "details_updated_at": t.get("details_updated_at"),
         }
 
     def upsert_tasks(self, tasks: List[Dict], async_call: bool = True) -> Optional[bool]:
@@ -207,6 +216,20 @@ class SupabaseClient:
         if r.status_code != 200:
             raise RuntimeError(f"HTTP {r.status_code}")
         return [u for u in r.json() if str(u.get("token") or "").strip()]
+
+    def fetch_muted_task_ids(self, user_id: str) -> set:
+        """Ids of the tasks this user muted from the web (``is_dismissed = 1``).
+
+        Returns an empty set when Supabase is not configured. RAISES on any transport/HTTP failure so
+        the caller can tell "nothing muted" apart from "could not read the mutes".
+        """
+        if not self.is_configured:
+            return set()
+        params = {"user_id": f"eq.{user_id}", "is_dismissed": "eq.1", "select": "id"}
+        r = requests.get(f"{self.url}/rest/v1/moodle_tasks", params=params, headers=self._headers(), timeout=10)
+        if r.status_code != 200:
+            raise RuntimeError(f"HTTP {r.status_code}")
+        return {str(row["id"]) for row in r.json() if isinstance(row, dict) and row.get("id")}
 
     def update_user(self, user_id: str, fields: Dict) -> bool:
         """PATCH one moodle_users row (e.g. last_error / last_error_at)."""

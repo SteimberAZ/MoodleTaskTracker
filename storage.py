@@ -232,6 +232,24 @@ class Storage:
             cur = conn.execute(query, params)
             return [dict(row) for row in cur.fetchall()]
 
+    def apply_dismissed(self, user_id: str, muted_ids) -> int:
+        """Align the local ``is_dismissed`` flag of one user's tasks with the ids muted on the web.
+
+        Supabase is the source of truth: ids in ``muted_ids`` become 1, every other task of the user
+        becomes 0. Returns the number of rows changed.
+        """
+        muted = {str(i) for i in muted_ids}
+        changed = 0
+        with self._get_conn() as conn:
+            rows = conn.execute("SELECT id, is_dismissed FROM tasks WHERE user_id = ?", (str(user_id),)).fetchall()
+            for row in rows:
+                want = 1 if row["id"] in muted else 0
+                if (row["is_dismissed"] or 0) != want:
+                    conn.execute("UPDATE tasks SET is_dismissed = ? WHERE id = ?", (want, row["id"]))
+                    changed += 1
+            conn.commit()
+        return changed
+
     def mark_notified(self, task_id: str):
         with self._get_conn() as conn:
             conn.execute("UPDATE tasks SET is_notified = 1 WHERE id = ?", (task_id,))

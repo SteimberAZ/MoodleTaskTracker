@@ -286,3 +286,18 @@ CREATE POLICY moodle_app_all ON public.moodle_users
 DROP POLICY IF EXISTS moodle_app_all ON public.moodle_invites;
 CREATE POLICY moodle_app_all ON public.moodle_invites
     FOR ALL TO moodle_app USING (true) WITH CHECK (true);
+
+-- ==========================================================
+-- 7. Task details (UX pass): description, course, module, teachers.
+--    Filled by the worker's API sync; existing grants/RLS cover new columns.
+--    teachers is a JSON array of full names, e.g. ["Ana Perez", "Luis Mora"].
+--    is_dismissed ("muted from the web") is never written by the worker.
+-- ==========================================================
+ALTER TABLE public.moodle_tasks ADD COLUMN IF NOT EXISTS description text;
+ALTER TABLE public.moodle_tasks ADD COLUMN IF NOT EXISTS course_id integer;
+ALTER TABLE public.moodle_tasks ADD COLUMN IF NOT EXISTS module text;
+ALTER TABLE public.moodle_tasks ADD COLUMN IF NOT EXISTS teachers jsonb NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE public.moodle_tasks ADD COLUMN IF NOT EXISTS details_updated_at timestamptz;
+
+-- Set by the web when a user confirms the test notification arrived (the worker never reads it).
+ALTER TABLE public.moodle_users ADD COLUMN IF NOT EXISTS notify_confirmed_at timestamptz;
