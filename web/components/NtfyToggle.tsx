@@ -55,7 +55,9 @@ export default function NtfyToggle({ enabled }: { enabled: boolean }) {
  */
 export function NtfyConfirm({ confirmedAt }: { confirmedAt: string | null }) {
   const [state, formAction, pending] = useActionState(confirmNtfySubscription, {} as NtfyConfirmState);
-  const confirmed = !!confirmedAt || state.confirmed === true;
+  // Only the server value: the action revalidates /cuenta, and a later "Regenerar tema" clears it, which a
+  // remembered `state.confirmed` would otherwise keep showing as "Confirmado".
+  const confirmed = !!confirmedAt;
 
   return (
     <form action={formAction} className="actions" onSubmit={guard(pending)}>
