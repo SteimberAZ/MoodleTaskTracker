@@ -353,6 +353,10 @@ class WebPushSender:
         self._last_error: Optional[str] = None
         self._last_error_at: Optional[str] = None
         self._warned_untimed = False
+        # True when the latest FAILED result was not the subscription's fault (429/5xx, network, our
+        # VAPID/JWT/payload rejected, sender disabled): delivery then keeps retrying that notification
+        # instead of counting the attempt towards giving up on it.
+        self.last_failure_server_side = False
 
     @classmethod
     def from_env(cls, supabase=None, env: Optional[Mapping[str, str]] = None,
@@ -440,6 +444,7 @@ class WebPushSender:
                 self._last_error_at = _now_iso()
 
     def _failed(self, error: str, transient: bool = False, server_status: Optional[int] = None) -> PushResult:
+        self.last_failure_server_side = bool(transient or server_status is not None)
         self._count("failed", error=error, server_status=server_status)
         if transient:
             self._count("transient")
@@ -456,6 +461,7 @@ class WebPushSender:
         (see ``_retry_delay``) before the call returns.
         """
         if not self.enabled:
+            self.last_failure_server_side = True
             return PushResult.FAILED
         endpoint = str(sub.get("endpoint") or "")
         if not endpoint:

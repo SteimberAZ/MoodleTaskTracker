@@ -177,6 +177,16 @@ def test_network_errors_are_not_retried_nor_counted_but_show_in_stats(push):
     assert stats["last_error"] == "ConnectionError @ fcm.googleapis.com"
 
 
+def test_the_sender_tells_whether_a_failure_was_on_our_side(push):
+    sender, _ = _sender()
+    push.outcomes = [_http_error(503)]
+    assert sender.send_push(_sub(), PAYLOAD) is PushResult.FAILED and sender.last_failure_server_side is True
+    push.outcomes = [_http_error(403)]
+    assert sender.send_push(_sub(), PAYLOAD) is PushResult.FAILED and sender.last_failure_server_side is True
+    push.outcomes = [_http_error(400 + 22)]  # rejected for the subscription itself: counted against it
+    assert sender.send_push(_sub(), PAYLOAD) is PushResult.FAILED and sender.last_failure_server_side is False
+
+
 # ---- our own mistakes: loud, never counted ------------------------------------------------------------
 
 

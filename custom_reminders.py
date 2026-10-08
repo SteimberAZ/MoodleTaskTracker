@@ -18,6 +18,9 @@ import delivery
 # kind and tag the worker's reminder deliverer (worker.reminder_deliverer) sends a reminder with; the
 # bounded-retry state of delivery.deliver_to_user is keyed by them.
 REMINDER_KIND = "reminder"
+# A fire time whose end date passed while its delivery kept failing on our side (outages never
+# exhaust a notification) is given up this long after the end date: longer than the largest backoff.
+EXPIRED_RETRY_GRACE = timedelta(hours=2)
 
 
 def reminder_tag(reminder_id) -> str:
@@ -240,7 +243,8 @@ def process_due_reminders(
             continue
         tag = reminder_tag(reminder.get("id"))
         retrying = delivery.pending_attempts(owner["id"], REMINDER_KIND, tag) > 0
-        if action == "expire" and retrying:
+        expired_retry = action == "expire" and retrying
+        if expired_retry:
             # The end date passed while a failed delivery waited for its retry: give it that retry.
             now_iso = to_iso(now)
             decision = {"action": "send", "patch": {"last_sent_at": now_iso, "updated_at": now_iso, "active": False}}
@@ -259,8 +263,11 @@ def process_due_reminders(
             sent += 1
             _save(client, pending, rid, fire, decision["patch"], "delivered")
             continue
-        if delivery.is_exhausted(owner["id"], REMINDER_KIND, tag):
-            # Every bounded retry failed: skip this occurrence instead of retrying it forever.
+        if delivery.is_exhausted(owner["id"], REMINDER_KIND, tag) or (
+            expired_retry and now - parse_timestamptz(reminder["ends_at"]) > EXPIRED_RETRY_GRACE
+        ):
+            # Every bounded retry failed, or the reminder ended long ago (its natural expiry): skip this
+            # occurrence instead of retrying it forever.
             patch = {k: v for k, v in decision["patch"].items() if k != "last_sent_at"}
             print(f"[Reminders] {rid[:8]}: fire time {fire} not delivered after every retry; moving on.")
             delivery.forget(owner["id"], REMINDER_KIND, tag)

@@ -6,6 +6,7 @@ import pytest
 
 import class_reminders
 import class_schedule
+import custom_reminders
 import delivery
 import worker
 from class_reminders import process_class_reminders
@@ -193,6 +194,27 @@ def test_an_end_date_passing_during_backoff_still_gets_the_retry(monkeypatch):
     sender.ok = True
     assert process_due_reminders(db, deliver=deliver, now=later, unpatched={}) == 1
     assert sender.sent == 2 and db.rows["r1"]["active"] is False and db.rows["r1"]["last_sent_at"]
+
+
+def test_an_ended_reminder_stops_retrying_an_outage_after_the_grace(monkeypatch):
+    class OutageSender(Sender):
+        last_failure_server_side = True  # our outage: never exhausts the notification
+
+    clock = Clock(NOW.timestamp())
+    monkeypatch.setattr(delivery, "_now", clock)
+    sender = OutageSender(ok=False)
+    db = ConditionalDb([_reminder(ends_at="2026-01-01T12:00:30Z")])
+    deliver = _real_deliverer(sender)
+    now = NOW
+    for _ in range(6 * 60):
+        process_due_reminders(db, deliver=deliver, now=now, unpatched={})
+        if db.rows["r1"].get("active") is False:
+            break
+        now += timedelta(minutes=1)
+        clock.t = now.timestamp()
+    assert db.rows["r1"]["active"] is False and "last_sent_at" not in db.rows["r1"]
+    # it kept retrying through the outage past its end date, then gave up after the grace
+    assert custom_reminders.EXPIRED_RETRY_GRACE <= now - NOW <= custom_reminders.EXPIRED_RETRY_GRACE + timedelta(hours=1)
 
 
 def test_an_end_date_that_passed_without_any_attempt_expires_with_a_log(capsys):

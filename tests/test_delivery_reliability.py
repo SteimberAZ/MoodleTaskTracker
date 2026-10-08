@@ -218,6 +218,42 @@ def test_exhaustion_after_six_attempts_writes_at_most_three_rows_per_streak(cloc
     assert _states(db) == [("failed", "failed"), ("failed", "failed"), ("sent", "ok")]
 
 
+class OutageSender(Sender):
+    """Every push is refused for reasons on our side (429/5xx, our VAPID/JWT): not the device's fault."""
+
+    last_failure_server_side = True
+
+    def send_push(self, sub, payload, ttl, urgency):
+        self.sent.append(payload)
+        return PushResult.FAILED
+
+
+@pytest.mark.parametrize("make", [
+    lambda: dict(db=SubsDb(1), sender=OutageSender()),  # push service outage or our JWT rejected
+    lambda: dict(db=SubsDb(1, fail=True), sender=Sender()),  # subscriptions unreadable
+    lambda: dict(db=SubsDb(1), sender=Sender(enabled=False)),  # sender disabled
+], ids=["server-side", "read-error", "disabled"])
+def test_our_own_outages_never_exhaust_a_notification(clock, make):
+    log, db = _history()
+    kwargs = make()
+    for _ in range(600):  # ten hours of one tick per minute
+        _send(user=_user(ntfy=False), history=log, **kwargs)
+        clock.minutes(1)
+    state = delivery._ATTEMPTS[(UID, "task", "task-t1")]
+    assert state["attempts"] > MAX_ATTEMPTS and not is_exhausted(UID, "task", "task-t1")
+    log.flush()
+    assert len(db.rows) == 1  # one "failed" row for the streak, never one per attempt
+
+
+def test_a_device_failure_still_counts_towards_giving_up(clock):
+    sender = Sender(ALL_FAIL)
+    sender.last_failure_server_side = False
+    for _ in range(400):
+        _send(user=_user(ntfy=False), db=SubsDb(1), sender=sender)
+        clock.minutes(1)
+    assert is_exhausted(UID, "task", "task-t1")
+
+
 def test_success_clears_the_streak(clock):
     sender = Sender(ALL_FAIL)
     _send(user=_user(ntfy=False), db=SubsDb(1), sender=sender)

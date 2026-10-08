@@ -20,9 +20,13 @@ reminder.
 Bounded retries: failures are tracked in memory per (user id, kind, retry key = tag by default). After
 a failed attempt the key waits ``BACKOFF_MINUTES`` (1, 5, 15, 60, 60 ...) before it may be tried again;
 calls inside that wait return False at once without sending or recording anything. ntfy is sent at
-most once per failure streak. The history gets one row for the first failure of a streak, one for the
-eventual success and one more when the streak reaches ``MAX_ATTEMPTS`` (``is_exhausted`` then tells the
-caller to give up on it), never one per tick. A user without any usable channel (no devices and no
+most once per failure streak. Only failures attributable to the user count towards giving up (no
+devices, gone devices, failures counted against a subscription); our own outages (subscriptions
+unreadable, sender disabled, push service 429/5xx/timeouts, our VAPID/JWT rejected) keep retrying
+with the same backoff until the caller's natural expiry (due time, reminder end, class window). The
+history gets one row for the first failure of a streak, one for the eventual success and one more
+when the counted failures reach ``MAX_ATTEMPTS`` (``is_exhausted`` then tells the caller to give up on
+it), never one per tick. A user without any usable channel (no devices and no
 ntfy) gets at most one "failed" row per key and calendar day. State older than 24 hours is pruned.
 """
 import os
@@ -56,7 +60,9 @@ STATE_MAX_AGE_SECONDS = 24 * 3600
 _DAY_TZ = timezone(timedelta(hours=-5))  # calendar day of the "no usable channel" row (Ecuador, no DST)
 
 _last_logged: Dict[str, str] = {}
-# (user id, kind, retry key) -> {attempts, next_attempt_at, ntfy_sent, first_failure_logged, day, updated_at}
+# (user id, kind, retry key) ->
+#   {attempts, counted, next_attempt_at, ntfy_sent, first_failure_logged, day, updated_at}
+# ``attempts`` (every failure) drives the backoff; ``counted`` (user-attributable failures) the give-up.
 _ATTEMPTS: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
 
 
@@ -160,13 +166,14 @@ def _prune_state(now: float) -> None:
 
 
 def is_exhausted(user_id: Any, kind: Any, tag: Any) -> bool:
-    """True when the key (user id, kind, retry key / tag) failed ``MAX_ATTEMPTS`` times in a row.
+    """True when the key (user id, kind, retry key / tag) failed ``MAX_ATTEMPTS`` times in a row for
+    reasons attributable to the user (an outage on our side never exhausts a notification).
 
     Callers then give up on that notification (record the milestone, advance the reminder) so it is
     not retried forever; the history already holds its "failed" rows.
     """
     state = _ATTEMPTS.get(_state_key(user_id, kind, tag))
-    return bool(state) and int(state.get("attempts", 0)) >= MAX_ATTEMPTS
+    return bool(state) and int(state.get("counted", 0)) >= MAX_ATTEMPTS
 
 
 def pending_attempts(user_id: Any, kind: Any, tag: Any) -> int:
@@ -186,10 +193,17 @@ def reset_delivery_state() -> None:
     _last_logged.clear()
 
 
-def _failed_attempt(key, state: Optional[Dict[str, Any]], now: float, ntfy_sent: bool) -> Dict[str, Any]:
-    """Count one failed attempt for ``key`` and schedule the next one."""
-    state = state or {"attempts": 0, "ntfy_sent": False, "first_failure_logged": False, "day": None}
+def _failed_attempt(key, state: Optional[Dict[str, Any]], now: float, ntfy_sent: bool,
+                    counted: bool = True) -> Dict[str, Any]:
+    """Count one failed attempt for ``key`` and schedule the next one.
+
+    ``counted`` is False for a failure caused by our own infrastructure: it backs off like any other
+    but never brings the notification closer to ``is_exhausted``.
+    """
+    state = state or {"attempts": 0, "counted": 0, "ntfy_sent": False, "first_failure_logged": False, "day": None}
     state["attempts"] = int(state.get("attempts", 0)) + 1
+    if counted:
+        state["counted"] = int(state.get("counted", 0)) + 1
     state["next_attempt_at"] = now + _backoff_seconds(state["attempts"])
     state["updated_at"] = now
     state["ntfy_sent"] = bool(state.get("ntfy_sent")) or ntfy_sent
@@ -255,6 +269,7 @@ def deliver_to_user(
     parts = []
     push_ok = push_total = 0
     ntfy_attempted = ntfy_ok = False
+    server_side_failures = 0  # failed pushes that were not the device's fault
     topic = str(user.get("ntfy_topic") or "").strip()
     ntfy_on = ntfy_enabled(user) and bool(topic)
 
@@ -274,7 +289,8 @@ def deliver_to_user(
     # No usable channel at all: nothing to send. One "failed" row per key and day, never one per tick.
     if push_state in ("disabled", "no_devices") and not ntfy_on:
         if user_id:
-            state = _failed_attempt(key, state, now, ntfy_sent=False)
+            # A disabled sender is our configuration, not the user's: it never exhausts the notification.
+            state = _failed_attempt(key, state, now, ntfy_sent=False, counted=push_state == "no_devices")
             day = _calendar_day(now)
             if state.get("day") != day:
                 state["day"] = day
@@ -303,6 +319,10 @@ def deliver_to_user(
             except Exception as exc:  # noqa: BLE001
                 print(f"[Deliver] user {label}: push send crashed: {type(exc).__name__}")
                 result = PushResult.FAILED
+                server_side_failures += 1  # a bug on our side, not the device's fault
+            else:
+                if result is PushResult.FAILED and getattr(sender, "last_failure_server_side", False) is True:
+                    server_side_failures += 1
             counts[result if result in counts else PushResult.FAILED] += 1
         # A GONE device was deleted during this call: it is no longer one of the user's devices, so it
         # neither makes a delivery "partial" nor counts in push_total.
@@ -350,15 +370,22 @@ def deliver_to_user(
         _record_history(history, user_id, kind, title, body, url, tag, log_id, **outcome)
         return delivered
 
-    state = _failed_attempt(key, state, now, ntfy_sent=ntfy_ok)
-    attempts = state["attempts"]
-    if not state.get("first_failure_logged") or attempts == MAX_ATTEMPTS:
+    # Our own outage (unreadable subscriptions, sender off, every push refused server-side) keeps the
+    # notification retrying; only failures attributable to the user bring it closer to giving up.
+    infrastructure = push_state in ("read_error", "disabled") or (
+        push_state == "failed" and server_side_failures >= push_total > 0
+    )
+    state = _failed_attempt(key, state, now, ntfy_sent=ntfy_ok, counted=not infrastructure)
+    attempts, counted = state["attempts"], int(state.get("counted", 0))
+    if not state.get("first_failure_logged") or (not infrastructure and counted == MAX_ATTEMPTS):
         state["first_failure_logged"] = True
         _record_history(history, user_id, kind, title, body, url, tag, log_id, **outcome)
-    retry = (
-        f"giving up after {attempts} attempts" if attempts >= MAX_ATTEMPTS
-        else f"attempt {attempts}/{MAX_ATTEMPTS}, retry in {_backoff_seconds(attempts) // 60} min"
-    )
+    if infrastructure:
+        retry = f"server-side failure, not counted ({counted}/{MAX_ATTEMPTS}), retry in {_backoff_seconds(attempts) // 60} min"
+    elif counted >= MAX_ATTEMPTS:
+        retry = f"giving up after {counted} attempts"
+    else:
+        retry = f"attempt {counted}/{MAX_ATTEMPTS}, retry in {_backoff_seconds(attempts) // 60} min"
     print(f"[Deliver] user {label}: {', '.join(parts)} -> NOT delivered ({retry})")
     return False
 
