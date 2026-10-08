@@ -5,6 +5,8 @@
 :root {
   /* Brand palette */
   --clay: #b0603c;
+  /* Clay dark enough for text on paper (4.5:1 for normal text); the dark theme uses plain clay. */
+  --clay-text: #985033;
   --paper: #f5f2e9;
   --ink: #000;
   --peach: #ecb596;
@@ -55,6 +57,7 @@
     --shadow-hard: var(--clay);
     --header-bg: #111;
     --header-border: rgba(255, 255, 255, 0.12);
+    --clay-text: var(--clay);
 
     --btn-bg: var(--paper);
     --btn-text: #000;
@@ -67,6 +70,8 @@
 
 html {
   scroll-behavior: smooth;
+  /* Anchors, skip links and scrollIntoView land below the sticky header (and the iPhone status bar). */
+  scroll-padding-top: calc(var(--header-h) + env(safe-area-inset-top) + 12px);
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
 }
@@ -86,7 +91,7 @@ a, button { -webkit-tap-highlight-color: transparent; }
 img, svg { max-width: 100%; }
 p { margin: 0; }
 
-h1, h2, h3 { font-family: var(--display); margin: 0; overflow-wrap: break-word; }
+h1, h2, h3, h4 { font-family: var(--display); margin: 0; overflow-wrap: break-word; }
 h1 {
   font-size: clamp(22px, 1.1rem + 1.6vw, 34px);
   font-weight: 800;
@@ -181,6 +186,12 @@ body:has(.site-nav) .container {
   text-align: right;
 }
 
+/* Installed iPhone app (statusBarStyle black-translucent): the status bar text is always white and draws over
+   the page, so in the light theme the safe-area band above the header is painted ink. It is 0px tall elsewhere. */
+@media (max-width: 719px) and (prefers-color-scheme: light) {
+  .site-header { background: linear-gradient(var(--ink) 0 env(safe-area-inset-top), var(--header-bg) 0); }
+}
+
 /* Phones: bottom tab bar (icon above label). */
 .site-nav {
   position: fixed;
@@ -253,6 +264,7 @@ body:has(.site-nav) .container {
 
 @media (min-width: 720px) {
   :root { --gutter: 24px; }
+  html { scroll-padding-top: calc(16px + 72px + 16px); }
 
   .site-header {
     top: 16px;
@@ -388,19 +400,33 @@ body:has(.site-nav) .container {
 .item .meta, .item .actions { margin: 0; }
 .item.finalizado { background: transparent; border-style: dashed; }
 
+/* Group headings of the task list (e.g. "Vencen hoy", "Esta semana"). */
+.task-group-heading {
+  margin: 20px 0 8px;
+  color: var(--muted);
+  font: 700 12.5px/1.3 var(--font);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.task-group-heading:first-child { margin-top: 0; }
+
 /* Compact task and reminder cards. */
 .task-card, .reminder-card { position: relative; display: flex; flex-direction: column; gap: 4px; padding: 12px 14px 14px; }
 .task-top { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .task-top .badge { margin-left: auto; }
 .task-title {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
   margin-top: 2px;
+  overflow: hidden;
   font: 700 16px/1.3 var(--font);
   letter-spacing: 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  overflow-wrap: anywhere;
 }
-.task-title a { display: block; overflow: hidden; text-overflow: ellipsis; }
+/* Inline, so the two-line clamp applies to the link text itself; the course line below stays on one line. */
+.task-title a { display: inline; }
 /* The title link stretches over the whole card (a big tap target); the action buttons sit above it. */
 .task-title a::after { content: ''; position: absolute; inset: 0; border-radius: var(--radius); }
 .task-title a:focus-visible { outline: none; }
@@ -429,6 +455,7 @@ body:has(.site-nav) .container {
 
 /* Urgent tasks: peach surface with a short hard shadow, fixed ink text for contrast. */
 .task-card.urgent {
+  --focus: #000; /* the blue ring is under 3:1 on peach */
   --text: #000;
   --muted: #3b352f;
   --line: #000;
@@ -489,7 +516,7 @@ body:has(.site-nav) .container {
 .reminder-card .badge { text-transform: capitalize; }
 .meta .badge { margin-left: 8px; }
 
-.chips { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-bottom: 12px; }
+.chips { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 8px; margin-bottom: 12px; }
 .filter-chip {
   display: flex;
   flex-direction: column;
@@ -515,6 +542,10 @@ body:has(.site-nav) .container {
   line-height: 1.6;
   text-align: center;
 }
+/* One row of equal chips (three or four); the narrowest phones wrap them two per row. */
+@media (max-width: 359px) {
+  .chips { grid-auto-flow: row; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
 @media (min-width: 520px) {
   .chips { display: flex; flex-wrap: wrap; }
   .filter-chip { flex-direction: row; gap: 8px; min-height: 44px; padding: 0 16px; border-radius: 100px; }
@@ -539,6 +570,7 @@ body:has(.site-nav) .container {
 
 /* ============================== Banner and notices ============================== */
 .banner {
+  --focus: #000; /* the blue ring is under 3:1 on lavender */
   --btn-bg: #000;
   --btn-text: var(--paper);
   --btn-hover: #27221f;
@@ -555,6 +587,55 @@ body:has(.site-nav) .container {
 }
 .banner-text { flex: 1 1 200px; display: grid; gap: 2px; font-size: 13px; }
 .banner-text strong { font-size: 14px; }
+
+/* Toast variant: fixed above the bottom tab bar (phones) or the bottom-right corner, so showing or hiding it never
+   moves the page. While it is visible the page gets extra bottom padding (--toast-h is measured by NotifyBanner). */
+.banner--toast {
+  position: fixed;
+  left: max(var(--gutter), env(safe-area-inset-left));
+  right: max(var(--gutter), env(safe-area-inset-right));
+  bottom: calc(env(safe-area-inset-bottom) + 12px);
+  z-index: 25;
+  margin: 0;
+  border: 1px solid #000;
+  box-shadow: 4px 4px 0 #000;
+  animation: toast-in 0.2s ease-out;
+}
+body:has(.site-nav) .banner--toast { bottom: calc(var(--nav-h) + env(safe-area-inset-bottom) + 12px); }
+body:has(.banner--toast) .container { padding-bottom: calc(48px + var(--toast-h, 140px) + 12px); }
+body:has(.site-nav):has(.banner--toast) .container {
+  padding-bottom: calc(var(--nav-h) + env(safe-area-inset-bottom) + 28px + var(--toast-h, 140px) + 12px);
+}
+@keyframes toast-in { from { opacity: 0; transform: translateY(12px); } }
+@media (min-width: 720px) {
+  .banner--toast, body:has(.site-nav) .banner--toast { left: auto; right: 24px; bottom: 24px; width: min(480px, calc(100% - 48px)); }
+  body:has(.banner--toast) .container,
+  body:has(.site-nav):has(.banner--toast) .container { padding-bottom: calc(80px + var(--toast-h, 140px)); }
+}
+
+/* Status notices (push health, sync state): a bordered line of text in one of four tones. */
+.notice {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 12px 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 14px;
+}
+.notice strong { font-weight: 700; }
+.notice--ok, .notice.is-ok { border-color: var(--ok); }
+.notice--warn, .notice.is-warn { border-color: var(--line); border-style: dashed; }
+.notice--danger, .notice.is-danger { border-color: var(--danger); }
+.notice--info, .notice.is-info { border-color: var(--lavender); }
+.status-ok { color: var(--ok); font-weight: 700; }
+.status-warn { color: var(--text); font-weight: 700; }
+.status-danger { color: var(--danger); font-weight: 700; }
+.badge.is-ok { background: var(--lime); }
+.badge.is-warn { background: var(--lavender); }
+.badge.is-danger { background: var(--peach); border-color: #000; }
 
 .alert {
   margin: 0 0 16px;
@@ -689,7 +770,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 2px
 .help-box ul { margin: 0 0 12px; padding-left: 20px; display: grid; gap: 6px; }
 
 /* Collapsible setup card: the header row keeps its height whether the body is open or not. */
-.push-collapsible { gap: 0; scroll-margin-top: calc(var(--header-h) + 12px); }
+.push-collapsible { gap: 0; }
 .push-head { margin: 0; font-size: inherit; }
 .push-toggle {
   display: flex;
@@ -791,7 +872,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 2px
 .hist-badges { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px; }
 
 /* The notification opened from a tap (?n=): a highlighted card on top, and its entry in the list. */
-.hist-focus, .hist-focus-missing { scroll-margin-top: calc(var(--header-h) + 12px); margin-top: 12px; max-width: 760px; }
+.hist-focus, .hist-focus-missing { margin-top: 12px; max-width: 760px; }
 .hist-focus { display: grid; gap: 8px; border: 3px solid var(--line); background: var(--lime); color: #000; }
 .hist-focus.is-failed { border-style: dashed; border-color: var(--danger); }
 .hist-focus:focus-visible, .hist-focus-missing:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
@@ -878,7 +959,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 2px
 
 .schedule-days { display: grid; gap: 18px; }
 .schedule-day-title { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; font-size: 17px; }
-.schedule-day.is-today .schedule-day-title { color: var(--clay); }
+.schedule-day.is-today .schedule-day-title { color: var(--clay-text); }
 .class-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
 .class-item {
   display: grid;
@@ -902,7 +983,6 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 2px
 .notif-body { margin: 0; white-space: pre-line; font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
 
 /* ============================== Schedule: picker, loading, editor, action bar ============================== */
-.workspace { scroll-margin-top: calc(var(--header-h) + 12px); }
 .save-banner { display: grid; gap: 4px; margin: 0; }
 .save-banner:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
 .save-banner span { font-weight: 500; color: var(--text); }
