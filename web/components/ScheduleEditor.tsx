@@ -4,6 +4,11 @@ import { useEffect, useRef, useState, type Dispatch } from 'react';
 import { MAX_SCHEDULE_ENTRIES, WEEKDAY_NAMES } from '@/lib/class-schedule';
 import { FIELD_LIMITS, type EntryErrors, type TextField } from '@/lib/schedule-entries';
 import type { EditorAction, EditorEntry, EditorValidation } from '@/lib/schedule-editor';
+import LiveStatus from './LiveStatus';
+
+/** Id of the editor heading: ScheduleWorkspace focuses it when the edit step opens. */
+export const SCHEDULE_EDIT_TITLE_ID = 'schedule-edit-title';
+const removeButtonId = (key: string): string => `${key}-remove`;
 
 function TextInput({
   entry,
@@ -45,11 +50,13 @@ function EntryCard({
   index,
   errors,
   dispatch,
+  onRemove,
 }: {
   entry: EditorEntry;
   index: number;
   errors: EntryErrors;
   dispatch: Dispatch<EditorAction>;
+  onRemove: (key: string, index: number) => void;
 }) {
   const timeField = (field: 'startTime' | 'endTime', label: string) => {
     const id = `${entry.key}-${field}`;
@@ -83,8 +90,9 @@ function EntryCard({
         <h3>Clase {index + 1}</h3>
         <button
           type="button"
+          id={removeButtonId(entry.key)}
           className="btn danger"
-          onClick={() => dispatch({ type: 'remove', key: entry.key })}
+          onClick={() => onRemove(entry.key, index)}
           aria-label={`Eliminar clase ${index + 1}${entry.subject.trim() ? `: ${entry.subject.trim()}` : ''}`}
         >
           Eliminar
@@ -100,6 +108,7 @@ function EntryCard({
               id={`${entry.key}-weekday`}
               value={entry.weekday}
               aria-invalid={errors.weekday ? true : undefined}
+              aria-describedby={errors.weekday ? `${entry.key}-weekday-error` : undefined}
               onChange={(e) => dispatch({ type: 'update', key: entry.key, patch: { weekday: Number(e.target.value) } })}
             >
               {WEEKDAY_NAMES.slice(1).map((name, i) => (
@@ -108,7 +117,11 @@ function EntryCard({
                 </option>
               ))}
             </select>
-            {errors.weekday && <p className="field-error">{errors.weekday}</p>}
+            {errors.weekday && (
+              <p id={`${entry.key}-weekday-error`} className="field-error">
+                {errors.weekday}
+              </p>
+            )}
           </div>
         </div>
         <div className="edit-pair">
@@ -143,7 +156,11 @@ export default function ScheduleEditor({
   showErrors: boolean;
 }) {
   const counter = useRef(0);
+  const addRef = useRef<HTMLButtonElement>(null);
   const [focusKey, setFocusKey] = useState<string | null>(null);
+  /** Where focus goes after "Eliminar": another card's Eliminar button, or "Agregar clase" (null). */
+  const [focusAfterRemove, setFocusAfterRemove] = useState<{ key: string | null } | null>(null);
+  const [announcement, setAnnouncement] = useState('');
 
   // After "Agregar clase", move focus to the new entry's subject field.
   useEffect(() => {
@@ -156,6 +173,23 @@ export default function ScheduleEditor({
     setFocusKey(null);
   }, [focusKey, entries]);
 
+  // After "Eliminar" the button is gone: focus the next card's Eliminar, else the previous one, else "Agregar clase".
+  useEffect(() => {
+    if (!focusAfterRemove) return;
+    const target = focusAfterRemove.key ? document.getElementById(removeButtonId(focusAfterRemove.key)) : addRef.current;
+    target?.focus();
+    setFocusAfterRemove(null);
+  }, [focusAfterRemove, entries]);
+
+  function remove(key: string, index: number) {
+    const neighbour = entries[index + 1] ?? entries[index - 1] ?? null;
+    dispatch({ type: 'remove', key });
+    setFocusAfterRemove({ key: neighbour?.key ?? null });
+    const text = `Clase ${index + 1} eliminada`;
+    // A trailing no-break space toggles on repeats, so removing "Clase 1" twice is announced twice.
+    setAnnouncement((prev) => (prev === text ? `${text}\u00a0` : text));
+  }
+
   const full = entries.length >= MAX_SCHEDULE_ENTRIES;
   function add() {
     const key = `n${++counter.current}`;
@@ -166,7 +200,9 @@ export default function ScheduleEditor({
   return (
     <div className="stack">
       <div className="page-head">
-        <h2>Editar horario</h2>
+        <h2 id={SCHEDULE_EDIT_TITLE_ID} tabIndex={-1}>
+          Editar horario
+        </h2>
         <p className="muted">Corrige los datos o elimina lo que no corresponda. Los cambios se aplican al guardar.</p>
       </div>
       {showErrors && validation.listError && (
@@ -176,15 +212,23 @@ export default function ScheduleEditor({
       )}
       <ul className="edit-list plain-list">
         {entries.map((entry, index) => (
-          <EntryCard key={entry.key} entry={entry} index={index} errors={showErrors ? (validation.byKey[entry.key] ?? {}) : {}} dispatch={dispatch} />
+          <EntryCard
+            key={entry.key}
+            entry={entry}
+            index={index}
+            errors={showErrors ? (validation.byKey[entry.key] ?? {}) : {}}
+            dispatch={dispatch}
+            onRemove={remove}
+          />
         ))}
       </ul>
       <div className="actions">
-        <button type="button" className="btn" onClick={add} disabled={full}>
+        <button type="button" className="btn" onClick={add} disabled={full} ref={addRef}>
           Agregar clase
         </button>
         {full && <span className="muted small">Máximo {MAX_SCHEDULE_ENTRIES} clases.</span>}
       </div>
+      <LiveStatus message={announcement} />
     </div>
   );
 }

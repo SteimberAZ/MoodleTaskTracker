@@ -1,7 +1,8 @@
 'use client';
 
-import { useEffect, useReducer, useRef, useState, useTransition, type ReactNode } from 'react';
-import { saveEditedSchedule, saveImportedSchedule, type SchedulePreview } from '@/app/horario/actions';
+import { useEffect, useReducer, useRef, useState, useTransition } from 'react';
+import { deleteSchedule, saveEditedSchedule, saveImportedSchedule, type SchedulePreview } from '@/app/horario/actions';
+import { leadLabel } from '@/lib/class-schedule';
 import {
   classesToEntries,
   editorReducer,
@@ -13,7 +14,7 @@ import {
 import type { ScheduleClass } from '@/lib/sga-schedule';
 import ScheduleActionBar from './ScheduleActionBar';
 import ScheduleDays from './ScheduleDays';
-import ScheduleEditor from './ScheduleEditor';
+import ScheduleEditor, { SCHEDULE_EDIT_TITLE_ID } from './ScheduleEditor';
 import SchedulePicker from './SchedulePicker';
 
 type Mode = 'view' | 'upload' | 'preview' | 'edit';
@@ -30,41 +31,53 @@ interface Draft {
 
 const countLabel = (n: number): string => `${n} ${n === 1 ? 'clase' : 'clases'}`;
 
+const DELETE_MESSAGE = '¿Borrar tu horario de clases? Dejarás de recibir avisos de clases hasta que lo importes de nuevo.';
+
 /**
  * Everything on /horario that touches the schedule: the saved schedule, the PDF picker, the preview of a
  * draft (with Guardar / Editar / Cancelar) and the editor. A draft only replaces the stored schedule on save.
+ * Every step change after the first render scrolls the workspace into view and moves focus to the new step's
+ * heading (or the save confirmation), so keyboard and screen reader users follow along.
  */
-export default function ScheduleWorkspace({
-  saved,
-  today,
-  extraActions,
-}: {
-  saved: ScheduleClass[];
-  today: number;
-  extraActions?: ReactNode;
-}) {
+export default function ScheduleWorkspace({ saved, today }: { saved: ScheduleClass[]; today: number }) {
   const [mode, setMode] = useState<Mode>(saved.length > 0 ? 'view' : 'upload');
   const [draft, setDraft] = useState<Draft | null>(null);
   const [entries, dispatch] = useReducer(editorReducer, [] as EditorEntry[]);
   const [showErrors, setShowErrors] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [justSaved, setJustSaved] = useState(false);
+  /** Lead time the first save switched on (minutes), shown in the confirmation. */
+  const [defaultLead, setDefaultLead] = useState<number | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [saving, startSave] = useTransition();
+  const [deleting, startDelete] = useTransition();
   const rootRef = useRef<HTMLDivElement>(null);
   const bannerRef = useRef<HTMLDivElement>(null);
+  const uploadTitleRef = useRef<HTMLHeadingElement>(null);
+  const previewTitleRef = useRef<HTMLHeadingElement>(null);
+  const editButtonRef = useRef<HTMLButtonElement>(null);
   const previousMode = useRef<Mode>(mode);
 
   // A deleted schedule leaves nothing to show: fall back to the picker.
   const current: Mode = mode === 'view' && saved.length === 0 ? 'upload' : mode;
   const validation = validateEditor(entries);
 
-  // Bring the new step into view when the screen changes (not on first render).
+  // Bring the new step into view and focus its heading when the screen changes (not on first render).
   useEffect(() => {
-    if (previousMode.current !== current) {
-      previousMode.current = current;
-      if (current === 'view' && justSaved) bannerRef.current?.focus();
-      rootRef.current?.scrollIntoView({ block: 'start' });
-    }
+    if (previousMode.current === current) return;
+    previousMode.current = current;
+    rootRef.current?.scrollIntoView({ block: 'start' });
+    const target: HTMLElement | null =
+      current === 'upload'
+        ? uploadTitleRef.current
+        : current === 'preview'
+          ? previewTitleRef.current
+          : current === 'edit'
+            ? document.getElementById(SCHEDULE_EDIT_TITLE_ID)
+            : justSaved
+              ? bannerRef.current
+              : editButtonRef.current;
+    target?.focus({ preventScroll: true });
   }, [current, justSaved]);
 
   function openDraft(next: Draft, nextMode: Mode) {
@@ -73,6 +86,8 @@ export default function ScheduleWorkspace({
     setShowErrors(false);
     setSaveError(null);
     setJustSaved(false);
+    setDefaultLead(null);
+    setDeleteError(null);
     setMode(nextMode);
   }
 
@@ -136,7 +151,22 @@ export default function ScheduleWorkspace({
       }
       setDraft(null);
       setJustSaved(true);
+      setDefaultLead(result.defaultLead ?? null);
       setMode('view');
+    });
+  }
+
+  function removeSchedule() {
+    if (!window.confirm(DELETE_MESSAGE)) return;
+    setDeleteError(null);
+    startDelete(async () => {
+      try {
+        const result = await deleteSchedule();
+        if (result.error) setDeleteError(result.error);
+        // On success the refreshed page has no saved classes and the workspace falls back to the picker.
+      } catch {
+        setDeleteError('No se pudo borrar el horario. Inténtalo de nuevo.');
+      }
     });
   }
 
@@ -149,30 +179,48 @@ export default function ScheduleWorkspace({
           {justSaved && (
             <div className="success save-banner" role="status" tabIndex={-1} ref={bannerRef}>
               <strong>Horario guardado ✓</strong>
-              <span>
-                Ahora elige cuánto antes quieres el aviso de cada clase.{' '}
-                <a className="link" href="#class-reminder-title">
-                  Ir a Avisos de clases
-                </a>
-              </span>
+              {defaultLead ? (
+                <span>
+                  Te avisaremos {leadLabel(defaultLead)} antes de cada clase ·{' '}
+                  <a className="link" href="#class-reminder-title">
+                    Cambiar
+                  </a>
+                </span>
+              ) : (
+                <span>
+                  Ahora elige cuánto antes quieres el aviso de cada clase.{' '}
+                  <a className="link" href="#class-reminder-title">
+                    Ir a Avisos de clases
+                  </a>
+                </span>
+              )}
             </div>
           )}
           <div className="actions">
-            <button type="button" className="btn primary" onClick={editSaved}>
+            <button type="button" className="btn primary" onClick={editSaved} ref={editButtonRef}>
               Editar horario
             </button>
             <button type="button" className="btn" onClick={() => setMode('upload')}>
               Volver a importar
             </button>
-            {extraActions}
+            <button type="button" className="btn danger" onClick={removeSchedule} disabled={deleting}>
+              {deleting ? 'Borrando…' : 'Borrar horario'}
+            </button>
           </div>
-          <ScheduleDays items={savedItems} today={today} />
+          {deleteError && (
+            <p className="alert" role="alert">
+              {deleteError}
+            </p>
+          )}
+          <ScheduleDays items={savedItems} today={today} headingLevel={2} />
         </>
       )}
 
       {current === 'upload' && (
         <div className="card item">
-          <h2 className="card-title">{saved.length > 0 ? 'Volver a importar' : 'Importa tu horario'}</h2>
+          <h2 className="card-title" ref={uploadTitleRef} tabIndex={-1}>
+            {saved.length > 0 ? 'Volver a importar' : 'Importa tu horario'}
+          </h2>
           <p className="muted">
             En el SGA abre «Horario de clases», imprime o descarga la página como PDF y elígela aquí. Verás tu horario antes de guardarlo y
             podrás corregirlo.
@@ -184,7 +232,9 @@ export default function ScheduleWorkspace({
       {draft && current === 'preview' && (
         <>
           <div className="page-head">
-            <h2>Revisa tu horario</h2>
+            <h2 ref={previewTitleRef} tabIndex={-1}>
+              Revisa tu horario
+            </h2>
             <p className="muted">
               {draft.periodLabel ? `Período: ${draft.periodLabel}. ` : ''}
               {countLabel(entries.length)}. {saved.length > 0 ? 'Al guardar se reemplaza tu horario actual. ' : ''}

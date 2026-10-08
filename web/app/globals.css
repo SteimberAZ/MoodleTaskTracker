@@ -649,7 +649,6 @@ body:has(.site-nav):has(.banner--toast) .container {
 .card + .alert { margin-top: 12px; }
 /* Error boundary and 404 screens (app/error.tsx, app/not-found.tsx). */
 .error-screen { max-width: 560px; margin-top: 8px; }
-.error-screen h1:focus { outline: none; }
 .field-error { color: var(--danger); font-size: 13px; font-weight: 600; }
 .success {
   margin: 0 0 4px;
@@ -961,7 +960,8 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 2px
 @media (max-width: 380px) { .segmented-row { grid-auto-flow: row; grid-auto-columns: auto; grid-template-columns: repeat(2, minmax(0, 1fr)); border-radius: 24px; } }
 
 .schedule-days { display: grid; gap: 18px; }
-.schedule-day-title { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; font-size: 17px; }
+/* h2 on the saved schedule, h3 in the preview: same look either way. */
+.schedule-day-title { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; font-size: 17px; font-weight: 700; letter-spacing: -0.2px; line-height: 1.2; }
 .schedule-day.is-today .schedule-day-title { color: var(--clay-text); }
 .class-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
 .class-item {
@@ -988,6 +988,8 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 2px
 /* ============================== Schedule: picker, loading, editor, action bar ============================== */
 .save-banner { display: grid; gap: 4px; margin: 0; }
 .save-banner:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+/* Headings that only receive focus programmatically (step changes, error screens) need no ring. */
+:is(h1, h2, h3)[tabindex='-1']:focus { outline: none; }
 .save-banner span { font-weight: 500; color: var(--text); }
 
 .picker { max-width: 640px; }
@@ -1023,7 +1025,8 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 2px
 }
 @media (hover: hover) { .dropzone:hover:not(.is-busy) { border-color: var(--clay); background: var(--bg); } }
 
-.picker-status:empty { display: none; }
+/* Empty: out of the grid flow but still in the accessibility tree (display: none would drop the live region). */
+.picker-status:empty { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 .loading-text { display: flex; align-items: center; gap: 10px; margin: 0; font-weight: 700; }
 .spinner {
   width: 18px;
@@ -1163,6 +1166,8 @@ main:has(.form.narrow)::before {
 
 /* ============================== Accessibility ============================== */
 :focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+/* Headings that only receive focus programmatically (step changes, error screens) need no ring. */
+:is(h1, h2, h3)[tabindex='-1']:focus { outline: none; }
 
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }

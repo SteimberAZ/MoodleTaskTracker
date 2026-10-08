@@ -2,8 +2,10 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import type { FormState } from '@/app/actions';
+import LiveStatus from '@/components/LiveStatus';
 import { NavPlaceholder } from '@/components/NavLinks';
 import ReminderForm, { countFieldErrors } from '@/components/ReminderForm';
+import ScheduleDays from '@/components/ScheduleDays';
 
 describe('NavPlaceholder (header Suspense fallback)', () => {
   it('keeps a .site-nav element so the body:has(.site-nav) padding does not shift when the nav streams in', () => {
@@ -70,5 +72,21 @@ describe('ReminderForm error state', () => {
     expect(html).not.toContain('Revisa');
     expect(html).not.toContain('aria-invalid');
     expect(html).not.toMatch(/<label[^>]*>[^<]*<span/);
+  });
+});
+
+describe('LiveStatus', () => {
+  it('stays mounted as a polite status region while empty', () => {
+    expect(renderToStaticMarkup(createElement(LiveStatus, {}))).toBe('<p class="sr-only" role="status" aria-live="polite"></p>');
+    expect(renderToStaticMarkup(createElement(LiveStatus, { message: 'Copiado' }))).toContain('>Copiado</p>');
+  });
+});
+
+describe('ScheduleDays heading level', () => {
+  const items = [{ index: 0, cls: { subject: 'CÁLCULO', level: 1, parallel: 'A', credits: 4, teacher: null, department: null, weekday: 2, startTime: '07:00', endTime: '09:00', place: null, roomCode: null, roomType: null, floor: null } }];
+
+  it('uses h2 under the page h1 and h3 under a step heading', () => {
+    expect(renderToStaticMarkup(createElement(ScheduleDays, { items, headingLevel: 2 }))).toMatch(/<h2 id="day-2" class="schedule-day-title">Martes/);
+    expect(renderToStaticMarkup(createElement(ScheduleDays, { items }))).toMatch(/<h3 id="day-2" class="schedule-day-title">Martes/);
   });
 });

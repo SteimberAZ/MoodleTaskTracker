@@ -15,10 +15,14 @@ export interface IndexedClass {
 export default function ScheduleDays({
   items,
   today,
+  headingLevel = 3,
 }: {
   items: IndexedClass[];
   today?: number;
+  /** 2 when the days sit right under the page h1 (saved schedule), 3 under a step heading (preview). */
+  headingLevel?: 2 | 3;
 }) {
+  const Heading = headingLevel === 2 ? 'h2' : 'h3';
   const groups = groupByWeekday(items.map((item) => ({ ...item, weekday: item.cls.weekday, startTime: item.cls.startTime })));
   const shown =
     today && !groups.some((g) => g.weekday === today)
@@ -33,10 +37,10 @@ export default function ScheduleDays({
         const isToday = group.weekday === today;
         return (
           <section key={group.weekday} className={`schedule-day${isToday ? ' is-today' : ''}`} aria-labelledby={`day-${group.weekday}`}>
-            <h3 id={`day-${group.weekday}`} className="schedule-day-title">
+            <Heading id={`day-${group.weekday}`} className="schedule-day-title">
               {group.name}
               {isToday && <span className="badge activo">Hoy</span>}
-            </h3>
+            </Heading>
             {group.items.length === 0 ? (
               <p className="card muted empty">Sin clases hoy.</p>
             ) : (
