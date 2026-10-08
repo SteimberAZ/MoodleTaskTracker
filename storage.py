@@ -516,7 +516,9 @@ class Storage:
 
         After a lost or fresh SQLite file this copies the milestones of the last ``HYDRATE_DAYS`` days
         (and every ``new`` one) plus the per-user first-sync and token-alert flags, so nothing is
-        announced again. A no-op when local milestones exist or Supabase is not configured. Returns
+        announced again. A no-op when local task milestones exist or Supabase is not configured
+        (class-reminder keys do not count: the delivery pass records them before the worker retries a
+        failed restore, and the restore must still run then). Returns
         the counts (``milestones``, ``settings``) or ``{"error": ...}``; never raises.
         """
         client = supabase if supabase is not None else self.supabase
@@ -524,7 +526,11 @@ class Storage:
             if client is None or not getattr(client, "is_configured", False):
                 return {"skipped": "not_configured", "milestones": 0, "settings": 0}
             with self._get_conn() as conn:
-                if conn.execute("SELECT 1 FROM task_milestones LIMIT 1").fetchone() is not None:
+                local = conn.execute(
+                    "SELECT 1 FROM task_milestones WHERE task_id NOT LIKE 'class:%'"
+                    " AND task_id NOT LIKE 'class\\_%' ESCAPE '\\' LIMIT 1"
+                ).fetchone()
+                if local is not None:
                     return {"skipped": "local_state_present", "milestones": 0, "settings": 0}
             # Read everything first: a partial restore would make the next start skip the rest.
             milestones = client.fetch_milestones_since(HYDRATE_DAYS)

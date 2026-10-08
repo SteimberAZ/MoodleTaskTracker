@@ -252,6 +252,16 @@ def test_hydration_fills_an_empty_database_once(tmp_path):
     assert second["skipped"] == "local_state_present" and remote.reads == 1
 
 
+def test_hydration_still_runs_when_only_class_reminder_keys_exist(tmp_path):
+    s = _storage(tmp_path)
+    # The delivery pass of the first ticks records class keys before a failed restore is retried.
+    s.record_milestone("class:abc:2026-10-08", "30m")
+    s.record_milestone("class_7_2026-10-08", "30m")
+    remote = RemoteState()
+    assert s.hydrate_from_remote(remote) == {"milestones": 2, "settings": 2}
+    assert s.has_notified_milestone("t1", "1d")
+
+
 def test_hydration_failure_is_reported_not_raised(tmp_path):
     s = _storage(tmp_path)
     result = s.hydrate_from_remote(RemoteState(fail=True))
