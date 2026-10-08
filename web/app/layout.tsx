@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from 'next';
 import { Manrope, Syne } from 'next/font/google';
 import './globals.css';
+import './skeleton.css';
 import { SiteHeader } from '@/components/Brand';
 import PwaClient from '@/components/PwaClient';
 
@@ -28,7 +29,7 @@ export const metadata: Metadata = {
   icons: {
     icon: [
       // `?v=2` busts the browsers' long-lived favicon cache after the redesign; bump it when the mark changes.
-      { url: '/icon.svg?v=2', type: 'image/svg+xml', sizes: 'any' },
+      { url: '/icon.svg?v=3', type: 'image/svg+xml', sizes: 'any' },
       { url: '/icons/icon-192.png', type: 'image/png', sizes: '192x192' },
     ],
     apple: [{ url: '/apple-touch-icon.png', sizes: '180x180', type: 'image/png' }],

@@ -1,7 +1,7 @@
 'use client';
 
 import type { ReactElement } from 'react';
-import Link from 'next/link';
+import Link, { useLinkStatus } from 'next/link';
 import { usePathname } from 'next/navigation';
 import { buildNavItems, type NavIconName } from '@/lib/nav';
 import { BellIcon, ClockIcon, ShieldIcon, TasksIcon, UserIcon } from './Icons';
@@ -13,6 +13,15 @@ const ICONS: Record<NavIconName, () => ReactElement> = {
   user: UserIcon,
   shield: ShieldIcon,
 };
+
+/**
+ * Invisible marker inside each <Link>: `useLinkStatus` only works in a descendant of the link. While that link's
+ * navigation is pending it sets `data-pending`, and skeleton.css dims the tab (feedback before the page streams in).
+ */
+function PendingMark() {
+  const { pending } = useLinkStatus();
+  return <span className="nav-pending" aria-hidden="true" data-pending={pending ? 'true' : undefined} />;
+}
 
 /**
  * The app navigation: Tareas / Recordatorios / Notificaciones / Mi cuenta / Admin (admins only).
@@ -40,6 +49,7 @@ export default function NavLinks({ isAdmin, variant }: { isAdmin: boolean; varia
             ) : (
               <span>{label}</span>
             )}
+            <PendingMark />
           </Link>
         );
       })}
