@@ -449,6 +449,7 @@ def test_the_push_payload_carries_target_and_stays_small():
 
     data = json.loads(ws.encode_payload({"title": "t", "body": "b", "url": "/notificaciones?n=x", "target": "/tareas/t1",
                                          "tag": "g"}))
+    assert isinstance(data.pop("timestamp"), int)
     assert data == {"title": "t", "body": "b", "url": "/notificaciones?n=x", "tag": "g", "target": "/tareas/t1"}
     assert "target" not in json.loads(ws.encode_payload({"title": "t", "body": "b", "url": "/"}))
 

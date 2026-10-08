@@ -79,7 +79,18 @@ def _sub(**over):
 
 
 def _sender(db=None, **kw):
+    kw.setdefault("sleep", lambda seconds: None)  # the 429/5xx retry must never slow the suite down
     return WebPushSender(FakeDb() if db is None else db, vapid=VAPID, subject=SUBJECT, lib=pywebpush, **kw)
+
+
+OLD_SUCCESS = "2020-01-01T00:00:00+00:00"  # long enough ago for a counted failure streak to delete the row
+
+
+def _decoded(text):
+    """The encoded payload without the always-present ``timestamp`` (epoch ms)."""
+    data = json.loads(text)
+    assert isinstance(data.pop("timestamp"), int)
+    return data
 
 
 def _http_error(status, text="{}"):
@@ -157,13 +168,13 @@ def test_unusable_keys_are_rejected(bad):
 
 
 def test_payload_has_exactly_title_body_url_tag():
-    data = json.loads(ws.encode_payload(dict(PAYLOAD, extra="never sent")))
+    data = _decoded(ws.encode_payload(dict(PAYLOAD, extra="never sent")))
     assert data == PAYLOAD
 
 
 def test_payload_defaults_url_and_keeps_unicode_intact():
     text = ws.encode_payload({"title": "Notificaciones activas ✅", "body": "Así te llegarán 🚨"})
-    assert json.loads(text) == {"title": "Notificaciones activas ✅", "body": "Así te llegarán 🚨", "url": "/", "tag": ""}
+    assert _decoded(text) == {"title": "Notificaciones activas ✅", "body": "Así te llegarán 🚨", "url": "/", "tag": ""}
 
 
 LONG_BODIES = {
@@ -211,7 +222,7 @@ def test_accepted_push_is_ok_marks_success_and_builds_the_right_request(push):
 
     (call,) = push.calls
     assert call["subscription_info"] == {"endpoint": ENDPOINT, "keys": {"p256dh": P256DH, "auth": AUTH}}
-    assert json.loads(call["data"]) == PAYLOAD
+    assert _decoded(call["data"]) == PAYLOAD
     assert call["vapid_private_key"] is VAPID
     assert call["vapid_claims"] == {"sub": SUBJECT}
     assert call["ttl"] == 600 and call["headers"] == {"Urgency": "high"}
@@ -237,7 +248,7 @@ def test_404_and_410_mean_gone_and_delete_the_row(push, status):
     assert db.updates == []
 
 
-@pytest.mark.parametrize("status", [400, 413, 422])
+@pytest.mark.parametrize("status", [406, 409, 422])
 def test_subscription_http_errors_fail_and_increment_the_counter(push, status):
     db = FakeDb()
     push.outcome = _http_error(status, text='{"reason":"BadRequest"}')
@@ -250,42 +261,43 @@ def test_subscription_http_errors_fail_and_increment_the_counter(push, status):
     assert sub["failure_count"] == 4  # the caller's row reflects the new count
 
 
-@pytest.mark.parametrize("status", [401, 403, 429, 500, 502, 503])
-def test_vapid_rate_limit_and_outage_statuses_never_count_against_the_subscription(push, status, capsys):
+@pytest.mark.parametrize("status", [400, 401, 403, 413, 429, 500, 502, 503])
+def test_payload_vapid_rate_limit_and_outage_statuses_never_count_against_the_subscription(push, status, capsys):
     db = FakeDb()
     push.outcome = _http_error(status, text='{"reason":"BadJwtToken"}')
-    sub = _sub(failure_count=9)  # one more counted failure would delete it
+    sub = _sub(failure_count=9, last_success_at=OLD_SUCCESS)  # one more counted failure would delete it
     sender = _sender(db)
     for _ in range(ws.MAX_FAILURES + 2):
         assert sender.send_push(sub, PAYLOAD) is PushResult.FAILED
-    assert db.updates == [] and db.deletes == []
+    assert db.deletes == []
+    assert all("failure_count" not in fields and "last_failure_at" in fields for _, fields in db.updates)
     assert sub["failure_count"] == 9
     assert "not counted" in capsys.readouterr().out
 
 
 def test_failure_counter_starts_from_zero_when_the_row_has_none(push):
     db = FakeDb()
-    push.outcome = _http_error(400)
+    push.outcome = _http_error(422)
     _sender(db).send_push({"id": "s1", "endpoint": ENDPOINT, "p256dh": P256DH, "auth": AUTH}, PAYLOAD)
     assert db.updates[0][1]["failure_count"] == 1
 
 
-def test_the_tenth_consecutive_failure_deletes_the_subscription(push):
+def test_the_tenth_consecutive_failure_deletes_a_stale_subscription(push):
     db = FakeDb()
-    push.outcome = _http_error(400)
+    push.outcome = _http_error(422)
     sender = _sender(db)
-    assert sender.send_push(_sub(failure_count=8), PAYLOAD) is PushResult.FAILED
+    assert sender.send_push(_sub(failure_count=8, last_success_at=OLD_SUCCESS), PAYLOAD) is PushResult.FAILED
     assert db.deletes == [] and db.updates[0][1]["failure_count"] == 9
 
-    assert sender.send_push(_sub(failure_count=9), PAYLOAD) is PushResult.FAILED
+    assert sender.send_push(_sub(failure_count=9, last_success_at=OLD_SUCCESS), PAYLOAD) is PushResult.FAILED
     assert db.deletes == ["11111111-aaaa-bbbb-cccc-000000000001"]
     assert len(db.updates) == 1  # nothing to patch once the row is gone
 
 
 def test_repeated_failures_on_one_row_reach_the_limit(push):
     db = FakeDb()
-    push.outcome = _http_error(400)
-    sender, sub = _sender(db), _sub()
+    push.outcome = _http_error(422)
+    sender, sub = _sender(db), _sub(created_at=OLD_SUCCESS)
     for _ in range(ws.MAX_FAILURES):
         sender.send_push(sub, PAYLOAD)
     assert [f["failure_count"] for _, f in db.updates] == list(range(1, ws.MAX_FAILURES))
@@ -295,7 +307,7 @@ def test_repeated_failures_on_one_row_reach_the_limit(push):
 def test_a_success_in_between_resets_the_counter(push):
     db = FakeDb()
     sender = _sender(db)
-    push.outcome = _http_error(400)
+    push.outcome = _http_error(422)
     sender.send_push(_sub(failure_count=5), PAYLOAD)
     push.outcome = Resp(201)
     sender.send_push(_sub(failure_count=6), PAYLOAD)
@@ -387,7 +399,7 @@ def test_the_real_library_encrypts_signs_and_sets_the_headers(monkeypatch):
     assert claims["sub"] == SUBJECT and claims["aud"] == "https://fcm.googleapis.com"
     assert time.time() < claims["exp"] <= time.time() + 12 * 3600 + 5
     plain = http_ece.decrypt(seen["data"], private_key=BROWSER_KEY, auth_secret=BROWSER_AUTH, version="aes128gcm")
-    assert json.loads(plain.decode("utf-8")) == payload
+    assert _decoded(plain.decode("utf-8")) == payload
     assert db.updates[0][1]["failure_count"] == 0
 
 
@@ -397,11 +409,12 @@ def test_end_to_end_through_the_real_supabase_client_and_the_real_library(monkey
     from supabase_client import SupabaseClient
 
     def row(sub_id, name, failures):
-        return {"id": sub_id, "endpoint": f"https://push.example/{name}", "p256dh": P256DH, "auth": AUTH,
-                "failure_count": failures}
+        return {"id": sub_id, "endpoint": f"https://fcm.googleapis.com/fcm/send/{name}", "p256dh": P256DH,
+                "auth": AUTH, "failure_count": failures, "created_at": OLD_SUCCESS}
 
     rows = [row("s-ok", "ok", 3), row("s-gone", "gone", 0), row("s-last", "last", 9)]
-    verdict = {"https://push.example/ok": 201, "https://push.example/gone": 410, "https://push.example/last": 400}
+    verdict = {"https://fcm.googleapis.com/fcm/send/ok": 201, "https://fcm.googleapis.com/fcm/send/gone": 410,
+               "https://fcm.googleapis.com/fcm/send/last": 422}
     log = []
 
     monkeypatch.setattr(requests, "get", lambda url, params=None, headers=None, timeout=None:
@@ -423,7 +436,7 @@ def test_end_to_end_through_the_real_supabase_client_and_the_real_library(monkey
     assert [e[1] for e in log if e[0] == "POST"] == list(verdict)  # every subscription tried, no ntfy
     patches = [e for e in log if e[0] == "PATCH"]
     assert [(p[1], p[2]["failure_count"]) for p in patches] == [("eq.s-ok", 0)]
-    assert sorted(e[1] for e in log if e[0] == "DELETE") == ["eq.s-gone", "eq.s-last"]  # 410, and the 10th failure
+    assert sorted(e[1] for e in log if e[0] == "DELETE") == ["eq.s-gone", "eq.s-last"]  # 410, the 10th stale failure
 
 
 # ---- startup from the environment ----------------------------------------------------------------------
