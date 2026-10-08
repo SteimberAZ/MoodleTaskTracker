@@ -2,9 +2,12 @@ import { detectPlatform, type Platform } from './platform';
 import {
   derivePushState,
   isValidVapidPublicKey,
+  parsePushServerStatus,
   sameApplicationServerKey,
   subscriptionKeyMismatch,
+  testDelivered,
   urlBase64ToUint8Array,
+  type PushServerStatus,
   type PushState,
 } from './push';
 
@@ -17,6 +20,8 @@ export interface DeviceSnapshot {
   state: PushState;
   platform: Platform;
   standalone: boolean;
+  /** What the server said about this device's subscription; null when not asked or it could not answer. */
+  server: PushServerStatus | null;
 }
 
 export function pushSupported(): boolean {
@@ -52,18 +57,50 @@ export async function getReadyRegistration(timeoutMs = 8000): Promise<ServiceWor
   ]);
 }
 
-/** Reads everything the state machine needs from this device. */
+const STATUS_TIMEOUT_MS = 8000;
+
+/**
+ * Asks the server what it knows about this device (`GET /api/push/status`). Null when it cannot answer:
+ * offline, network error, timeout, logged out or any non-2xx. Callers then keep the browser's own view.
+ */
+export async function fetchPushStatus(endpoint: string): Promise<PushServerStatus | null> {
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) return null;
+  try {
+    const res = await fetch(`/api/push/status?endpoint=${encodeURIComponent(endpoint)}`, {
+      method: 'GET',
+      credentials: 'same-origin',
+      cache: 'no-store',
+      signal: typeof AbortSignal?.timeout === 'function' ? AbortSignal.timeout(STATUS_TIMEOUT_MS) : undefined,
+    });
+    if (!res.ok) return null;
+    return parsePushServerStatus(await res.json());
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Reads everything the state machine needs from this device. A subscription bound to another VAPID key is
+ * 'stale'; otherwise the server is asked whether it has the subscription ('unsynced' when it does not).
+ * When the server cannot be asked (offline, network error) the browser's subscription keeps 'subscribed'.
+ */
 export async function readDeviceState(vapidKey: string | undefined): Promise<DeviceSnapshot> {
   const platform = currentPlatform();
   const standalone = isStandalone();
   const supported = pushSupported();
   const permission = supported ? Notification.permission : null;
   let hasSubscription = false;
+  let keyMismatch = false;
+  let server: PushServerStatus | null = null;
   if (supported && permission === 'granted') {
     const registration = await getReadyRegistration();
     const subscription = await registration?.pushManager.getSubscription().catch(() => null);
-    // A subscription bound to another VAPID key never receives anything: show the device as not active.
-    hasSubscription = !!subscription && !subscriptionKeyMismatch(subscription.options?.applicationServerKey, vapidKey);
+    if (subscription) {
+      hasSubscription = true;
+      // A subscription bound to another VAPID key never receives anything.
+      keyMismatch = subscriptionKeyMismatch(subscription.options?.applicationServerKey, vapidKey);
+      if (!keyMismatch) server = await fetchPushStatus(subscription.endpoint);
+    }
   }
   const state = derivePushState({
     vapidConfigured: isValidVapidPublicKey(vapidKey),
@@ -72,8 +109,10 @@ export async function readDeviceState(vapidKey: string | undefined): Promise<Dev
     standalone,
     permission,
     hasSubscription,
+    keyMismatch,
+    serverRegistered: server ? server.registered : null,
   });
-  return { state, platform, standalone };
+  return { state, platform, standalone, server };
 }
 
 interface PostResult {
@@ -134,7 +173,12 @@ export async function enablePush(vapidKey: string): Promise<EnableResult> {
     return { ok: false, reason: 'subscribe-failed', message: 'No se pudo activar en este dispositivo. Inténtalo de nuevo.' };
   }
 
-  const saved = await postJson('/api/push/subscribe', { ...subscription.toJSON(), platform: currentPlatform() });
+  // resetFailures: an explicit activation starts the device over (the silent resync never sends it).
+  const saved = await postJson('/api/push/subscribe', {
+    ...subscription.toJSON(),
+    platform: currentPlatform(),
+    resetFailures: true,
+  });
   if (!saved.ok) {
     return {
       ok: false,
@@ -167,14 +211,41 @@ export async function disablePush(): Promise<{ ok: boolean }> {
   return { ok: unsubscribed && removed.ok };
 }
 
-/** Asks the server to queue a test push for this device (the worker sends it within about a minute). */
-export async function requestTestPush(): Promise<{ ok: boolean; message: string }> {
+export type TestPushWarning = 'worker_stale' | 'push_disabled';
+
+export type TestPushResult =
+  | { ok: true; message: string; endpoint: string; requestedAtMs: number; warning?: TestPushWarning }
+  | { ok: false; message: string };
+
+const TEST_WARNINGS: Record<TestPushWarning, string> = {
+  worker_stale: 'El servicio de avisos no está respondiendo ahora. La prueba llegará cuando vuelva a funcionar.',
+  push_disabled: 'Las notificaciones push están desactivadas en el servidor. La prueba no llegará por ahora.',
+};
+
+/**
+ * Asks the server to queue a test push for this device (the worker sends it within about a minute).
+ * When the server warns that the worker is stopped or has Web Push disabled, that warning is the message.
+ */
+export async function requestTestPush(): Promise<TestPushResult> {
   const registration = await getReadyRegistration();
   const subscription = await registration?.pushManager.getSubscription().catch(() => null);
   if (!subscription) return { ok: false, message: 'Este dispositivo no tiene una suscripción activa.' };
 
+  const sentAt = Date.now();
   const res = await postJson('/api/push/test', { endpoint: subscription.endpoint });
-  if (res.ok) return { ok: true, message: 'Llegará en menos de un minuto.' };
+  if (res.ok) {
+    const serverAt = typeof res.data?.requestedAt === 'string' ? Date.parse(res.data.requestedAt) : Number.NaN;
+    const requestedAtMs = Number.isNaN(serverAt) ? sentAt : serverAt;
+    const raw = res.data?.warning;
+    const warning = raw === 'worker_stale' || raw === 'push_disabled' ? raw : undefined;
+    return {
+      ok: true,
+      endpoint: subscription.endpoint,
+      requestedAtMs,
+      message: warning ? TEST_WARNINGS[warning] : 'Llegará en menos de un minuto.',
+      ...(warning ? { warning } : {}),
+    };
+  }
   if (res.status === 429) {
     const seconds = Number(res.data?.retryAfterSeconds);
     return { ok: false, message: Number.isFinite(seconds) ? `Espera ${seconds} s antes de otra prueba.` : 'Espera unos segundos antes de otra prueba.' };
@@ -182,6 +253,63 @@ export async function requestTestPush(): Promise<{ ok: boolean; message: string 
   if (res.status === 404) return { ok: false, message: 'Este dispositivo ya no está registrado. Desactiva y vuelve a activar.' };
   if (res.status === 401) return { ok: false, message: 'Tu sesión expiró. Vuelve a iniciar sesión.' };
   return { ok: false, message: 'No se pudo solicitar la prueba. Inténtalo de nuevo.' };
+}
+
+export interface WaitOptions {
+  intervalMs?: number;
+  timeoutMs?: number;
+  signal?: AbortSignal;
+  /** Injectable for tests. */
+  sleep?: (ms: number) => Promise<void>;
+}
+
+const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/**
+ * After a test request: asks `/api/push/status` every 10 s, for up to 90 s, whether the device got a push
+ * after `requestedAtMs`. 'aborted' when the signal fires (the card unmounted or another action started).
+ */
+export async function waitForTestDelivery(
+  endpoint: string,
+  requestedAtMs: number,
+  { intervalMs = 10_000, timeoutMs = 90_000, signal, sleep = defaultSleep }: WaitOptions = {},
+): Promise<'delivered' | 'timeout' | 'aborted'> {
+  for (let waited = 0; waited < timeoutMs; ) {
+    const step = Math.min(intervalMs, timeoutMs - waited);
+    await sleep(step);
+    waited += step;
+    if (signal?.aborted) return 'aborted';
+    if (testDelivered(await fetchPushStatus(endpoint), requestedAtMs)) return 'delivered';
+    if (signal?.aborted) return 'aborted';
+  }
+  return 'timeout';
+}
+
+/**
+ * Logout cleanup, run before the logout form posts: while the session cookie is still valid, removes this
+ * device on the server, then unsubscribes it locally, so nobody's pushes keep arriving on a shared device.
+ * Bounded by `timeoutMs` and never throws: logging out must never be blocked by it.
+ */
+export async function pushLogoutCleanup(timeoutMs = 1500): Promise<void> {
+  const work = (async () => {
+    if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return;
+    const container = navigator.serviceWorker;
+    const registration =
+      typeof container.getRegistration === 'function' ? await container.getRegistration() : await container.ready;
+    const subscription = await registration?.pushManager.getSubscription();
+    if (!subscription) return;
+    await postJson('/api/push/unsubscribe', { endpoint: subscription.endpoint });
+    await subscription.unsubscribe();
+  })().catch(() => undefined);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, timeoutMs);
+  });
+  try {
+    await Promise.race([work, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /**

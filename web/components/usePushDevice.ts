@@ -5,14 +5,17 @@ import { hasInstallPrompt, onInstallPromptChange, readDeviceState, type DeviceSn
 
 /**
  * State of Web Push on this device: `snapshot` is null until the first check finishes (server render and
- * hydration), then follows permission changes made in the system settings (re-read on focus).
+ * hydration), then follows permission changes made in the system settings (re-read on focus). Each read
+ * also asks the server whether it has this device (see readDeviceState). `refresh` resolves with the new snapshot.
  */
 export function usePushDevice(vapidKey: string | undefined) {
   const [snapshot, setSnapshot] = useState<DeviceSnapshot | null>(null);
   const [installable, setInstallable] = useState(false);
 
-  const refresh = useCallback(async () => {
-    setSnapshot(await readDeviceState(vapidKey));
+  const refresh = useCallback(async (): Promise<DeviceSnapshot> => {
+    const next = await readDeviceState(vapidKey);
+    setSnapshot(next);
+    return next;
   }, [vapidKey]);
 
   useEffect(() => {
