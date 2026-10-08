@@ -9,7 +9,7 @@
 -- SECURITY MODEL
 --   The database is shared with another production project, so its
 --   service_role key must NOT be used here. Instead:
---     * A dedicated NOLOGIN role "moodle_app" can read/write only the five
+--     * A dedicated NOLOGIN role "moodle_app" can read/write only the
 --       moodle_* tables (GRANTs below).
 --     * PostgREST connects as "authenticator" and switches to the role named
 --       in the request JWT, hence "GRANT moodle_app TO authenticator".
@@ -168,4 +168,121 @@ CREATE POLICY moodle_app_all ON public.moodle_task_milestones
 CREATE POLICY moodle_app_all ON public.moodle_custom_reminders
     FOR ALL TO moodle_app USING (true) WITH CHECK (true);
 CREATE POLICY moodle_app_all ON public.moodle_credentials
+    FOR ALL TO moodle_app USING (true) WITH CHECK (true);
+
+-- ==========================================================
+-- 6. Multi-user mode (invite-only)
+--
+-- Idempotent and safe to re-run in the shared database: it only creates or
+-- alters moodle_* objects. Each person logs in with their Moodle account
+-- (a row in moodle_users, holding that user's own web-service token and a
+-- private ntfy topic); moodle_invites holds the single-use invite codes.
+--
+-- WARNING (one-time data change): moodle_tasks rows that have no owner are
+-- deleted when user_id becomes mandatory. They are derived data and the
+-- worker re-syncs them per user. Stop the old single-user worker before
+-- running this migration, otherwise its user_id-less upserts will be rejected.
+-- ==========================================================
+CREATE TABLE IF NOT EXISTS public.moodle_users (
+    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    moodle_url    TEXT NOT NULL,
+    site_userid   INTEGER NOT NULL,
+    username      TEXT NOT NULL,
+    fullname      TEXT,
+    token         TEXT,
+    ntfy_topic    TEXT NOT NULL UNIQUE,
+    is_admin      BOOLEAN NOT NULL DEFAULT FALSE,
+    active        BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_login_at TIMESTAMPTZ,
+    last_error    TEXT,
+    last_error_at TIMESTAMPTZ,
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (moodle_url, site_userid)
+);
+
+CREATE TABLE IF NOT EXISTS public.moodle_invites (
+    code       TEXT PRIMARY KEY,
+    created_by UUID REFERENCES public.moodle_users(id) ON DELETE SET NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at TIMESTAMPTZ,
+    used_at    TIMESTAMPTZ,
+    used_by    UUID REFERENCES public.moodle_users(id) ON DELETE SET NULL
+);
+
+-- Tasks belong to a user. The column is added first without a constraint so a
+-- partially applied earlier run is repaired by the guarded steps below.
+ALTER TABLE public.moodle_tasks ADD COLUMN IF NOT EXISTS user_id UUID;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'moodle_tasks_user_id_fkey'
+          AND conrelid = 'public.moodle_tasks'::regclass
+    ) THEN
+        ALTER TABLE public.moodle_tasks
+            ADD CONSTRAINT moodle_tasks_user_id_fkey
+            FOREIGN KEY (user_id) REFERENCES public.moodle_users(id) ON DELETE CASCADE;
+    END IF;
+END
+$$;
+
+-- Ownerless tasks (created before multi-user mode) are derived data: drop them
+-- together with their milestones; the worker re-creates them for each user.
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM public.moodle_tasks WHERE user_id IS NULL) THEN
+        DELETE FROM public.moodle_task_milestones
+        WHERE task_id IN (SELECT id FROM public.moodle_tasks WHERE user_id IS NULL);
+        DELETE FROM public.moodle_tasks WHERE user_id IS NULL;
+    END IF;
+END
+$$;
+
+ALTER TABLE public.moodle_tasks ALTER COLUMN user_id SET NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_moodle_tasks_user_due
+    ON public.moodle_tasks (user_id, due_timestamp);
+
+-- Custom reminders: owner is nullable (reminders created before multi-user
+-- mode stay orphaned until the admin claims them; the worker skips them).
+ALTER TABLE public.moodle_custom_reminders ADD COLUMN IF NOT EXISTS user_id UUID;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'moodle_custom_reminders_user_id_fkey'
+          AND conrelid = 'public.moodle_custom_reminders'::regclass
+    ) THEN
+        ALTER TABLE public.moodle_custom_reminders
+            ADD CONSTRAINT moodle_custom_reminders_user_id_fkey
+            FOREIGN KEY (user_id) REFERENCES public.moodle_users(id) ON DELETE CASCADE;
+    END IF;
+END
+$$;
+
+CREATE INDEX IF NOT EXISTS idx_moodle_custom_reminders_user
+    ON public.moodle_custom_reminders (user_id);
+
+-- The single-row credentials table is superseded by moodle_users.token.
+COMMENT ON TABLE public.moodle_credentials IS
+    'DEPRECATED: superseded by moodle_users (one token per user). Kept only for rollback.';
+
+-- Privileges + RLS for the new tables (same model as above).
+ALTER TABLE public.moodle_users   ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.moodle_invites ENABLE ROW LEVEL SECURITY;
+
+REVOKE ALL ON public.moodle_users   FROM anon, authenticated;
+REVOKE ALL ON public.moodle_invites FROM anon, authenticated;
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.moodle_users   TO moodle_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.moodle_invites TO moodle_app;
+
+DROP POLICY IF EXISTS moodle_app_all ON public.moodle_users;
+CREATE POLICY moodle_app_all ON public.moodle_users
+    FOR ALL TO moodle_app USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS moodle_app_all ON public.moodle_invites;
+CREATE POLICY moodle_app_all ON public.moodle_invites
     FOR ALL TO moodle_app USING (true) WITH CHECK (true);
