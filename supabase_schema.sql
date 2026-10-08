@@ -340,8 +340,10 @@ CREATE INDEX IF NOT EXISTS idx_moodle_push_subscriptions_test
     ON public.moodle_push_subscriptions (test_requested_at)
     WHERE test_requested_at IS NOT NULL;
 
--- Fresh installs start with the ntfy copy off; section 11 also moves the default of existing installs.
-ALTER TABLE public.moodle_users ADD COLUMN IF NOT EXISTS ntfy_enabled boolean NOT NULL DEFAULT false;
+-- Existing users keep ntfy on when this column is added (ntfy was their only channel before Web
+-- Push). DEFAULT true only fills the rows that exist at that moment; section 11.1 then sets the
+-- default to false, so users created afterwards start with the ntfy copy off.
+ALTER TABLE public.moodle_users ADD COLUMN IF NOT EXISTS ntfy_enabled boolean NOT NULL DEFAULT true;
 
 -- Privileges + RLS (same model as above): moodle_app only.
 ALTER TABLE public.moodle_push_subscriptions ENABLE ROW LEVEL SECURITY;

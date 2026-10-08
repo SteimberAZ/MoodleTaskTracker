@@ -236,14 +236,17 @@ def test_status_index_is_dropped_and_never_recreated():
     assert "WHERE task_id IS NOT NULL" in SECTION_11
 
 
-def test_ntfy_enabled_defaults_to_false_for_fresh_and_existing_installs():
-    assert "ADD COLUMN IF NOT EXISTS ntfy_enabled boolean NOT NULL DEFAULT false" in SQL
-    assert "DEFAULT true" not in SQL.split("ntfy_enabled", 1)[1].split(";", 1)[0]
+def test_ntfy_enabled_keeps_existing_users_on_and_defaults_new_users_to_off():
+    # ADD COLUMN fills the rows that exist at that moment with the default: existing users (ntfy was
+    # their only channel) keep it on; 11.1 then makes new users start with it off.
+    assert "ADD COLUMN IF NOT EXISTS ntfy_enabled boolean NOT NULL DEFAULT true" in SQL
     assert "ALTER TABLE public.moodle_users ALTER COLUMN ntfy_enabled SET DEFAULT false;" in SECTION_11
+    assert SQL.index("ntfy_enabled boolean NOT NULL DEFAULT true") < SQL.index("ALTER COLUMN ntfy_enabled SET DEFAULT false")
 
 
 def test_only_admins_using_ntfy_are_backfilled_and_only_once():
-    updates = [_ws(u) for u in re.findall(r"\bUPDATE public\.\w+.*?;", SECTION_11, flags=re.S)]
+    statements = re.sub(r"\$\$.*?\$\$", "", SECTION_11, flags=re.S)  # function bodies are not data changes
+    updates = [_ws(u) for u in re.findall(r"\bUPDATE public\.\w+.*?;", statements, flags=re.S)]
     assert updates == [
         "UPDATE public.moodle_users SET ntfy_confirmed_at = now() "
         "WHERE is_admin AND ntfy_enabled AND ntfy_confirmed_at IS NULL;"
