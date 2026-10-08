@@ -27,8 +27,13 @@ NEW_FUNCTIONS = {
     "moodle_login_gate": "(text)",
     "moodle_login_result": "(text, boolean)",
     "moodle_replace_class_schedule": "(uuid, jsonb)",
+    "moodle_login_reserve": "(text, integer)",
+    "moodle_login_settle": "(text, text, integer)",
+    "moodle_login_begin": "(text, text)",
+    "moodle_login_finish": "(text, text, text)",
 }
-RPC_FUNCTIONS = ("moodle_login_gate", "moodle_login_result", "moodle_replace_class_schedule")
+RPC_FUNCTIONS = ("moodle_login_gate", "moodle_login_result", "moodle_replace_class_schedule",
+                 "moodle_login_reserve", "moodle_login_settle", "moodle_login_begin", "moodle_login_finish")
 
 
 def _ws(text: str) -> str:
@@ -109,7 +114,7 @@ def test_every_table_index_function_and_alter_names_a_moodle_object():
 def test_every_add_column_is_guarded():
     adds = re.findall(r"ADD COLUMN(?! IF NOT EXISTS)", SQL)
     assert adds == []
-    assert len(re.findall(r"ADD COLUMN IF NOT EXISTS", SECTION_11)) == 5
+    assert len(re.findall(r"ADD COLUMN IF NOT EXISTS", SECTION_11)) == 7
 
 
 def test_every_add_constraint_sits_in_a_do_block_that_checks_pg_constraint():
@@ -184,6 +189,20 @@ def test_login_throttle_window_and_block():
     gate = _ws(_function_body("moodle_login_gate"))
     assert "greatest(0, ceil(extract(epoch FROM (f.blocked_until - now()))))::integer" in gate
     assert "COALESCE(" in gate
+
+
+def test_login_attempts_are_reserved_atomically_before_moodle_is_called():
+    reserve = _ws(_function_body("moodle_login_reserve"))
+    assert "VOLATILE" in reserve and "FOR UPDATE" in reserve
+    assert "f.failures + f.in_flight >= p_limit" in reserve and "f.in_flight := f.in_flight + 1" in reserve
+    assert "interval '2 minutes'" in reserve  # a reservation of a request that died is released
+    begin = _ws(_function_body("moodle_login_begin"))
+    assert "public.moodle_login_reserve(p_key_hash, 5)" in begin
+    assert "public.moodle_login_reserve(p_user_key_hash, 20)" in begin
+    assert "public.moodle_login_settle(p_key_hash, 'released', 5)" in begin  # no leaked reservation
+    settle = _ws(_function_body("moodle_login_settle"))
+    assert "greatest(0, f.in_flight - 1)" in settle and "f.failures + 1 >= p_limit" in settle
+    assert "ALTER TABLE public.moodle_login_failures ADD COLUMN IF NOT EXISTS in_flight integer" in SECTION_11
 
 
 def test_the_schedule_replace_is_serialized_per_user():

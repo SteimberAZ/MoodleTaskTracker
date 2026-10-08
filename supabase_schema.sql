@@ -794,6 +794,151 @@ REVOKE EXECUTE ON FUNCTION public.moodle_login_result(text, boolean) FROM PUBLIC
 GRANT EXECUTE ON FUNCTION public.moodle_login_gate(text) TO moodle_app;
 GRANT EXECUTE ON FUNCTION public.moodle_login_result(text, boolean) TO moodle_app;
 
+-- 11.7.1 Atomic login throttle (replaces gate/result above, which stay for older web versions).
+-- gate() only read blocked_until, so every attempt in flight at the same moment passed it. Now
+-- moodle_login_begin() RESERVES the attempt under a row lock: it refuses once failures plus the
+-- attempts still in flight reach the limit. Two keys are checked: p_key_hash (username + client)
+-- blocks after 5 failures in 15 minutes, p_user_key_hash (username only) after 20, so one client
+-- cannot lock a student out from everywhere and many clients still cannot guess freely.
+-- moodle_login_finish() settles the reservation: 'success' clears both keys, 'failure' counts it,
+-- anything else (Moodle unreachable) only releases it. Reservations older than 2 minutes are
+-- treated as released (a request that died between the two calls).
+ALTER TABLE public.moodle_login_failures ADD COLUMN IF NOT EXISTS in_flight integer NOT NULL DEFAULT 0;
+ALTER TABLE public.moodle_login_failures ADD COLUMN IF NOT EXISTS in_flight_at timestamptz;
+
+CREATE OR REPLACE FUNCTION public.moodle_login_reserve(p_key_hash text, p_limit integer)
+RETURNS integer
+LANGUAGE plpgsql
+VOLATILE
+SECURITY INVOKER
+SET search_path = public
+AS $$
+DECLARE
+    f public.moodle_login_failures%ROWTYPE;
+    v_wait integer := 0;
+BEGIN
+    INSERT INTO public.moodle_login_failures (key_hash, failures, window_start)
+    VALUES (p_key_hash, 0, now())
+    ON CONFLICT (key_hash) DO NOTHING;
+
+    SELECT * INTO f FROM public.moodle_login_failures WHERE key_hash = p_key_hash FOR UPDATE;
+
+    IF f.window_start < now() - interval '15 minutes' THEN
+        f.failures := 0;
+        f.window_start := now();
+    END IF;
+    IF f.in_flight_at IS NULL OR f.in_flight_at < now() - interval '2 minutes' THEN
+        f.in_flight := 0;
+    END IF;
+
+    IF f.blocked_until IS NOT NULL AND f.blocked_until > now() THEN
+        v_wait := greatest(1, ceil(extract(epoch FROM (f.blocked_until - now()))))::integer;
+    ELSIF f.failures + f.in_flight >= p_limit THEN
+        v_wait := 30; -- attempts in flight may still fail: ask to retry shortly
+    ELSE
+        f.in_flight := f.in_flight + 1;
+        f.in_flight_at := now();
+    END IF;
+
+    UPDATE public.moodle_login_failures
+    SET failures = f.failures, window_start = f.window_start,
+        in_flight = f.in_flight, in_flight_at = f.in_flight_at
+    WHERE key_hash = p_key_hash;
+    RETURN v_wait;
+END
+$$;
+
+CREATE OR REPLACE FUNCTION public.moodle_login_settle(p_key_hash text, p_outcome text, p_limit integer)
+RETURNS void
+LANGUAGE plpgsql
+VOLATILE
+SECURITY INVOKER
+SET search_path = public
+AS $$
+BEGIN
+    IF p_outcome = 'success' THEN
+        DELETE FROM public.moodle_login_failures WHERE key_hash = p_key_hash;
+        RETURN;
+    END IF;
+    UPDATE public.moodle_login_failures AS f SET
+        in_flight = greatest(0, f.in_flight - 1),
+        failures = CASE
+            WHEN p_outcome <> 'failure' THEN f.failures
+            WHEN f.window_start < now() - interval '15 minutes' THEN 1
+            ELSE f.failures + 1
+        END,
+        window_start = CASE
+            WHEN p_outcome = 'failure' AND f.window_start < now() - interval '15 minutes' THEN now()
+            ELSE f.window_start
+        END,
+        blocked_until = CASE
+            WHEN p_outcome = 'failure' AND f.window_start >= now() - interval '15 minutes'
+                 AND f.failures + 1 >= p_limit
+                THEN now() + interval '15 minutes'
+            ELSE f.blocked_until
+        END
+    WHERE f.key_hash = p_key_hash;
+END
+$$;
+
+CREATE OR REPLACE FUNCTION public.moodle_login_begin(p_key_hash text, p_user_key_hash text)
+RETURNS integer
+LANGUAGE plpgsql
+VOLATILE
+SECURITY INVOKER
+SET search_path = public
+AS $$
+DECLARE
+    v_wait integer;
+BEGIN
+    IF p_key_hash IS NULL OR p_key_hash = '' THEN
+        RETURN 0;
+    END IF;
+    -- Opportunistic cleanup of stale keys (a block lasts 15 minutes, far less than a day).
+    DELETE FROM public.moodle_login_failures WHERE window_start < now() - interval '1 day';
+
+    v_wait := public.moodle_login_reserve(p_key_hash, 5);
+    IF v_wait > 0 THEN
+        RETURN v_wait;
+    END IF;
+    IF p_user_key_hash IS NOT NULL AND p_user_key_hash <> '' AND p_user_key_hash <> p_key_hash THEN
+        v_wait := public.moodle_login_reserve(p_user_key_hash, 20);
+        IF v_wait > 0 THEN
+            PERFORM public.moodle_login_settle(p_key_hash, 'released', 5);
+            RETURN v_wait;
+        END IF;
+    END IF;
+    RETURN 0;
+END
+$$;
+
+CREATE OR REPLACE FUNCTION public.moodle_login_finish(p_key_hash text, p_user_key_hash text, p_outcome text)
+RETURNS void
+LANGUAGE plpgsql
+VOLATILE
+SECURITY INVOKER
+SET search_path = public
+AS $$
+BEGIN
+    IF p_key_hash IS NULL OR p_key_hash = '' THEN
+        RETURN;
+    END IF;
+    PERFORM public.moodle_login_settle(p_key_hash, p_outcome, 5);
+    IF p_user_key_hash IS NOT NULL AND p_user_key_hash <> '' AND p_user_key_hash <> p_key_hash THEN
+        PERFORM public.moodle_login_settle(p_user_key_hash, p_outcome, 20);
+    END IF;
+END
+$$;
+
+REVOKE EXECUTE ON FUNCTION public.moodle_login_reserve(text, integer) FROM PUBLIC, anon, authenticated;
+REVOKE EXECUTE ON FUNCTION public.moodle_login_settle(text, text, integer) FROM PUBLIC, anon, authenticated;
+REVOKE EXECUTE ON FUNCTION public.moodle_login_begin(text, text) FROM PUBLIC, anon, authenticated;
+REVOKE EXECUTE ON FUNCTION public.moodle_login_finish(text, text, text) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.moodle_login_reserve(text, integer) TO moodle_app;
+GRANT EXECUTE ON FUNCTION public.moodle_login_settle(text, text, integer) TO moodle_app;
+GRANT EXECUTE ON FUNCTION public.moodle_login_begin(text, text) TO moodle_app;
+GRANT EXECUTE ON FUNCTION public.moodle_login_finish(text, text, text) TO moodle_app;
+
 -- 11.8 Atomic class schedule replace (optional RPC; the web falls back to insert-then-delete when
 -- it is missing). Deletes the user's rows and inserts the new ones in one transaction, so a reader
 -- never sees an empty or doubled schedule. Each element of p_rows carries the columns below; a
