@@ -151,9 +151,9 @@ describe('setTaskMute', () => {
 });
 
 describe('reconnectMoodle', () => {
-  it('ends the session and opens the login for the same account', async () => {
-    await expect(reconnectMoodle()).rejects.toMatchObject({ digest: 'NEXT_REDIRECT;/login?u=ana' });
-    expect(session.endSession).toHaveBeenCalledTimes(1);
+  it('keeps the session and opens the login without the username in the URL', async () => {
+    await expect(reconnectMoodle()).rejects.toMatchObject({ digest: 'NEXT_REDIRECT;/login?reconnect=1' });
+    expect(session.endSession).not.toHaveBeenCalled();
   });
 });
 

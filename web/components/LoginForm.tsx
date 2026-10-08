@@ -6,7 +6,7 @@ import { login, type LoginState } from '@/app/login/actions';
 interface Props {
   /** Already validated with safeNext by the page; the action validates it again. */
   next?: string;
-  /** Username prefill from `?u=` (for a re-login link). */
+  /** Username prefill for "Reconectar Moodle" (read from the session by the page, never from the URL). */
   initialUsername?: string;
 }
 

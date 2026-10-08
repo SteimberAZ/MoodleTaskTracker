@@ -15,10 +15,12 @@ const first = (value: string | string[] | undefined): string | undefined => (Arr
 export default async function LoginPage({ searchParams }: { searchParams: Promise<SearchParams> }) {
   const params = await searchParams;
   const next = safeNext(first(params.next));
-  const username = (first(params.u) ?? '').trim().slice(0, MAX_USERNAME);
   // Only skip the form for a cookie that still maps to an active user; a stale or deactivated
   // session must be able to log in again (redirecting here would loop with requireUser()).
   const user = await getCurrentUser().catch(() => null);
-  if (user) redirect(next);
+  const reconnect = first(params.reconnect) === '1';
+  if (user && !reconnect) redirect(next);
+  // "Reconectar Moodle": the signed-in user signs in again; the username comes from the session.
+  const username = reconnect && user ? String(user.username ?? '').trim().slice(0, MAX_USERNAME) : '';
   return <LoginForm next={next} initialUsername={username} />;
 }

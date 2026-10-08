@@ -35,13 +35,14 @@ export async function logout(): Promise<void> {
 }
 
 /**
- * "Reconectar Moodle" on the disconnected banner: ends the session and opens the login form for the same
- * account, so the new token is stored on the next sign-in.
+ * "Reconectar Moodle" on the disconnected banner: opens the login form for the same account, so the new
+ * token is stored on the next sign-in. The session is kept until that sign-in succeeds (a failed or
+ * throttled login must not log the user out), and the form is prefilled from the session on the server,
+ * never from the URL (no username in browser history or request logs).
  */
 export async function reconnectMoodle(): Promise<void> {
-  const user = await requireUser();
-  await endSession();
-  redirect(`/login?u=${encodeURIComponent(user.username)}`);
+  await requireUser();
+  redirect('/login?reconnect=1');
 }
 
 function readForm(formData: FormData): ReminderFormInput {
