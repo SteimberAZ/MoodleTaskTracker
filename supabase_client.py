@@ -30,6 +30,9 @@ _load_env_file()
 # Max characters of a Supabase response body / exception text written to the logs.
 _LOG_BODY_MAX = 300
 
+# Max user ids per ``user_id=in.(...)`` request, so the URL stays short for any number of users.
+_ID_CHUNK = 50
+
 
 class SupabaseClient:
     """Cliente ligero para sincronizar datos con Supabase vía REST API."""
@@ -250,6 +253,69 @@ class SupabaseClient:
         if r.status_code != 200:
             raise RuntimeError(f"HTTP {r.status_code}")
         return [u for u in r.json() if isinstance(u, dict) and u.get("id")]
+
+    # ---- Imported class schedule (moodle_class_schedule) ---------------------------------------------
+
+    def fetch_class_reminder_users(self) -> List[Dict]:
+        """Active users that switched class reminders on (``class_reminder_minutes`` is not null).
+
+        Rows carry ``id, ntfy_topic, ntfy_enabled, class_reminder_minutes, is_admin``. Returns []
+        when Supabase is not configured. RAISES on any transport/HTTP failure (also while the
+        ``class_reminder_minutes`` column does not exist yet) so the caller can tell "nobody asked"
+        apart from "could not read".
+        """
+        if not self.is_configured:
+            return []
+        r = self._get_users(
+            {"active": "eq.true", "class_reminder_minutes": "not.is.null"},
+            "id,ntfy_topic,class_reminder_minutes,is_admin",
+        )
+        if r.status_code != 200:
+            raise RuntimeError(f"HTTP {r.status_code}")
+        return [u for u in r.json() if isinstance(u, dict) and u.get("id")]
+
+    @staticmethod
+    def _id_chunks(user_ids: List[str], size: int = _ID_CHUNK):
+        ids = [str(i) for i in dict.fromkeys(user_ids or []) if i]
+        for start in range(0, len(ids), size):
+            yield ids[start : start + size]
+
+    def fetch_class_schedule(self, user_ids: List[str], weekday: int) -> List[Dict]:
+        """Class rows of ``user_ids`` for one ISO weekday (1 = Monday ... 7 = Sunday).
+
+        Returns [] when Supabase is not configured or there are no ids. RAISES on any transport/HTTP
+        failure so the caller can tell "no classes today" apart from "could not read them".
+        """
+        if not self.is_configured:
+            return []
+        rows: List[Dict] = []
+        for chunk in self._id_chunks(user_ids):
+            params = {"user_id": f"in.({','.join(chunk)})", "weekday": f"eq.{int(weekday)}", "select": "*"}
+            r = requests.get(
+                f"{self.url}/rest/v1/moodle_class_schedule", params=params, headers=self._headers(), timeout=10
+            )
+            if r.status_code != 200:
+                raise RuntimeError(f"HTTP {r.status_code}")
+            rows.extend(row for row in r.json() if isinstance(row, dict) and row.get("id"))
+        return rows
+
+    def fetch_users_with_schedule(self, user_ids: List[str]) -> set:
+        """Ids (str) among ``user_ids`` that have at least one imported class, on any weekday.
+
+        Same contract as ``fetch_class_schedule``: empty set when unconfigured, RAISES on failure.
+        """
+        if not self.is_configured:
+            return set()
+        found: set = set()
+        for chunk in self._id_chunks(user_ids):
+            params = {"user_id": f"in.({','.join(chunk)})", "select": "user_id"}
+            r = requests.get(
+                f"{self.url}/rest/v1/moodle_class_schedule", params=params, headers=self._headers(), timeout=10
+            )
+            if r.status_code != 200:
+                raise RuntimeError(f"HTTP {r.status_code}")
+            found.update(str(row["user_id"]) for row in r.json() if isinstance(row, dict) and row.get("user_id"))
+        return found
 
     def fetch_muted_task_ids(self, user_id: str) -> set:
         """Ids of the tasks this user muted from the web (``is_dismissed = 1``).

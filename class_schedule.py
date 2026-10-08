@@ -171,17 +171,31 @@ def _active_admins(supabase) -> Optional[List[Dict]]:
         return None
 
 
-def notify_class(c: Dict, minutes_left: int, supabase=None, deliver: Optional[Callable] = None) -> bool:
-    """Send one class reminder to the admin users (Web Push + ntfy); True when it got through.
+def _admins_with_imported_schedule(supabase, admins: List[Dict]) -> set:
+    """Ids of the admins that already imported a schedule; empty when that cannot be read."""
+    try:
+        return set(supabase.fetch_users_with_schedule([a["id"] for a in admins]))
+    except Exception as err:  # noqa: BLE001 - keep the legacy behaviour when the lookup fails
+        print(f"[ClassSchedule] Could not check the imported schedules ({err}); using the built-in one.")
+        return set()
 
-    The schedule belongs to the owner, so the reminder goes to every active ``is_admin`` user through
-    ``deliver`` (delivery.deliver_to_user). Without an admin user, without a readable database or
-    without ``deliver`` it falls back to the legacy ntfy topic from env NTFY_TOPIC.
+
+def notify_class(c: Dict, minutes_left: int, supabase=None, deliver: Optional[Callable] = None) -> bool:
+    """Send one built-in class reminder to the admin users (Web Push + ntfy); True when it is handled.
+
+    The built-in schedule belongs to the owner, so the reminder goes to every active ``is_admin`` user
+    through ``deliver`` (delivery.deliver_to_user), except the admins that imported their own schedule
+    (class_reminders.py serves those). Without an admin user, without a readable database or without
+    ``deliver`` it falls back to the legacy ntfy topic from env NTFY_TOPIC.
     """
     admins = _active_admins(supabase) if deliver is not None else None
     if not admins:
         send_class_notification(c, minutes_left)
         return True
+    imported = _admins_with_imported_schedule(supabase, admins)
+    admins = [a for a in admins if str(a.get("id")) not in imported]
+    if not admins:
+        return True  # every admin has an imported schedule: the built-in one is never used
     title, body = class_notification_content(c, minutes_left)
     results = []
     for admin in admins:
@@ -202,8 +216,9 @@ def notify_class(c: Dict, minutes_left: int, supabase=None, deliver: Optional[Ca
 
 def check_and_notify_upcoming_classes(storage, supabase=None, deliver: Optional[Callable] = None):
     """
-    Evalúa si alguna clase del día de hoy comienza en aproximadamente 30 minutos
-    (ventana de 25 a 35 minutos antes). Si no ha sido notificada hoy, envía el push.
+    Built-in (owner) schedule, only for admins without an imported schedule: a class that starts
+    within 32 minutes is announced once per day. The reminders of imported schedules are sent by
+    class_reminders.process_class_reminders.
     """
     now_ec = datetime.now(ECUADOR_TZ)
     current_weekday = now_ec.weekday()

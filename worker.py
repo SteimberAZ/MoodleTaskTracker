@@ -13,6 +13,7 @@ if SCRIPT_DIR not in sys.path:
 from moodle_client import MoodleClient
 from notifier import TaskNotificationManager, mask_topic, ntfy_base_url, send_system_alert
 from storage import Storage
+from class_reminders import process_class_reminders
 from class_schedule import check_and_notify_upcoming_classes
 from custom_reminders import process_due_reminders
 from delivery import deliver_to_user, process_push_tests
@@ -241,7 +242,7 @@ def reminder_deliverer(deliver: Callable) -> Callable[[Dict, Dict, str, str], bo
 
 
 def run_worker():
-    """Ejecutor en segundo plano: tareas y recordatorios por usuario + recordatorio de clases 30m (dueño)."""
+    """Ejecutor en segundo plano: tareas y recordatorios por usuario + recordatorios de clases por usuario."""
     storage = Storage()
 
     base_url = os.environ.get("MOODLE_URL") or storage.get_setting("moodle_url", "https://evirtual.utm.edu.ec")
@@ -275,7 +276,7 @@ def run_worker():
     print(f"  🔔 ntfy (canal opcional por usuario): {ntfy_base_url()}")
     print(f"  💓 Keep-Alive (modo legacy): cada {keep_alive_seconds // 60} minutos")
     print(f"  📋 Revisión de tareas: cada {tasks_check_mins} minutos")
-    print("  🎓 Alertas de clases (solo dueño): 30 minutos antes de cada materia")
+    print("  🎓 Alertas de clases: según el horario importado de cada usuario (30 min, 1 h o 3 h antes)")
     print("=" * 60)
 
     last_tasks_check = 0.0
@@ -288,7 +289,13 @@ def run_worker():
         now_ts = time.time()
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        # 1. Monitoreo del horario de clases universitarias (owner only: admin users; env NTFY_TOPIC as fallback)
+        # 1. Class reminders: each user's imported schedule (moodle_class_schedule) and lead time
+        try:
+            process_class_reminders(storage, supabase, deliver)
+        except Exception as err:
+            print(f"[{now_str}] [!] Error en recordatorios de clases importadas: {err}")
+
+        # 1a. Built-in owner schedule, only for admins without an imported one (env NTFY_TOPIC as fallback)
         try:
             check_and_notify_upcoming_classes(storage, supabase=supabase, deliver=deliver)
         except Exception as err:

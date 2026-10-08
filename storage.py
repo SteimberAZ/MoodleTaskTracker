@@ -274,8 +274,12 @@ class Storage:
             )
             return cur.fetchone() is not None
 
-    def record_milestone(self, task_id: str, milestone: str):
-        """Registra que un hito ya fue notificado para no repetir spam."""
+    def record_milestone(self, task_id: str, milestone: str, mirror: bool = True):
+        """Registra que un hito ya fue notificado para no repetir spam.
+
+        ``mirror=False`` keeps it local: class reminders have no row in moodle_tasks, so mirroring
+        them would only fail the table's foreign key.
+        """
         now = int(time.time())
         with self._get_conn() as conn:
             conn.execute(
@@ -283,7 +287,7 @@ class Storage:
                 (task_id, milestone, now),
             )
             conn.commit()
-        if self.supabase.is_configured:
+        if mirror and self.supabase.is_configured:
             if task_id in self._unmirrored_tasks:
                 # Its task row is missing remotely: the insert would only fail (FK 409).
                 if not self._deferred_milestones:

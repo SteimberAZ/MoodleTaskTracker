@@ -345,5 +345,65 @@ DROP POLICY IF EXISTS moodle_app_all ON public.moodle_push_subscriptions;
 CREATE POLICY moodle_app_all ON public.moodle_push_subscriptions
     FOR ALL TO moodle_app USING (true) WITH CHECK (true);
 
--- Ask PostgREST to reload its schema cache so the new table and column are served right away.
+-- ==========================================================
+-- 9. Class schedule import (SGA "Horario de clases" PDF) + class reminders.
+--    The web parses the PDF, the user confirms the preview and the classes land here (a re-import
+--    replaces the user's rows). Only class rows are stored: never the PDF, cedula or student name.
+--    weekday is ISO (1 = lunes ... 7 = domingo); times are wall-clock Ecuador (UTC-5).
+--    moodle_users.class_reminder_minutes is the single lead time of the worker's reminder:
+--    30, 60 or 180 minutes before each class; NULL = reminders off.
+-- ==========================================================
+CREATE TABLE IF NOT EXISTS public.moodle_class_schedule (
+    id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id      uuid NOT NULL REFERENCES public.moodle_users(id) ON DELETE CASCADE,
+    subject      text NOT NULL,
+    level        integer,
+    parallel     text,
+    credits      integer,
+    teacher      text,
+    department   text,
+    weekday      smallint NOT NULL CHECK (weekday BETWEEN 1 AND 7),
+    start_time   time NOT NULL,
+    end_time     time NOT NULL,
+    place        text,
+    room_code    text,
+    room_type    text,
+    floor        text,
+    period_label text,
+    period_end   date,
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    CHECK (end_time > start_time)
+);
+
+CREATE INDEX IF NOT EXISTS idx_moodle_class_schedule_user_weekday
+    ON public.moodle_class_schedule (user_id, weekday);
+
+ALTER TABLE public.moodle_users ADD COLUMN IF NOT EXISTS class_reminder_minutes integer;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'moodle_users_class_reminder_minutes_check'
+          AND conrelid = 'public.moodle_users'::regclass
+    ) THEN
+        ALTER TABLE public.moodle_users
+            ADD CONSTRAINT moodle_users_class_reminder_minutes_check
+            CHECK (class_reminder_minutes IN (30, 60, 180));
+    END IF;
+END
+$$;
+
+-- Privileges + RLS (same model as above): moodle_app only.
+ALTER TABLE public.moodle_class_schedule ENABLE ROW LEVEL SECURITY;
+
+REVOKE ALL ON public.moodle_class_schedule FROM anon, authenticated;
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.moodle_class_schedule TO moodle_app;
+
+DROP POLICY IF EXISTS moodle_app_all ON public.moodle_class_schedule;
+CREATE POLICY moodle_app_all ON public.moodle_class_schedule
+    FOR ALL TO moodle_app USING (true) WITH CHECK (true);
+
+-- Ask PostgREST to reload its schema cache so the new tables and columns are served right away.
 NOTIFY pgrst, 'reload schema';
