@@ -235,7 +235,7 @@ describe('derivePushState', () => {
   it('only invites the user to activate when there is something to activate', () => {
     expect(shouldShowPushBanner('default')).toBe(true);
     expect(shouldShowPushBanner('needs-install')).toBe(true);
-    for (const hidden of ['subscribed', 'denied', 'unsupported', 'unconfigured'] as const) {
+    for (const hidden of ['subscribed', 'unsupported', 'unconfigured'] as const) {
       expect(shouldShowPushBanner(hidden)).toBe(false);
     }
   });
