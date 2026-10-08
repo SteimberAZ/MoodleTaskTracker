@@ -1,6 +1,7 @@
 import 'server-only';
 import { requireSessionUserId } from './session';
 import { resolveDbConfig } from './db-config';
+import { parseContentRange } from './pagination';
 
 function request(path: string, init: RequestInit): Promise<Response> {
   const { baseUrl, apikey, bearer } = resolveDbConfig(process.env);
@@ -31,6 +32,27 @@ export async function dbFetch(path: string, init: RequestInit = {}): Promise<Res
  */
 export function dbFetchAnonymous(path: string, init: RequestInit = {}): Promise<Response> {
   return request(path, init);
+}
+
+/**
+ * Reads one page together with the exact total (`Prefer: count=exact` + `Content-Range`).
+ * PostgREST answers 416 when the offset is past the end; that is reported as an empty page
+ * with the real total so the caller can clamp the page and ask again.
+ */
+export async function dbJsonCounted<T>(
+  path: string,
+  failure = 'No se pudo comunicar con la base de datos.',
+): Promise<{ rows: T[]; total: number }> {
+  const res = await dbFetch(path, { headers: { Prefer: 'count=exact' } });
+  const total = parseContentRange(res.headers.get('content-range'));
+  if (res.status === 416) return { rows: [], total: total ?? 0 };
+  if (!res.ok) {
+    console.error('Supabase request failed', res.status);
+    throw new Error(failure);
+  }
+  const text = await res.text();
+  const rows = (text ? JSON.parse(text) : []) as T[];
+  return { rows, total: total ?? rows.length };
 }
 
 /** Runs a request and parses JSON; throws a generic Spanish error on non-2xx. */

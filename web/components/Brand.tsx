@@ -1,4 +1,6 @@
 import Link from 'next/link';
+import { getCurrentUser } from '@/lib/auth';
+import NavLinks from './NavLinks';
 
 /** Logo plus the "mineral / tareas" wordmark. Swaps the cap colour in dark mode. */
 export default function Brand() {
@@ -16,15 +18,16 @@ export default function Brand() {
   );
 }
 
-/** Floating pill header shared by every page. */
-export function SiteHeader() {
+/**
+ * Sticky header shared by every page and the only navigation of the app.
+ * Logged out (or when the session cannot be resolved) it shows just the logo.
+ */
+export async function SiteHeader() {
+  const user = await getCurrentUser().catch(() => null);
   return (
     <header className="site-header">
       <Brand />
-      <nav className="site-nav" aria-label="Principal">
-        <Link href="/" className="site-nav-link">Recordatorios</Link>
-        <Link href="/cuenta" className="site-nav-cta">Mi cuenta</Link>
-      </nav>
+      {user && <NavLinks isAdmin={user.is_admin} />}
     </header>
   );
 }

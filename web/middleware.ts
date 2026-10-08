@@ -13,6 +13,10 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
-  // Everything except Next static assets, the favicon, the public brand assets and public image files.
-  matcher: ['/((?!_next/static|_next/image|favicon.ico|icon.svg|brand/|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)'],
+  // Everything except: the JSON API (each /api handler answers 401 itself instead of redirecting), the service
+  // worker, Next static assets, the favicon, the PWA manifest and home-screen icons, the public brand assets
+  // and public image files. All of those must load while logged out.
+  matcher: [
+    '/((?!api/|_next/static|_next/image|favicon.ico|icon.svg|manifest.webmanifest|sw.js|apple-touch-icon.png|icons/|brand/|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)',
+  ],
 };

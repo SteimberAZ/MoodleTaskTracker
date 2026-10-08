@@ -2,7 +2,7 @@
 
 import { revalidatePath } from 'next/cache';
 import { requireUser } from '@/lib/auth';
-import { setUserTopic } from '@/lib/users';
+import { setNtfyEnabled, setUserTopic } from '@/lib/users';
 import { checkCooldown } from '@/lib/rate-limit';
 import { generateNtfyTopic, resolveNtfyServer } from '@/lib/random';
 
@@ -49,4 +49,25 @@ export async function regenerateTopic(): Promise<void> {
     }
   }
   throw new Error('No se pudo regenerar el tema.');
+}
+
+export interface NtfyToggleState {
+  /** The value that was saved; undefined until the first successful change. */
+  enabled?: boolean;
+  error?: string;
+}
+
+/** "Recibir también en la app ntfy": saves `moodle_users.ntfy_enabled` for the session user only. */
+export async function setNtfyDelivery(_prev: NtfyToggleState, formData: FormData): Promise<NtfyToggleState> {
+  const user = await requireUser();
+  const raw = String(formData.get('enabled') ?? '');
+  if (raw !== 'true' && raw !== 'false') return { error: 'Valor no válido.' };
+  const enabled = raw === 'true';
+  try {
+    if (!(await setNtfyEnabled(user.id, enabled))) return { error: 'No se pudo guardar el cambio.' };
+  } catch {
+    return { error: 'No se pudo guardar el cambio. Inténtalo de nuevo.' };
+  }
+  revalidatePath('/cuenta');
+  return { enabled };
 }

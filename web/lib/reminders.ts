@@ -1,6 +1,8 @@
 import 'server-only';
-import { dbJson } from './db';
+import { dbJson, dbJsonCounted } from './db';
+import { clampPage } from './pagination';
 import { isUuid, ownedRowQuery, scopedQuery } from './queries';
+import { reminderPageQuery } from './reminder-query';
 
 export interface Reminder {
   id: string;
@@ -31,6 +33,21 @@ export { isUuid };
 
 export function listReminders(userId: string): Promise<Reminder[]> {
   return rest<Reminder[]>(scopedQuery(userId, 'select=*', 'order=next_fire_at.asc'));
+}
+
+export interface ReminderPage {
+  reminders: Reminder[];
+  total: number;
+  page: number;
+}
+
+/** One page of reminders (8 per page) plus the exact total; an out-of-range page falls back to the last one. */
+export async function listRemindersPage(userId: string, page: number): Promise<ReminderPage> {
+  const first = await dbJsonCounted<Reminder>(`${TABLE}${reminderPageQuery(userId, page)}`);
+  const served = clampPage(page, first.total);
+  if (served === page) return { reminders: first.rows, total: first.total, page };
+  const again = await dbJsonCounted<Reminder>(`${TABLE}${reminderPageQuery(userId, served)}`);
+  return { reminders: again.rows, total: again.total, page: served };
 }
 
 export async function getReminder(userId: string, id: string): Promise<Reminder | null> {

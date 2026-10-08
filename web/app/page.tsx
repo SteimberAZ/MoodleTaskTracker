@@ -1,37 +1,45 @@
 import Link from 'next/link';
-import { toggleReminder, deleteReminder } from './actions';
 import { requireUser } from '@/lib/auth';
-import { listReminders, type Reminder } from '@/lib/reminders';
-import { formatInterval, reminderStatus, type ReminderStatus } from '@/lib/schedule';
-import { formatGuayaquil } from '@/lib/time';
-import { listPendingTasks, listTasksByIds, type MoodleTask } from '@/lib/tasks';
-import { timeLeft } from '@/lib/task-time';
-import DeleteButton from '@/components/DeleteButton';
-import Nav from '@/components/Nav';
+import { listRemindersPage, type Reminder } from '@/lib/reminders';
+import { reminderStatus } from '@/lib/schedule';
+import { countTasks, listTasksByIds, listTasksPage, type MoodleTask } from '@/lib/tasks';
+import { homeHref, pageCount, parsePage } from '@/lib/pagination';
+import { parseTaskFilter, type TaskFilter } from '@/lib/task-query';
+import NotifyBanner from '@/components/NotifyBanner';
+import Pagination from '@/components/Pagination';
+import ReminderCard from '@/components/ReminderCard';
+import TaskCard from '@/components/TaskCard';
+import TaskFilters from '@/components/TaskFilters';
 
 export const dynamic = 'force-dynamic';
 
-const ORDER: Record<ReminderStatus, number> = { activo: 0, pausado: 1, finalizado: 2 };
+type SearchParams = Promise<Record<string, string | string[] | undefined>>;
 
-export default async function HomePage() {
+const EMPTY_TASKS: Record<TaskFilter, string> = {
+  pendientes: 'No tienes tareas pendientes 🎉',
+  silenciadas: 'No has silenciado ninguna tarea.',
+  entregadas: 'Aún no hay tareas entregadas.',
+};
+
+export default async function HomePage({ searchParams }: { searchParams: SearchParams }) {
   const user = await requireUser();
+  const params = await searchParams;
+  const filter = parseTaskFilter(params.tf);
   const now = new Date();
-  let reminders: Reminder[] = [];
-  let loadError = false;
-  try {
-    reminders = await listReminders(user.id);
-  } catch {
-    loadError = true;
-  }
-
   const nowSeconds = Math.floor(now.getTime() / 1000);
-  let tasks: MoodleTask[] = [];
-  let tasksError = false;
-  try {
-    tasks = await listPendingTasks(user.id, nowSeconds);
-  } catch {
-    tasksError = true;
-  }
+
+  const [taskResult, reminderResult, counts] = await Promise.all([
+    listTasksPage(user.id, filter, parsePage(params.tp), nowSeconds).catch(() => null),
+    listRemindersPage(user.id, parsePage(params.rp)).catch(() => null),
+    countTasks(user.id, nowSeconds),
+  ]);
+
+  const tasks: MoodleTask[] = taskResult?.tasks ?? [];
+  const taskPage = taskResult?.page ?? 1;
+  const taskPages = pageCount(taskResult?.total ?? 0);
+  const reminders: Reminder[] = reminderResult?.reminders ?? [];
+  const reminderPage = reminderResult?.page ?? 1;
+  const reminderPages = pageCount(reminderResult?.total ?? 0);
 
   // Linked tasks may no longer be pending, so resolve them by id.
   const linkedIds = reminders.map((r) => r.task_id).filter((id): id is string => !!id);
@@ -39,103 +47,63 @@ export default async function HomePage() {
     (await listTasksByIds(user.id, linkedIds).catch(() => [])).map((t) => [t.id, t]),
   );
 
-  const rows = reminders
-    .map((r) => ({ r, status: reminderStatus(r, now) }))
-    .sort((a, b) => ORDER[a.status] - ORDER[b.status]);
+  const listState = { tf: filter, tp: taskPage, rp: reminderPage };
 
   return (
     <>
-      <Nav isAdmin={user.is_admin} />
-      <header className="topbar">
-        <h1>Recordatorios</h1>
-        <div className="actions">
-          <Link href="/reminders/new" className="btn primary">Nuevo</Link>
-        </div>
-      </header>
+      <NotifyBanner vapidPublicKey={process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY} />
 
       {user.last_error && (
         <p className="alert" role="alert">Moodle desconectado: vuelve a iniciar sesión para reconectar</p>
       )}
 
-      <section aria-labelledby="tasks-title" className="tasks">
-        <h2 id="tasks-title" className="section-title">Tareas de Moodle pendientes</h2>
-        {tasksError && (
-          <p className="alert" role="alert">No se pudieron cargar las tareas de Moodle.</p>
-        )}
-        {!tasksError && tasks.length === 0 && (
-          <p className="card muted">No tienes tareas pendientes 🎉</p>
-        )}
+      <section aria-labelledby="tasks-title" id="tareas" className="section">
+        <div className="section-head">
+          <h1 id="tasks-title">Mis tareas</h1>
+        </div>
+        <TaskFilters active={filter} counts={counts} reminderPage={reminderPage} />
+        {!taskResult && <p className="alert" role="alert">No se pudieron cargar las tareas de Moodle.</p>}
+        {taskResult && tasks.length === 0 && <p className="card muted empty">{EMPTY_TASKS[filter]}</p>}
         <ul className="list">
-          {tasks.map((t) => {
-            const left = timeLeft(t.due_timestamp, nowSeconds);
-            const safeUrl = t.task_url && /^https?:\/\//i.test(t.task_url) ? t.task_url : null;
-            return (
-              <li key={t.id} className={`card item task${left.urgent ? ' urgent' : ''}`}>
-                <div className="item-head">
-                  <h3>{t.title}</h3>
-                  <span className={`badge ${left.urgent ? 'urgente' : 'pausado'}`}>{left.label}</span>
-                </div>
-                {t.course && <p className="message">{t.course}</p>}
-                <dl className="meta">
-                  <div>
-                    <dt>Vence</dt>
-                    <dd>{formatGuayaquil(new Date(t.due_timestamp * 1000))}</dd>
-                  </div>
-                </dl>
-                {safeUrl && (
-                  <div className="actions">
-                    <a href={safeUrl} target="_blank" rel="noopener noreferrer" className="btn">
-                      Abrir en Moodle
-                    </a>
-                  </div>
-                )}
-              </li>
-            );
-          })}
+          {tasks.map((t) => (
+            <TaskCard key={t.id} task={t} nowSeconds={nowSeconds} listState={listState} />
+          ))}
         </ul>
+        <Pagination
+          page={taskPage}
+          pages={taskPages}
+          label="Paginación de tareas"
+          hrefFor={(p) => homeHref({ tf: filter, tp: p, rp: reminderPage }, 'tareas')}
+        />
       </section>
 
-      <h2 className="section-title">Recordatorios</h2>
-      {loadError && <p className="alert" role="alert">No se pudieron cargar los recordatorios.</p>}
-      {!loadError && rows.length === 0 && (
-        <p className="card muted">Aún no tienes recordatorios. Crea el primero con «Nuevo».</p>
-      )}
-
-      <ul className="list">
-        {rows.map(({ r, status }) => (
-          <li key={r.id} className={`card item ${status}`}>
-            <div className="item-head">
-              <h2>{r.title}</h2>
-              <span className={`badge ${status}`}>{status}</span>
-            </div>
-            {r.message && <p className="message">{r.message}</p>}
-            {r.task_id && (
-              <p className="message">
-                Tarea: {linked.get(r.task_id)?.title ?? 'tarea no disponible'}
-                {linked.get(r.task_id)?.course ? ` — ${linked.get(r.task_id)?.course}` : ''}
-              </p>
-            )}
-            <dl className="meta">
-              <div><dt>Frecuencia</dt><dd>{formatInterval(r.interval_minutes)}</dd></div>
-              <div>
-                <dt>Próximo aviso</dt>
-                <dd>{status === 'activo' ? formatGuayaquil(r.next_fire_at) : '—'}</dd>
-              </div>
-              <div><dt>Hasta</dt><dd>{formatGuayaquil(r.ends_at)}</dd></div>
-              <div><dt>Último envío</dt><dd>{formatGuayaquil(r.last_sent_at)}</dd></div>
-            </dl>
-            <div className="actions">
-              {status !== 'finalizado' && (
-                <form action={toggleReminder.bind(null, r.id)}>
-                  <button type="submit" className="btn">{r.active ? 'Pausar' : 'Reanudar'}</button>
-                </form>
-              )}
-              <Link href={`/reminders/${r.id}/edit`} className="btn">Editar</Link>
-              <DeleteButton action={deleteReminder.bind(null, r.id)} title={r.title} />
-            </div>
-          </li>
-        ))}
-      </ul>
+      <section aria-labelledby="reminders-title" id="recordatorios" className="section">
+        <div className="section-head">
+          <h2 id="reminders-title">Recordatorios</h2>
+          <Link href="/reminders/new" className="btn primary">Nuevo</Link>
+        </div>
+        {!reminderResult && <p className="alert" role="alert">No se pudieron cargar los recordatorios.</p>}
+        {reminderResult && reminders.length === 0 && (
+          <p className="card muted empty">Aún no tienes recordatorios. Crea el primero con «Nuevo».</p>
+        )}
+        <ul className="list">
+          {reminders.map((r) => (
+            <ReminderCard
+              key={r.id}
+              reminder={r}
+              status={reminderStatus(r, now)}
+              hasTask={!!r.task_id}
+              task={r.task_id ? (linked.get(r.task_id) ?? null) : null}
+            />
+          ))}
+        </ul>
+        <Pagination
+          page={reminderPage}
+          pages={reminderPages}
+          label="Paginación de recordatorios"
+          hrefFor={(p) => homeHref({ tf: filter, tp: taskPage, rp: p }, 'recordatorios')}
+        />
+      </section>
       <p className="muted small">Horas en Ecuador (UTC-5).</p>
     </>
   );

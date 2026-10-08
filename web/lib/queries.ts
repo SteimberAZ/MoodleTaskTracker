@@ -45,6 +45,12 @@ export function ownedTasksInQuery(userId: string, ids: string[], ...parts: strin
   return scopedQuery(userId, `id=in.(${encodeURIComponent(list)})`, ...parts);
 }
 
+/** `?id=eq.<uuid>&...parts` on `moodle_users`: the row of the session user, never one taken from input. */
+export function userRowQuery(userId: string, ...parts: string[]): string {
+  assertUuid(userId, 'user id');
+  return `?${[`id=eq.${userId}`, ...parts.filter(Boolean)].join('&')}`;
+}
+
 export function userByIdentityQuery(moodleUrl: string, siteUserId: number): string {
   if (!Number.isInteger(siteUserId)) throw new Error('Invalid site user id');
   return `moodle_url=eq.${encodeURIComponent(moodleUrl)}&site_userid=eq.${siteUserId}`;

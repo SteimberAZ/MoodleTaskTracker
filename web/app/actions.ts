@@ -10,7 +10,8 @@ import {
   getReminder,
   updateReminder,
 } from '@/lib/reminders';
-import { getOwnedTask } from '@/lib/tasks';
+import { isSafeId } from '@/lib/queries';
+import { getOwnedTask, setTaskMuted } from '@/lib/tasks';
 import { computeNextFire } from '@/lib/schedule';
 import { validateReminderForm, type FieldErrors, type ReminderFormInput } from '@/lib/validate';
 
@@ -96,6 +97,14 @@ export async function saveReminder(
   }
   revalidatePath('/');
   redirect('/');
+}
+
+/** Mutes (`muted = true`) or restores a task. Always scoped to the session user; unknown ids are a no-op. */
+export async function setTaskMute(taskId: string, muted: boolean): Promise<void> {
+  const user = await requireUser();
+  await setTaskMuted(user.id, taskId, muted);
+  revalidatePath('/');
+  if (isSafeId(taskId)) revalidatePath(`/tareas/${taskId}`);
 }
 
 export async function toggleReminder(id: string): Promise<void> {

@@ -3,8 +3,9 @@ import { listInvites, type Invite } from '@/lib/invites';
 import { listUsersForAdmin, type AdminUserRow } from '@/lib/users';
 import { inviteStatus, inviteStatusLabel } from '@/lib/invite-status';
 import { formatGuayaquil } from '@/lib/time';
+import { formatDeviceCount } from '@/lib/push-query';
+import { countPushDevicesByUser } from '@/lib/push-subscriptions';
 import { revokeInvite, setActive } from './actions';
-import Nav from '@/components/Nav';
 import ConfirmButton from '@/components/ConfirmButton';
 import CopyButton from '@/components/CopyButton';
 import InviteForm from '@/components/InviteForm';
@@ -30,12 +31,13 @@ export default async function AdminPage() {
     usersError = true;
   }
 
+  // Devices per user; null when the table is not available yet (shown as a dash).
+  const pushCounts = await countPushDevicesByUser();
   const nameById = new Map(users.map((u) => [u.id, u.fullname || u.username]));
 
   return (
     <>
-      <Nav isAdmin />
-      <header className="topbar">
+      <header className="page-head">
         <h1>Administración</h1>
       </header>
 
@@ -90,6 +92,10 @@ export default async function AdminPage() {
               <div><dt>Usuario</dt><dd>{u.username}</dd></div>
               <div><dt>Registro</dt><dd>{formatGuayaquil(u.created_at)}</dd></div>
               <div><dt>Último acceso</dt><dd>{formatGuayaquil(u.last_login_at)}</dd></div>
+              <div>
+                <dt>Push</dt>
+                <dd>{formatDeviceCount(pushCounts ? (pushCounts.get(u.id) ?? 0) : undefined)}</dd>
+              </div>
               {u.last_error && <div><dt>Último error</dt><dd>{u.last_error}</dd></div>}
             </dl>
             {u.id !== admin.id && (

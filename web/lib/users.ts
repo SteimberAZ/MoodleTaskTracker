@@ -1,6 +1,7 @@
 import 'server-only';
 import { dbFetch, dbJson } from './db';
 import { isUuid } from './queries';
+import { ntfyEnabledQuery, ntfyEnabledRequest, resolveNtfyEnabled } from './ntfy';
 
 /**
  * Users as seen by the web app. The `token` column is deliberately never selected: it is
@@ -71,4 +72,27 @@ export async function setUserTopic(id: string, topic: string): Promise<boolean> 
     throw new Error('No se pudo actualizar el tema.');
   }
   return true;
+}
+
+/**
+ * Whether the user also wants ntfy deliveries (`moodle_users.ntfy_enabled`, default true).
+ * Never throws: before the migration is applied (column missing) or on any read error it is treated as enabled.
+ */
+export async function getNtfyEnabled(userId: string): Promise<boolean> {
+  try {
+    return resolveNtfyEnabled(await dbJson<{ ntfy_enabled: boolean | null }[]>(`moodle_users${ntfyEnabledQuery(userId)}`));
+  } catch {
+    return true;
+  }
+}
+
+/** Switches ntfy deliveries on or off for the session user. Returns false when no row was updated. */
+export async function setNtfyEnabled(userId: string, enabled: boolean): Promise<boolean> {
+  const { query, body } = ntfyEnabledRequest(userId, enabled, new Date().toISOString());
+  const rows = await dbJson<{ id: string }[]>(
+    `moodle_users${query}`,
+    { method: 'PATCH', headers: { Prefer: 'return=representation' }, body: JSON.stringify(body) },
+    'No se pudo guardar el cambio.',
+  );
+  return rows.length > 0;
 }
