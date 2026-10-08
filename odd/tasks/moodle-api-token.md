@@ -28,9 +28,15 @@ once from the web app, and move all project tables to the self-hosted Supabase o
 - [x] T1 Schema rewrite + Python API client + worker wiring + tests. Route: delegated (2+ files). Commits `901995b`, `42a57fd`; pytest 72 passed. Untested against live UTM Moodle.
 - [x] T1b Target DB = Mineral shared Supabase; role `moodle_app` (NOLOGIN) + RLS policy `moodle_app_all`, anon/authenticated revoked; client sends `apikey`=ANON + `Bearer`=MOODLE_DB_JWT (legacy service-role chain kept); `scripts/make_moodle_jwt.py`. Commit `37fe025`; pytest 79 passed. Schema not yet run on the live DB.
 - [x] T2 Web: `/moodle` connect page (token.php + get_site_info, upsert/delete `moodle_credentials`), `lib/db.ts` helper (anon apikey + MOODLE_DB_JWT bearer, service-role fallback), `moodle_custom_reminders` rename + optional `task_id` link. Route: delegated. Commit `0267362`; npm test 45 passed, tsc clean, next build OK. Untested against live Moodle/DB.
-- [ ] T3 README + VPS deployment instructions (prompt for the VPS Claude). Route: inline.
+- [x] T3 README + VPS deployment instructions. Route: inline. Commit `b33eda1`.
 
 ## Progress / Evidence
 
+## Deployment evidence (2026-10-08, reported by VPS Claude)
+- main `b33eda1` deployed to /home/steimber/utm-moodle-tracker (backup .bak-20261008_0522); schema applied on Mineral supabase-db.
+- Isolation: moodle_tasks with moodle_app JWT 200; Mineral tables 403 (42501); anon 401.
+- Worker online, 6 tasks synced via cookie path (no Moodle token yet).
+
 ## Next step
-- T1
+- User: Vercel env vars + redeploy + connect Moodle in /moodle; delete vercel-env-moodle.txt; rotate old Supabase Cloud service_role.
+- Follow-up: worker.py:61 banner still says "Supabase Cloud".
