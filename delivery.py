@@ -13,7 +13,7 @@ decide whether to record a milestone / advance a reminder, so a total failure is
 """
 import os
 import uuid
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional, Set, Tuple
 
 import notifier
 from webpush_sender import TTL_TASK, TTL_TEST, PushResult
@@ -193,13 +193,20 @@ def deliver_to_user(
     return delivered
 
 
-def process_push_tests(supabase, sender, history=None) -> int:
+# (subscription id, test_requested_at) of tests already sent whose flag could not be cleared yet.
+_ANSWERED_TESTS: Set[Tuple[str, str]] = set()
+
+
+def process_push_tests(supabase, sender, history=None, answered: Optional[Set[Tuple[str, str]]] = None) -> int:
     """Answer the "Enviar prueba" button: send a test push to every subscription that asked for one.
 
     The web sets ``test_requested_at`` on the row; this clears it again, also when the send failed or
-    raised, so a broken subscription cannot loop. Returns how many tests were accepted. Never raises
-    for a single row, and does nothing without a working sender / database. Each test is recorded in
-    ``history`` as kind "test" (one device, so push 1/1 or 0/1).
+    raised, so a broken subscription cannot loop. The clear only matches the value that was read, so a
+    newer press made meanwhile survives and gets its own test. A request whose clear failed is kept in
+    ``answered`` (process-wide by default) and is never sent twice: later ticks only retry the clear.
+    Returns how many tests were accepted. Never raises for a single row, and does nothing without a
+    working sender / database. Each test is recorded in ``history`` as kind "test" (one device, so
+    push 1/1 or 0/1).
     """
     if sender is None or not getattr(sender, "enabled", False):
         return 0
@@ -211,8 +218,19 @@ def process_push_tests(supabase, sender, history=None) -> int:
     except Exception as exc:  # noqa: BLE001
         _log_changed("push-tests", f"[Deliver] could not read push test requests: {exc}")
         return 0
+    answered = _ANSWERED_TESTS if answered is None else answered
+    keys = {(str(row.get("id")), str(row.get("test_requested_at") or "")) for row in rows}
+    answered &= keys  # requests that are gone from the table need no more tracking
     sent = 0
     for row in rows:
+        key = (str(row.get("id")), str(row.get("test_requested_at") or ""))
+        if key in answered:
+            try:
+                if supabase.clear_push_test_request(row["id"], row.get("test_requested_at")):
+                    answered.discard(key)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[Deliver] could not clear the push test flag: {type(exc).__name__}")
+            continue
         row_user = str(row.get("user_id") or "")
         log_id = new_log_id() if history_active(history, row_user, "test") else None
         payload = dict(TEST_PAYLOAD, url=history_url(log_id), target=TEST_PAYLOAD["url"])
@@ -230,9 +248,13 @@ def process_push_tests(supabase, sender, history=None) -> int:
         )
         if result is not PushResult.GONE:  # a deleted row has no flag left to clear
             try:
-                supabase.update_push_subscription(row["id"], {"test_requested_at": None})
+                cleared = bool(supabase.clear_push_test_request(row["id"], row.get("test_requested_at")))
             except Exception as exc:  # noqa: BLE001
                 print(f"[Deliver] could not clear the push test flag: {type(exc).__name__}")
+                cleared = False
+            if not cleared:
+                print("[Deliver] push test flag not cleared; it is retried without sending the test again.")
+                answered.add(key)
         label = result.value if isinstance(result, PushResult) else "failed"
         print(f"[Deliver] push test for user {str(row.get('user_id') or '?')[:8]}: {label}")
     return sent

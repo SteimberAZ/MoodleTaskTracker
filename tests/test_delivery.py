@@ -59,7 +59,7 @@ class FakeDb:
 
     def __init__(self, subs=None, tests=None, admins=None, fail=False):
         self.subs, self.tests, self.admins, self.fail = subs or {}, tests or [], admins or [], fail
-        self.reads, self.updates = [], []
+        self.reads, self.updates, self.clears = [], [], []
 
     def fetch_push_subscriptions(self, user_id):
         self.reads.append(user_id)
@@ -81,6 +81,13 @@ class FakeDb:
     def update_push_subscription(self, sub_id, fields):
         self.updates.append((sub_id, fields))
         return True
+
+    clear_ok = True
+
+    def clear_push_test_request(self, sub_id, requested_at):
+        self.updates.append((sub_id, {"test_requested_at": None}))
+        self.clears.append((sub_id, requested_at))
+        return self.clear_ok
 
 
 class Ntfy:
@@ -279,6 +286,47 @@ def test_test_requests_are_ignored_without_a_working_sender_or_database():
     unconfigured.is_configured = False
     assert process_push_tests(unconfigured, FakeSender()) == 0
     assert db.reads == [] and unconfigured.reads == [] and db.updates == []
+
+
+def test_the_clear_only_matches_the_request_that_was_read():
+    db = FakeDb(tests=[dict(_test_row("a"), test_requested_at="2026-10-08T12:00:00.5+00:00")])
+    assert process_push_tests(db, FakeSender(), answered=set()) == 1
+    assert db.clears == [("s-a", "2026-10-08T12:00:00.5+00:00")]
+
+
+def test_a_failed_clear_is_retried_without_sending_the_test_again():
+    requested = "2026-10-08T12:00:00+00:00"
+    db = FakeDb(tests=[dict(_test_row("a"), test_requested_at=requested)])
+    db.clear_ok = False
+    sender, answered = FakeSender(), set()
+    assert process_push_tests(db, sender, answered=answered) == 1
+    assert process_push_tests(db, sender, answered=answered) == 0
+    assert process_push_tests(db, sender, answered=answered) == 0
+    assert len(sender.sent) == 1 and len(db.clears) == 3  # one test, the clear retried every tick
+
+    db.clear_ok = True
+    process_push_tests(db, sender, answered=answered)
+    assert answered == set() and len(sender.sent) == 1
+
+    # A newer press (another timestamp) is a new request and gets its own test.
+    db.tests = [dict(_test_row("a"), test_requested_at="2026-10-08T12:05:00+00:00")]
+    assert process_push_tests(db, sender, answered=answered) == 1
+    assert len(sender.sent) == 2
+
+
+def test_clear_push_test_request_filters_on_the_value_read(monkeypatch):
+    seen = {}
+
+    def fake_patch(url, params=None, json=None, headers=None, timeout=None):
+        seen.update(params=params, json=json)
+        return _Resp(204)
+
+    monkeypatch.setattr(supabase_client.requests, "patch", fake_patch)
+    assert _client().clear_push_test_request("s1", "2026-10-08T12:00:00+00:00") is True
+    assert seen == {"params": {"id": "eq.s1", "test_requested_at": "eq.2026-10-08T12:00:00+00:00"},
+                    "json": {"test_requested_at": None}}
+    monkeypatch.setattr(supabase_client.requests, "patch", lambda *a, **k: _Resp(503))
+    assert _client().clear_push_test_request("s1", "x") is False
 
 
 def test_unreadable_test_requests_are_logged_once_and_never_raise(capsys):
@@ -693,7 +741,7 @@ def test_fetch_push_test_requests_query(monkeypatch):
     assert _client().fetch_push_test_requests() == []
     assert seen["url"].endswith("/moodle_push_subscriptions")
     assert seen["params"] == {"test_requested_at": "not.is.null",
-                              "select": "id,user_id,endpoint,p256dh,auth,failure_count"}
+                              "select": "id,user_id,endpoint,p256dh,auth,failure_count,test_requested_at"}
 
 
 def test_push_reads_raise_on_failure_and_are_empty_when_unconfigured(monkeypatch):

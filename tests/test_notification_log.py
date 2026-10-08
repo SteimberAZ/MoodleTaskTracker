@@ -269,6 +269,9 @@ class PushTestDb:
     def update_push_subscription(self, sub_id, fields):
         return True
 
+    def clear_push_test_request(self, sub_id, requested_at):
+        return True
+
 
 def test_push_tests_are_recorded_as_test_one_row_per_device():
     log, db = _log()

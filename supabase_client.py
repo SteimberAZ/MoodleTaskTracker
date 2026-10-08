@@ -454,7 +454,7 @@ class SupabaseClient:
             return []
         params = {
             "test_requested_at": "not.is.null",
-            "select": "id,user_id,endpoint,p256dh,auth,failure_count",
+            "select": "id,user_id,endpoint,p256dh,auth,failure_count,test_requested_at",
         }
         r = requests.get(
             f"{self.url}/rest/v1/moodle_push_subscriptions", params=params, headers=self._headers(), timeout=10
@@ -480,6 +480,32 @@ class SupabaseClient:
             return r.status_code in (200, 204)
         except Exception as e:
             print(f"[Supabase] update_push_subscription error: {type(e).__name__}")
+            return False
+
+    def clear_push_test_request(self, sub_id: str, requested_at: Optional[str]) -> bool:
+        """Clear ``test_requested_at`` only while it still holds ``requested_at`` (the value that was read).
+
+        A newer "Enviar prueba" press made while the test was being sent keeps its flag. True when the
+        PATCH was accepted (also when the filter matched no row); never raises.
+        """
+        if not self.is_configured:
+            return False
+        params = {"id": f"eq.{sub_id}"}
+        if requested_at:
+            params["test_requested_at"] = f"eq.{requested_at}"
+        try:
+            headers = dict(self._headers())
+            headers["Prefer"] = "return=minimal"
+            r = requests.patch(
+                f"{self.url}/rest/v1/moodle_push_subscriptions",
+                params=params,
+                json={"test_requested_at": None},
+                headers=headers,
+                timeout=10,
+            )
+            return r.status_code in (200, 204)
+        except Exception as e:
+            print(f"[Supabase] clear_push_test_request error: {type(e).__name__}")
             return False
 
     # ---- Notification history (moodle_notification_log) ----------------------------------------------
