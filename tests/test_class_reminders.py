@@ -366,7 +366,7 @@ def legacy_clock(monkeypatch):
 
     monkeypatch.setattr(class_schedule, "datetime", Frozen)
     sent = []
-    monkeypatch.setattr(class_schedule, "send_class_notification", lambda c, minutes_left=30: sent.append(c["id"]))
+    monkeypatch.setattr(class_schedule, "send_class_notification", lambda c, minutes_left=30: sent.append(c["id"]) or True)
     return sent
 
 
@@ -398,11 +398,38 @@ def test_when_every_admin_imported_a_schedule_the_built_in_one_is_silent(legacy_
     assert storage.recorded == {LEGACY_KEY}  # handled: not re-evaluated every tick of the window
 
 
-def test_the_built_in_schedule_is_kept_when_the_lookup_fails(legacy_clock):
-    deliver = Deliverer()
-    storage = _legacy(LegacyDb(ADMINS, with_rows={"adm1"}, lookup_fails=True), deliver)
-    assert [c["user"] for c in deliver.calls] == ["adm1", "adm2"]
-    assert storage.recorded == {LEGACY_KEY}
+def test_an_unreadable_imported_schedule_lookup_skips_the_tick(legacy_clock):
+    # Guessing "nobody imported" would send adm1 the built-in reminder on top of class_reminders.py.
+    deliver, db = Deliverer(), LegacyDb(ADMINS, with_rows={"adm1"}, lookup_fails=True)
+    storage = FakeStorage()
+    class_schedule.check_and_notify_upcoming_classes(storage, supabase=db, deliver=deliver)
+    assert deliver.calls == [] and storage.recorded == set()
+    db.lookup_fails = False
+    class_schedule.check_and_notify_upcoming_classes(storage, supabase=db, deliver=deliver)
+    assert [c["user"] for c in deliver.calls] == ["adm2"] and LEGACY_KEY in storage.recorded
+
+
+def test_an_admin_that_was_not_reached_is_retried_alone(legacy_clock):
+    class Flaky(Deliverer):
+        def __call__(self, user, *a, **k):
+            super().__call__(user, *a, **k)
+            return user["id"] != "adm2" or len(self.calls) > 2
+
+    deliver, db, storage = Flaky(), LegacyDb(ADMINS), FakeStorage()
+    class_schedule.check_and_notify_upcoming_classes(storage, supabase=db, deliver=deliver)
+    assert [c["user"] for c in deliver.calls] == ["adm1", "adm2"] and LEGACY_KEY not in storage.recorded
+    class_schedule.check_and_notify_upcoming_classes(storage, supabase=db, deliver=deliver)
+    assert [c["user"] for c in deliver.calls] == ["adm1", "adm2", "adm2"]  # adm1 is not sent it twice
+    assert LEGACY_KEY in storage.recorded
+    class_schedule.check_and_notify_upcoming_classes(storage, supabase=db, deliver=deliver)
+    assert len(deliver.calls) == 3
+
+
+def test_a_fallback_that_sent_nothing_is_retried(legacy_clock, monkeypatch):
+    monkeypatch.setattr(class_schedule, "send_class_notification", lambda c, minutes_left=30: False)  # no NTFY_TOPIC
+    storage = FakeStorage()
+    class_schedule.check_and_notify_upcoming_classes(storage, supabase=LegacyDb([]), deliver=Deliverer())
+    assert storage.recorded == set()  # not marked as sent: the next tick of the window retries
 
 
 def test_the_env_topic_fallback_is_unchanged(legacy_clock):

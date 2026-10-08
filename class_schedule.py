@@ -138,10 +138,11 @@ def _ntfy_server() -> str:
     return (os.environ.get("NTFY_SERVER", "").strip() or "https://ntfy.sh").rstrip("/")
 
 
-def send_class_notification(c: Dict, minutes_left: int = 30):
+def send_class_notification(c: Dict, minutes_left: int = 30) -> bool:
     """Post the class reminder to ntfy (env NTFY_TOPIC): the fallback when no admin user can be reached.
 
     There is no built-in topic: without NTFY_TOPIC the reminder is skipped (logged once per process).
+    True only when ntfy accepted it, so a skipped or failed reminder is retried inside its window.
     """
     global _missing_topic_logged
     topic = os.environ.get("NTFY_TOPIC", "").strip()
@@ -149,7 +150,7 @@ def send_class_notification(c: Dict, minutes_left: int = 30):
         if not _missing_topic_logged:
             _missing_topic_logged = True
             print("[ClassSchedule] NTFY_TOPIC is not set: built-in class reminders without an admin user are skipped.")
-        return
+        return False
 
     title, body = class_notification_content(c, minutes_left)
 
@@ -169,10 +170,12 @@ def send_class_notification(c: Dict, minutes_left: int = 30):
         )
         if res.status_code == 200:
             print(f"[ClassSchedule] Alerta de clase enviada con éxito: {c['subject']} ({c['start_time']})")
-        else:
-            print(f"[ClassSchedule] Error enviando a ntfy ({res.status_code}): {res.text}")
+            return True
+        print(f"[ClassSchedule] Error enviando a ntfy ({res.status_code}).")
     except Exception as e:
-        print(f"[ClassSchedule] Excepción al enviar alerta de clase: {e}")
+        # Only the type: a requests error repeats the URL, i.e. the topic (a bearer secret).
+        print(f"[ClassSchedule] Excepción al enviar alerta de clase: {type(e).__name__}")
+    return False
 
 
 def _active_admins(supabase) -> Optional[List[Dict]]:
@@ -186,48 +189,65 @@ def _active_admins(supabase) -> Optional[List[Dict]]:
         return None
 
 
-def _admins_with_imported_schedule(supabase, admins: List[Dict]) -> set:
-    """Ids of the admins that already imported a schedule; empty when that cannot be read."""
+def _admins_with_imported_schedule(supabase, admins: List[Dict]) -> Optional[set]:
+    """Ids of the admins that already imported a schedule; None when that cannot be read."""
     try:
         return set(supabase.fetch_users_with_schedule([a["id"] for a in admins]))
-    except Exception as err:  # noqa: BLE001 - keep the legacy behaviour when the lookup fails
-        print(f"[ClassSchedule] Could not check the imported schedules ({err}); using the built-in one.")
-        return set()
+    except Exception as err:  # noqa: BLE001
+        print(f"[ClassSchedule] Could not check the imported schedules ({err}); retrying on the next tick.")
+        return None
 
 
-def notify_class(c: Dict, minutes_left: int, supabase=None, deliver: Optional[Callable] = None) -> bool:
+def notify_class(c: Dict, minutes_left: int, supabase=None, deliver: Optional[Callable] = None,
+                 storage=None, key: Optional[str] = None) -> bool:
     """Send one built-in class reminder to the admin users (Web Push + ntfy); True when it is handled.
 
     The built-in schedule belongs to the owner, so the reminder goes to every active ``is_admin`` user
     through ``deliver`` (delivery.deliver_to_user), except the admins that imported their own schedule
     (class_reminders.py serves those). Without an admin user, without a readable database or without
-    ``deliver`` it falls back to the legacy ntfy topic from env NTFY_TOPIC.
+    ``deliver`` it falls back to the legacy ntfy topic from env NTFY_TOPIC (False when that was not
+    sent, e.g. no topic). When the imported schedules cannot be read nothing is sent this tick (False):
+    guessing would duplicate class_reminders.py. True only when every admin was reached; with
+    ``storage`` and ``key`` each reached admin is remembered (``<key>:<admin id>``, local only) so the
+    next tick retries only the admins that were not.
     """
     admins = _active_admins(supabase) if deliver is not None else None
     if not admins:
-        send_class_notification(c, minutes_left)
-        return True
+        return bool(send_class_notification(c, minutes_left))
     imported = _admins_with_imported_schedule(supabase, admins)
+    if imported is None:
+        return False
     admins = [a for a in admins if str(a.get("id")) not in imported]
     if not admins:
         return True  # every admin has an imported schedule: the built-in one is never used
     title, body = class_notification_content(c, minutes_left)
-    results = []
+    track = storage is not None and bool(key)
+    reached, missed = [], 0
     for admin in admins:
-        results.append(
-            deliver(
-                admin,
-                title,
-                body,
-                url="/",
-                tag=f"class-{c['id']}",
-                priority="high",
-                ttl=TTL_CLASS,
-                ntfy_tags="alarm_clock,mortarboard,books",
-                kind="class",
-            )
+        admin_key = f"{key}:{admin.get('id')}"
+        if track and storage.has_notified_milestone(admin_key, "30m"):
+            continue  # reached on an earlier tick of this window
+        ok = deliver(
+            admin,
+            title,
+            body,
+            url="/",
+            tag=f"class-{c['id']}",
+            priority="high",
+            ttl=TTL_CLASS,
+            ntfy_tags="alarm_clock,mortarboard,books",
+            kind="class",
         )
-    return any(results)
+        if ok:
+            reached.append(admin_key)
+        else:
+            missed += 1
+    if not missed:
+        return True
+    if track:
+        for admin_key in reached:
+            storage.record_milestone(admin_key, "30m", mirror=False)
+    return False
 
 
 def check_and_notify_upcoming_classes(storage, supabase=None, deliver: Optional[Callable] = None):
@@ -255,7 +275,7 @@ def check_and_notify_upcoming_classes(storage, supabase=None, deliver: Optional[
                 task_id = f"class_{c['id']}_{today_str}"
                 if not storage.has_notified_milestone(task_id, "30m"):
                     print(f"[{now_ec.strftime('%Y-%m-%d %H:%M:%S')}] 🎓 Clase próxima detectada ({int(diff_mins)} min): {c['subject']}")
-                    if notify_class(c, int(diff_mins), supabase, deliver):
+                    if notify_class(c, int(diff_mins), supabase, deliver, storage=storage, key=task_id):
                         # Local only: a class has no moodle_tasks row, so a mirror would fail its FK.
                         storage.record_milestone(task_id, "30m", mirror=False)
                     # else: nothing got through; not recorded, so the next tick retries inside the window

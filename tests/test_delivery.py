@@ -79,6 +79,9 @@ class FakeDb:
             raise RuntimeError("HTTP 503")
         return list(self.admins)
 
+    def fetch_users_with_schedule(self, user_ids):
+        return set()  # no admin imported a schedule
+
     def update_push_subscription(self, sub_id, fields):
         self.updates.append((sub_id, fields))
         return True
@@ -664,7 +667,7 @@ def class_clock(monkeypatch):
 @pytest.fixture
 def legacy_class_sends(monkeypatch):
     sent = []
-    monkeypatch.setattr(class_schedule, "send_class_notification", lambda c, minutes_left=30: sent.append(c["id"]))
+    monkeypatch.setattr(class_schedule, "send_class_notification", lambda c, minutes_left=30: sent.append(c["id"]) or True)
     return sent
 
 

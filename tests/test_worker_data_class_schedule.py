@@ -33,7 +33,7 @@ def test_built_in_class_keys_stay_local(monkeypatch):
             return datetime(2026, 10, 6, 6, 40, tzinfo=class_schedule.ECUADOR_TZ)  # Tuesday, 20 min before 07:00
 
     monkeypatch.setattr(class_schedule, "datetime", Frozen)
-    monkeypatch.setattr(class_schedule, "send_class_notification", lambda c, minutes_left=30: None)
+    monkeypatch.setattr(class_schedule, "send_class_notification", lambda c, minutes_left=30: True)
     storage = _RecordingStorage()
     class_schedule.check_and_notify_upcoming_classes(storage)
     assert storage.calls == [("class_desarrollo_web_mar_2026-10-06", "30m", False)]
