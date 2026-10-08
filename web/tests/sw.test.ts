@@ -99,7 +99,7 @@ describe('sw.js push', () => {
       body: 'Tarea 2 vence a las 08:00',
       icon: '/icons/icon-192.png',
       badge: '/icons/badge-96.png',
-      renotify: true,
+      renotify: false,
       tag: 'task-abc123',
       data: { url: `${ORIGIN}/tareas/abc123` },
     });
@@ -117,14 +117,14 @@ describe('sw.js push', () => {
     expect(sw.shown[2].title).toBe('mineral tareas');
     expect(sw.shown[2].options.data).toEqual({ url: `${ORIGIN}/` });
     expect(sw.shown.every((n) => !('tag' in n.options))).toBe(true);
-    // renotify without a tag makes showNotification throw a TypeError.
-    expect(sw.shown.every((n) => !('renotify' in n.options))).toBe(true);
+    // renotify: true without a tag makes showNotification throw a TypeError.
+    expect(sw.shown.every((n) => n.options.renotify === false)).toBe(true);
   });
 
-  it('alerts again when a newer message replaces one with the same tag', async () => {
+  it('alerts again when the sender asks to (renotify: true) for a newer message with the same tag', async () => {
     const sw = loadWorker();
-    await sw.dispatch('push', pushEvent({ title: 'Recordatorio: Falta 1 dia', body: 'b', tag: 'task-abc123' }));
-    await sw.dispatch('push', pushEvent({ title: 'URGENTE: Faltan menos de 8 horas', body: 'b', tag: 'task-abc123' }));
+    await sw.dispatch('push', pushEvent({ title: 'Recordatorio: Falta 1 dia', body: 'b', tag: 'task-abc123', renotify: true }));
+    await sw.dispatch('push', pushEvent({ title: 'URGENTE: Faltan menos de 8 horas', body: 'b', tag: 'task-abc123', renotify: true }));
     expect(sw.shown.map((n) => [n.options.tag, n.options.renotify])).toEqual([
       ['task-abc123', true],
       ['task-abc123', true],
@@ -269,12 +269,13 @@ describe('sw.js pushsubscriptionchange', () => {
 });
 
 describe('sw.js renotify and timestamp', () => {
-  it('never sets renotify without a tag, and alerts again with one', async () => {
+  it('renotify defaults to false, is true only when asked with a tag, and false without a tag', async () => {
     const sw = loadWorker();
     await sw.dispatch('push', pushEvent({ title: 't', body: 'b', renotify: true }));
     await sw.dispatch('push', pushEvent({ title: 't', body: 'b', tag: 'task-1' }));
-    expect('renotify' in sw.shown[0].options).toBe(false);
-    expect(sw.shown[1].options.renotify).toBe(true);
+    await sw.dispatch('push', pushEvent({ title: 't', body: 'b', tag: 'task-1', renotify: true }));
+    await sw.dispatch('push', pushEvent({ title: 't', body: 'b', tag: 'task-1', renotify: 'yes' }));
+    expect(sw.shown.map((n) => n.options.renotify)).toEqual([false, false, true, false]);
   });
 
   it('passes a numeric timestamp through and ignores anything else', async () => {

@@ -48,12 +48,11 @@ self.addEventListener('push', (event) => {
     badge: '/icons/badge-96.png',
     data: { url: resolveUrl(data.url) },
   };
-  if (typeof data.tag === 'string' && data.tag) {
-    options.tag = data.tag;
-    // A newer message with the same tag (e.g. "Falta 1 dia" -> "Faltan menos de 8 horas") replaces the
-    // old one and must alert again; renotify is only valid together with a tag.
-    options.renotify = true;
-  }
+  if (typeof data.tag === 'string' && data.tag) options.tag = data.tag;
+  // A newer message with the same tag replaces the old one silently unless the sender asks to alert again
+  // (`renotify: true`, e.g. "Falta 1 dia" -> "Faltan menos de 8 horas"); a retry of the same message does not.
+  // renotify is only valid together with a tag.
+  options.renotify = data.renotify === true && !!options.tag;
   // When the message was created (epoch ms), so a push delivered late still shows its real time.
   if (typeof data.timestamp === 'number' && Number.isFinite(data.timestamp)) options.timestamp = data.timestamp;
   event.waitUntil(self.registration.showNotification(title, options));
