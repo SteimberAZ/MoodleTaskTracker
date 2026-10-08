@@ -143,6 +143,8 @@ export async function setReminderActive(id: string, active: boolean): Promise<vo
   const user = await requireUser();
   try {
     const existing = await getReminder(user.id, id);
+    // Nothing to write, but the card may be stale (the worker or another device changed it): the
+    // revalidation below still runs so it re-renders from the stored state.
     if (!existing || existing.active === active) return;
     if (!active) {
       await updateReminderIfActive(user.id, id, true, { active: false });
@@ -160,8 +162,9 @@ export async function setReminderActive(id: string, active: boolean): Promise<vo
     }
   } catch {
     // The card re-renders with the stored state, which is the honest feedback here.
+  } finally {
+    revalidatePath(REMINDERS_PATH);
   }
-  revalidatePath(REMINDERS_PATH);
 }
 
 /** Deletes a reminder of the session user. Deleting one that is already gone counts as done. */

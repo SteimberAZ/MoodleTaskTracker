@@ -93,9 +93,16 @@ describe('setReminderActive', () => {
     expect(db.state.row?.active).toBe(false);
   });
 
-  it('a no-op when the reminder is already in the requested state', async () => {
+  it('a no-op when the reminder is already in the requested state, but the stale card is still refreshed', async () => {
+    const { revalidatePath } = await import('next/cache');
+    vi.mocked(revalidatePath).mockClear();
     await setReminderActive(REMINDER_ID, true);
     expect(patches()).toHaveLength(0);
+    expect(revalidatePath).toHaveBeenCalledWith('/recordatorios');
+    vi.mocked(revalidatePath).mockClear();
+    db.state.row = null; // deleted on another device
+    await setReminderActive(REMINDER_ID, false);
+    expect(revalidatePath).toHaveBeenCalledWith('/recordatorios');
   });
 
   it('recomputes next_fire_at only when resuming', async () => {
