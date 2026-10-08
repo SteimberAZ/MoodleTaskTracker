@@ -8,8 +8,11 @@ what it delivered. Each flush goes out as ONE bulk insert, so the row a push lin
 and no delivery ever waits on the history.
 
 The history is best effort and must never affect delivery: nothing here raises. Rows of a failed
-insert stay buffered and are retried on the next flushes (at most ``MAX_FLUSH_ATTEMPTS`` times, and the
-buffer never holds more than ``MAX_BUFFERED_ROWS``); a missing table drops them. An outage or a
+insert stay buffered and are retried on the next flushes until they are ``MAX_ROW_AGE_SECONDS`` old
+(retention by age, not by flush count: the worker flushes several times a minute, so a count would
+drop rows within a short outage); the buffer never holds more than ``MAX_BUFFERED_ROWS``. A missing
+table drops them. A chunk refused because of one bad row (409, or a constraint or data error such
+as the FK of a deleted user) is retried row by row so only the bad rows are dropped. An outage or a
 missing table is logged once (``delivery._log_changed``) until the next successful write.
 
 Rows older than ``RETENTION_DAYS`` are deleted at most once every 24 hours (``prune_if_due``; the
@@ -30,8 +33,11 @@ RETENTION_DAYS = 90
 PRUNE_INTERVAL_SECONDS = 24 * 3600
 PRUNE_SETTING = "notification_log_pruned_at"  # local only (storage.LOCAL_ONLY_SETTINGS)
 FLUSH_CHUNK = 200  # rows per bulk insert request
-MAX_FLUSH_ATTEMPTS = 3  # flushes a row may fail before it is dropped
+MAX_ROW_AGE_SECONDS = 6 * 3600  # an unwritten row is retried until it is this old
 MAX_BUFFERED_ROWS = 2000  # oldest rows are dropped beyond this during a long outage
+# PostgREST/Postgres errors caused by the rows themselves, not by the server: retrying the same
+# chunk can never succeed, so it is split to find the bad rows.
+_ROW_ERROR_MARKERS = ("HTTP 409", "23503", "23514", "23502", "22P02", "22001", "22007", "22003")
 
 _INSERT_KEY = "history-insert"
 _PRUNE_KEY = "history-prune"
@@ -99,6 +105,19 @@ def _is_missing_table(exc: Exception) -> bool:
     return "PGRST205" in text or "42P01" in text or "HTTP 404" in text
 
 
+def _is_row_error(exc: Exception) -> bool:
+    """The insert was refused because of the content of some row (FK, check, not-null, bad value)."""
+    text = str(exc)
+    return any(marker in text for marker in _ROW_ERROR_MARKERS)
+
+
+def _created_at(row: Dict[str, Any]) -> Optional[datetime]:
+    try:
+        return datetime.fromisoformat(str(row.get("created_at")))
+    except (TypeError, ValueError):
+        return None
+
+
 def _is_missing_push_state(exc: Exception) -> bool:
     """The insert was refused because moodle_notification_log.push_state does not exist yet."""
     text = str(exc)
@@ -112,9 +131,8 @@ class NotificationLog:
         self.supabase = supabase
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._rows: List[Dict[str, Any]] = []
-        self._attempts: Dict[str, int] = {}  # row id -> failed flushes so far
         self._push_state_supported = True  # False once the server reported the column missing
-        self.dropped = 0  # rows given up on since start (out of attempts or buffer room)
+        self.dropped = 0  # rows given up on since start (too old, buffer room or refused content)
 
     @property
     def enabled(self) -> bool:
@@ -167,37 +185,72 @@ class NotificationLog:
     def flush(self) -> int:
         """Insert the buffered rows (one request per ``FLUSH_CHUNK``) and return how many were written.
 
-        Rows that could not be written stay buffered for the next flush, up to ``MAX_FLUSH_ATTEMPTS``
-        failed flushes each; a missing table drops them at once. Never raises.
+        Rows that could not be written stay buffered for the next flush until they are
+        ``MAX_ROW_AGE_SECONDS`` old; a missing table drops them at once, and a chunk refused for its
+        content is retried row by row so only the refused rows are dropped. Never raises.
         """
         rows, self._rows = self._rows, []
         if not rows:
             return 0
         written = 0
-        try:
-            for start in range(0, len(rows), FLUSH_CHUNK):
-                chunk = rows[start : start + FLUSH_CHUNK]
+        unwritten: List[Dict[str, Any]] = []
+        failure: Optional[Exception] = None
+        for start in range(0, len(rows), FLUSH_CHUNK):
+            chunk = rows[start : start + FLUSH_CHUNK]
+            if failure is not None:
+                unwritten.extend(chunk)  # not sent: kept as they are
+                continue
+            try:
                 self._insert(chunk)
                 written += len(chunk)
-                for row in chunk:
-                    self._attempts.pop(row["id"], None)
+            except Exception as exc:  # noqa: BLE001
+                if _is_missing_table(exc):
+                    delivery._log_changed(_INSERT_KEY, (
+                        "[History] moodle_notification_log does not exist yet (re-run supabase_schema.sql); "
+                        "notifications are not recorded until it does."
+                    ))
+                    return written
+                if _is_row_error(exc):
+                    ok, kept, failure = self._insert_row_by_row(chunk)
+                    written += ok
+                    unwritten.extend(kept)
+                else:
+                    failure = exc
+                    unwritten.extend(chunk)
+        if failure is None:
             delivery._log_changed(_INSERT_KEY, None)
-            delivery._log_changed(_DROP_KEY, None)
-        except Exception as exc:  # noqa: BLE001
-            unwritten = rows[written:]
-            if _is_missing_table(exc):
-                message = (
-                    "[History] moodle_notification_log does not exist yet (re-run supabase_schema.sql); "
-                    "notifications are not recorded until it does."
-                )
-                for row in unwritten:
-                    self._attempts.pop(row["id"], None)
-            else:
-                # No row count in the text: it changes every tick and would defeat the log-once dedupe.
-                message = f"[History] could not record notifications (kept for a retry): {str(exc)[:200]}"
-                self._keep_for_retry(unwritten)
-            delivery._log_changed(_INSERT_KEY, message)
+            if not unwritten:
+                delivery._log_changed(_DROP_KEY, None)
+        else:
+            # No row count in the text: it changes every tick and would defeat the log-once dedupe.
+            delivery._log_changed(
+                _INSERT_KEY, f"[History] could not record notifications (kept for a retry): {str(failure)[:200]}"
+            )
+        if unwritten:
+            self._keep_for_retry(unwritten)
         return written
+
+    def _insert_row_by_row(self, chunk: List[Dict[str, Any]]):
+        """Insert a refused chunk one row at a time: drop the rows refused for their content.
+
+        Returns (written, rows to keep, error). On a server-side error the row and the rest of the
+        chunk are kept for the next flush and the error is returned.
+        """
+        written = 0
+        for index, row in enumerate(chunk):
+            try:
+                self._insert([row])
+                written += 1
+            except Exception as exc:  # noqa: BLE001
+                if _is_row_error(exc):
+                    self.dropped += 1
+                    delivery._log_changed(_DROP_KEY, (
+                        "[History] a notification row was refused by the database (constraint or data "
+                        f"error) and dropped: {str(exc)[:200]}"
+                    ))
+                    continue
+                return written, chunk[index:], exc
+        return written, [], None
 
     def _insert(self, chunk: List[Dict[str, Any]]) -> None:
         """Insert one chunk; without the push_state column (schema not re-run yet) it is left out."""
@@ -216,22 +269,22 @@ class NotificationLog:
             self._insert(chunk)
 
     def _keep_for_retry(self, rows: List[Dict[str, Any]]) -> None:
-        """Put failed rows back in front of the buffer, dropping those out of attempts or room."""
+        """Put failed rows back in front of the buffer, dropping those too old or out of room."""
         keep = []
         dropped = 0
+        try:
+            now = self._clock()
+        except Exception:  # noqa: BLE001 - a broken clock must not lose the rows
+            now = None
         for row in rows:
-            tries = self._attempts.get(row["id"], 0) + 1
-            if tries >= MAX_FLUSH_ATTEMPTS:
-                self._attempts.pop(row["id"], None)
+            created = _created_at(row)
+            if now is not None and created is not None and (now - created).total_seconds() > MAX_ROW_AGE_SECONDS:
                 dropped += 1
             else:
-                self._attempts[row["id"]] = tries
                 keep.append(row)
         merged = keep + self._rows
         overflow = len(merged) - MAX_BUFFERED_ROWS
         if overflow > 0:
-            for row in merged[:overflow]:
-                self._attempts.pop(row["id"], None)
             merged = merged[overflow:]
             dropped += overflow
         self._rows = merged

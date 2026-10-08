@@ -58,6 +58,12 @@ class LogDb:
             raise self.fail
         self.prunes.append(cutoff_iso)
 
+    def fetch_milestones_since(self, days=14):  # startup restore of the worker: nothing remote
+        return []
+
+    def fetch_settings_like(self, prefix):
+        return []
+
     @property
     def rows(self):
         return [r for batch in self.inserts for r in batch]
@@ -526,10 +532,66 @@ def test_a_failing_insert_never_breaks_the_flush_nor_the_milestones(capsys):
     assert log.flush() == 0  # no exception, rows kept for a retry
     assert storage.recorded == {("t1", m) for m in ("new", "8h", "1d", "2d", "3d")}  # dedupe untouched
     assert log.pending == 2
-    for _ in range(notification_log.MAX_FLUSH_ATTEMPTS - 1):
+    for _ in range(10):  # many flushes within one outage (the worker flushes several times a minute)
         assert log.flush() == 0
-    assert log.pending == 0 and log.flush() == 0 and db.inserts == []  # bounded: dropped after the last try
+    assert log.pending == 2 and db.inserts == []  # still kept: retention is by age, not by flush count
     assert capsys.readouterr().out.count("could not record notifications (kept for a retry)") == 1
+
+
+def test_unwritten_rows_are_dropped_only_once_they_are_too_old(capsys):
+    now = [T0]
+    db = LogDb(fail=RuntimeError("HTTP 503: down"))
+    log = NotificationLog(db, clock=lambda: now[0])
+    log.record(UID, "task", "old")
+    log.flush()
+    now[0] = T0 + timedelta(seconds=notification_log.MAX_ROW_AGE_SECONDS - 60)
+    log.record(UID, "task", "recent")
+    log.flush()
+    assert log.pending == 2
+    now[0] = T0 + timedelta(seconds=notification_log.MAX_ROW_AGE_SECONDS + 1)
+    log.flush()
+    assert [r["title"] for r in log._rows] == ["recent"] and log.dropped == 1
+    db.fail = None
+    assert log.flush() == 1 and [r["title"] for r in db.rows] == ["recent"]
+
+
+def test_a_row_refused_for_its_content_is_dropped_alone(capsys):
+    bad = "22222222-2222-4222-8222-222222222222"
+
+    class FkDb(LogDb):
+        def insert_notification_log(self, rows):
+            if any(r["user_id"] == bad for r in rows):
+                raise RuntimeError('HTTP 409: {"code":"23503","message":"insert or update violates foreign key"}')
+            super().insert_notification_log(rows)
+
+    log, db = _log(FkDb())
+    for i in range(notification_log.FLUSH_CHUNK + 5):
+        log.record(bad if i == 3 else UID, "task", f"n{i}")
+    assert log.flush() == notification_log.FLUSH_CHUNK + 4
+    assert log.pending == 0 and log.dropped == 1
+    assert "n3" not in [r["title"] for r in db.rows]
+    assert "refused by the database" in capsys.readouterr().out
+
+
+def test_an_outage_while_isolating_a_bad_row_keeps_the_rest():
+    bad = "22222222-2222-4222-8222-222222222222"
+
+    class Db(LogDb):
+        calls = 0
+
+        def insert_notification_log(self, rows):
+            Db.calls += 1
+            if any(r["user_id"] == bad for r in rows):
+                raise RuntimeError('HTTP 409: {"code":"23503"}')
+            if Db.calls >= 3:
+                raise RuntimeError("HTTP 503: down")
+            super().insert_notification_log(rows)
+
+    log, db = _log(Db())
+    for i in range(5):
+        log.record(bad if i == 0 else UID, "task", f"n{i}")
+    assert log.flush() == 0  # the bad row was dropped, then the server went down
+    assert [r["title"] for r in log._rows] == ["n1", "n2", "n3", "n4"] and log.dropped == 1
 
 
 def test_an_unreachable_database_is_logged_once_until_it_recovers(capsys):
@@ -541,7 +603,7 @@ def test_an_unreachable_database_is_logged_once_until_it_recovers(capsys):
     assert capsys.readouterr().out.count("[History] could not record") == 1
     db.fail = None
     log.record(UID, "task", "T")
-    assert log.flush() == 3  # the two rows still within their attempts, plus the new one
+    assert log.flush() == 4  # every row kept through the outage, plus the new one
     db.fail = ConnectionError("timed out")
     log.record(UID, "task", "T")
     log.flush()
