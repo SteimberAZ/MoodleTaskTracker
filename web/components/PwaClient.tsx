@@ -8,7 +8,7 @@ import { captureInstallPrompt, clearInstallPrompt, registerServiceWorker, resync
  * /notificaciones, and re-posts this device's push subscription (if any) on every app open.
  * Renders nothing.
  */
-export default function PwaClient() {
+export default function PwaClient({ vapidPublicKey }: { vapidPublicKey?: string }) {
   useEffect(() => {
     const onPrompt = (event: Event) => {
       event.preventDefault(); // we offer our own "Instalar app" button instead of the mini-infobar
@@ -20,7 +20,7 @@ export default function PwaClient() {
     let cancelled = false;
     void (async () => {
       const registration = await registerServiceWorker();
-      if (registration && !cancelled) await resyncSubscription();
+      if (registration && !cancelled) await resyncSubscription(vapidPublicKey);
     })();
 
     return () => {
@@ -28,7 +28,7 @@ export default function PwaClient() {
       window.removeEventListener('beforeinstallprompt', onPrompt);
       window.removeEventListener('appinstalled', clearInstallPrompt);
     };
-  }, []);
+  }, [vapidPublicKey]);
 
   return null;
 }

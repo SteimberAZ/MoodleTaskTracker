@@ -3,6 +3,7 @@ import {
   derivePushState,
   isValidVapidPublicKey,
   sameApplicationServerKey,
+  subscriptionKeyMismatch,
   urlBase64ToUint8Array,
   type PushState,
 } from './push';
@@ -60,7 +61,9 @@ export async function readDeviceState(vapidKey: string | undefined): Promise<Dev
   let hasSubscription = false;
   if (supported && permission === 'granted') {
     const registration = await getReadyRegistration();
-    hasSubscription = !!(await registration?.pushManager.getSubscription().catch(() => null));
+    const subscription = await registration?.pushManager.getSubscription().catch(() => null);
+    // A subscription bound to another VAPID key never receives anything: show the device as not active.
+    hasSubscription = !!subscription && !subscriptionKeyMismatch(subscription.options?.applicationServerKey, vapidKey);
   }
   const state = derivePushState({
     vapidConfigured: isValidVapidPublicKey(vapidKey),
@@ -181,14 +184,38 @@ export async function requestTestPush(): Promise<{ ok: boolean; message: string 
   return { ok: false, message: 'No se pudo solicitar la prueba. Inténtalo de nuevo.' };
 }
 
-/** On every app open: if this device is subscribed, silently re-post it so the database stays fresh. */
-export async function resyncSubscription(): Promise<void> {
+/**
+ * On every app open: if this device is subscribed, silently re-post it so the database stays fresh.
+ * A subscription bound to another VAPID key (rotated or mismatched key) is replaced by one made with
+ * `vapidKey` (permission is already granted); if that fails it is dropped, so the device shows as not
+ * active and the user can enable it again.
+ */
+export async function resyncSubscription(vapidKey?: string): Promise<void> {
   if (!pushSupported() || Notification.permission !== 'granted') return;
   const registration = await getReadyRegistration();
   const subscription = await registration?.pushManager.getSubscription().catch(() => null);
-  if (!subscription) return;
+  if (!registration || !subscription) return;
   // Errors (logged out, offline) are ignored on purpose: the next app open tries again.
-  await postJson('/api/push/subscribe', { ...subscription.toJSON(), platform: currentPlatform() });
+  if (!subscriptionKeyMismatch(subscription.options?.applicationServerKey, vapidKey)) {
+    await postJson('/api/push/subscribe', { ...subscription.toJSON(), platform: currentPlatform() });
+    return;
+  }
+  const oldEndpoint = subscription.endpoint;
+  await subscription.unsubscribe().catch(() => false);
+  let fresh: PushSubscription | null = null;
+  try {
+    fresh = await registration.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array((vapidKey ?? '').trim()),
+    });
+  } catch {
+    fresh = null;
+  }
+  if (fresh) {
+    await postJson('/api/push/resubscribe', { oldEndpoint, subscription: { ...fresh.toJSON(), platform: currentPlatform() } });
+  } else {
+    await postJson('/api/push/unsubscribe', { endpoint: oldEndpoint });
+  }
 }
 
 /* ------------------------------------------------------------------------- */

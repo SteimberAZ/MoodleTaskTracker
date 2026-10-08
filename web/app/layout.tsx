@@ -59,7 +59,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <a className="skip-link" href="#main">Saltar al contenido</a>
         <SiteHeader />
         <main id="main" className="container">{children}</main>
-        <PwaClient />
+        <PwaClient vapidPublicKey={process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY} />
       </body>
     </html>
   );

@@ -11,6 +11,7 @@ import {
   parseSubscribeBody,
   sameApplicationServerKey,
   shouldShowPushBanner,
+  subscriptionKeyMismatch,
   urlBase64ToUint8Array,
   validatePushSubscription,
   type PushInputs,
@@ -79,6 +80,20 @@ describe('sameApplicationServerKey', () => {
     expect(sameApplicationServerKey(other.buffer, expected)).toBe(false);
     expect(sameApplicationServerKey(new Uint8Array(3).buffer, expected)).toBe(false);
     expect(sameApplicationServerKey(null, expected)).toBe(false);
+  });
+});
+
+describe('subscriptionKeyMismatch', () => {
+  it('flags a subscription bound to another key, never an unknown one', () => {
+    const current = urlBase64ToUint8Array(P256DH);
+    const other = new Uint8Array(current);
+    other[10] ^= 1;
+    expect(subscriptionKeyMismatch(current.buffer, P256DH)).toBe(false);
+    expect(subscriptionKeyMismatch(other.buffer, P256DH)).toBe(true);
+    expect(subscriptionKeyMismatch(other.buffer, ` ${P256DH} `)).toBe(true);
+    expect(subscriptionKeyMismatch(null, P256DH)).toBe(false); // browser did not report its key
+    expect(subscriptionKeyMismatch(other.buffer, undefined)).toBe(false); // nothing configured to compare with
+    expect(subscriptionKeyMismatch(other.buffer, 'not-a-key')).toBe(false);
   });
 });
 

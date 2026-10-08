@@ -62,6 +62,19 @@ export function sameApplicationServerKey(
   return true;
 }
 
+/**
+ * True when a subscription is bound to a different key than the configured VAPID public key (the key
+ * was rotated, or the web and the worker disagree): pushes to it are rejected, so it must be replaced.
+ * Unknown on either side (no key reported by the browser, no valid key configured) is not a mismatch.
+ */
+export function subscriptionKeyMismatch(
+  existing: ArrayBuffer | ArrayBufferView | null | undefined,
+  vapidKey: string | null | undefined,
+): boolean {
+  if (!existing || !isValidVapidPublicKey(vapidKey)) return false;
+  return !sameApplicationServerKey(existing, urlBase64ToUint8Array(vapidKey.trim()));
+}
+
 /* ------------------------------------------------------------------------- */
 /* Subscription payloads                                                      */
 /* ------------------------------------------------------------------------- */
