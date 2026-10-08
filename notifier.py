@@ -93,6 +93,34 @@ def send_system_alert(
     threading.Thread(target=_do_post, daemon=True).start()
 
 
+def post_ntfy(title: str, message: str, priority: str = "default", tags: str = "bell") -> bool:
+    """Synchronous ntfy push. Returns True when the server accepted it."""
+    topic = os.environ.get("NTFY_TOPIC", "utm-tareas-randy-az")
+    if not topic:
+        return False
+    try:
+        import requests
+        res = requests.post(
+            f"https://ntfy.sh/{topic}",
+            data=message.encode("utf-8"),
+            headers={
+                # HTTP headers are latin-1; encode the UTF-8 bytes so non-ASCII titles do not raise.
+                "Title": title.replace("\n", " ").encode("utf-8").decode("latin-1"),
+                "Priority": priority,
+                "Tags": tags,
+                "Content-Type": "text/plain; charset=utf-8",
+            },
+            timeout=10,
+        )
+        if res.status_code == 200:
+            print(f"[Notifier] Push enviado a ntfy.sh/{topic}")
+            return True
+        print(f"[Notifier] Error ntfy ({res.status_code}): {res.text}")
+    except Exception as e:
+        print(f"[Notifier] Error enviando a ntfy: {e}")
+    return False
+
+
 def send_whatsapp_alert(
     title: str,
     course: str,

@@ -47,3 +47,30 @@ ALTER TABLE public.task_milestones ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "Permitir acceso settings" ON public.settings FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "Permitir acceso tasks" ON public.tasks FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "Permitir acceso milestones" ON public.task_milestones FOR ALL USING (true) WITH CHECK (true);
+
+-- NOTE: the policies above are deliberately permissive (USING (true)); anyone holding the
+-- anon key can read/write those tables. Tightening them is out of scope for this change.
+
+-- 4. Custom reminders (created from the web app, delivered by the VPS worker via ntfy)
+CREATE TABLE IF NOT EXISTS public.custom_reminders (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    title TEXT NOT NULL,
+    message TEXT,
+    interval_minutes INTEGER NOT NULL CHECK (interval_minutes >= 5),
+    starts_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    ends_at TIMESTAMPTZ NOT NULL,
+    next_fire_at TIMESTAMPTZ NOT NULL,
+    last_sent_at TIMESTAMPTZ,
+    active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CHECK (ends_at > starts_at)
+);
+
+CREATE INDEX IF NOT EXISTS idx_custom_reminders_active_next
+    ON public.custom_reminders (active, next_fire_at);
+
+-- RLS is enabled with NO policies on purpose: the anon/authenticated roles get no access at all.
+-- Only the service-role key (which bypasses RLS) can read/write this table. Keep that key
+-- server-side only (Vercel server env + VPS .env), never in browser code.
+ALTER TABLE public.custom_reminders ENABLE ROW LEVEL SECURITY;

@@ -8,9 +8,11 @@ if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
 from moodle_client import MoodleClient
-from notifier import TaskNotificationManager, send_system_alert
+from notifier import TaskNotificationManager, post_ntfy, send_system_alert
 from storage import Storage
 from class_schedule import check_and_notify_upcoming_classes
+from custom_reminders import process_due_reminders
+from supabase_client import SupabaseClient
 
 
 def _read_env_cookie():
@@ -63,6 +65,8 @@ def run_worker():
     print("  🎓 Alertas de clases: 30 minutos antes de cada materia")
     print("=" * 60)
 
+    reminders_client = SupabaseClient.for_service_role()
+
     last_tasks_check = 0.0
     last_keep_alive = 0.0
     session_expired_notified = False
@@ -76,6 +80,15 @@ def run_worker():
             check_and_notify_upcoming_classes(storage)
         except Exception as err:
             print(f"[{now_str}] [!] Error en recordatorio de clases: {err}")
+
+        # 1b. Custom reminders (Supabase -> ntfy)
+        try:
+            process_due_reminders(
+                reminders_client,
+                lambda title, body: post_ntfy(title, body, priority="high", tags="alarm_clock,bell"),
+            )
+        except Exception as err:
+            print(f"[{now_str}] [!] Error en recordatorios personalizados: {err}")
 
         # 2. Recargar cookie fresca desde .env si fue modificada en disco
         current_cookie = _read_env_cookie() or storage.get_setting("moodle_session", "")

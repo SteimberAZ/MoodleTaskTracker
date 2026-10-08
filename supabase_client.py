@@ -35,6 +35,12 @@ class SupabaseClient:
         self.url = (url or os.environ.get("SUPABASE_URL", "")).rstrip("/")
         self.key = key or os.environ.get("SUPABASE_KEY", "") or os.environ.get("SUPABASE_ANON_KEY", "")
 
+    @classmethod
+    def for_service_role(cls) -> "SupabaseClient":
+        """Client using SUPABASE_SERVICE_ROLE_KEY, falling back to the regular key."""
+        key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+        return cls(key=key or None)
+
     @property
     def is_configured(self) -> bool:
         return bool(self.url and self.key)
@@ -132,3 +138,41 @@ class SupabaseClient:
         except Exception:
             pass
         return []
+
+    def fetch_due_reminders(self, now_iso: str) -> List[Dict]:
+        """Active custom reminders whose next_fire_at is due (synchronous)."""
+        if not self.is_configured:
+            return []
+        try:
+            endpoint = f"{self.url}/rest/v1/custom_reminders"
+            params = {
+                "select": "*",
+                "active": "eq.true",
+                "next_fire_at": f"lte.{now_iso}",
+                "order": "next_fire_at.asc",
+            }
+            r = requests.get(endpoint, params=params, headers=self._headers(), timeout=10)
+            if r.status_code == 200:
+                return r.json()
+            print(f"[Supabase] fetch_due_reminders HTTP {r.status_code}: {r.text[:200]}")
+        except Exception as e:
+            print(f"[Supabase] fetch_due_reminders error: {e}")
+        return []
+
+    def update_reminder(self, reminder_id: str, fields: Dict) -> bool:
+        """PATCH a custom reminder row (synchronous)."""
+        if not self.is_configured:
+            return False
+        try:
+            endpoint = f"{self.url}/rest/v1/custom_reminders"
+            headers = dict(self._headers())
+            headers["Prefer"] = "return=minimal"
+            r = requests.patch(
+                endpoint, params={"id": f"eq.{reminder_id}"}, json=fields, headers=headers, timeout=10
+            )
+            if r.status_code in (200, 204):
+                return True
+            print(f"[Supabase] update_reminder HTTP {r.status_code}: {r.text[:200]}")
+        except Exception as e:
+            print(f"[Supabase] update_reminder error: {e}")
+        return False
