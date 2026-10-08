@@ -238,12 +238,17 @@ describe('enablePush', () => {
     expect(subscribe).toHaveBeenCalledOnce();
     expect(old.unsubscribe.mock.invocationCallOrder[0]).toBeLessThan(subscribe.mock.invocationCallOrder[0]);
     expect(posts[0].body.endpoint).toBe('https://fcm.googleapis.com/fcm/send/new');
+    // The dead row of the replaced subscription is dropped on the server after the new one is saved.
+    expect(posts.slice(1)).toEqual([
+      { url: '/api/push/unsubscribe', body: { endpoint: 'https://fcm.googleapis.com/fcm/send/old' } },
+    ]);
   });
 
   it('reuses a subscription made with the current key', async () => {
     current = fakeSubscription('https://fcm.googleapis.com/fcm/send/same', CURRENT);
     expect(await enablePush(CURRENT)).toEqual({ ok: true });
     expect(subscribe).not.toHaveBeenCalled();
+    expect(posts.map((p) => p.url)).toEqual(['/api/push/subscribe']);
     expect(posts[0].body.endpoint).toBe('https://fcm.googleapis.com/fcm/send/same');
   });
 

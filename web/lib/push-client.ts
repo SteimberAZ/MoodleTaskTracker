@@ -161,10 +161,12 @@ export async function enablePush(vapidKey: string): Promise<EnableResult> {
 
   const key = urlBase64ToUint8Array(vapidKey.trim());
   let subscription: PushSubscription | null = null;
+  let staleEndpoint: string | null = null;
   try {
     subscription = await registration.pushManager.getSubscription();
     // A subscription made with another key (rotated VAPID key) cannot be reused.
     if (subscription && !sameApplicationServerKey(subscription.options.applicationServerKey, key)) {
+      staleEndpoint = subscription.endpoint;
       await subscription.unsubscribe();
       subscription = null;
     }
@@ -188,6 +190,11 @@ export async function enablePush(vapidKey: string): Promise<EnableResult> {
           ? 'Tu sesión expiró. Vuelve a iniciar sesión.'
           : 'El dispositivo se activó pero no se pudo guardar. Inténtalo de nuevo.',
     };
+  }
+  // The replaced subscription can never receive anything: drop its server row (best effort) so the worker
+  // stops pushing to it and it does not show as a failing device.
+  if (staleEndpoint && staleEndpoint !== subscription.endpoint) {
+    await postJson('/api/push/unsubscribe', { endpoint: staleEndpoint });
   }
   return { ok: true };
 }
