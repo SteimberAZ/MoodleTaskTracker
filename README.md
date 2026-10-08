@@ -87,7 +87,7 @@ En cada sincronización, el worker abre la página de cada tarea pendiente (`/mo
 
 ## ⏰ Recordatorios Personalizados (Web en Vercel)
 
-La carpeta `web/` contiene una app Next.js protegida con contraseña. Desde ahí se crean recordatorios con una frecuencia (cada N minutos, horas o días) y una fecha de fin. La web solo guarda los datos en Supabase; el worker del VPS los lee y envía las notificaciones por ntfy.
+La carpeta `web/` contiene una app Next.js multiusuario: cada persona entra con su cuenta de Moodle de la UTM y el registro es solo por código de invitación. Desde ahí se crean recordatorios con una frecuencia (cada N minutos, horas o días) y una fecha de fin. La web solo guarda los datos en Supabase; el worker del VPS los lee y envía las notificaciones por ntfy.
 
 ### 1. Base de datos (Supabase self-hosted compartido)
 Las tablas del proyecto usan el prefijo `moodle_` y viven en una base compartida. Para no usar la `service_role` key, el acceso pasa por un rol dedicado, `moodle_app`, que solo puede tocar las tablas `moodle_*`.
@@ -107,12 +107,22 @@ MOODLE_DB_JWT=<JWT generado en el paso anterior>
 NTFY_TOPIC=<tu topic>
 MOODLE_URL=https://evirtual.utm.edu.ec
 ```
-El worker toma el token de Moodle de la tabla `moodle_credentials`, que se llena desde la web. `MOODLE_SESSION` (la cookie) queda solo como respaldo.
+El worker recorre a todos los usuarios activos de `moodle_users`, sincroniza sus tareas con su token de Moodle y le envía a cada uno sus avisos a su propio tema de ntfy. `NTFY_TOPIC` se usa solo para los avisos del horario de clases del dueño. `MOODLE_SESSION` (la cookie) queda como respaldo y solo se usa cuando no hay ningún usuario registrado.
+
+> Orden de despliegue: detén el worker, ejecuta `supabase_schema.sql` y recién después inicia la versión nueva.
 
 ### 3. Vercel
 - **Framework Preset:** Next.js. **Root Directory:** `web`.
-- **Environment Variables:** `APP_PASSWORD`, `SESSION_SECRET` (por ejemplo `openssl rand -hex 32`), `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `MOODLE_DB_JWT` y, opcionalmente, `MOODLE_URL`. No uses el prefijo `NEXT_PUBLIC_` en ninguna.
-- Después del deploy, entra en **Conectar Moodle** con tu usuario y contraseña de la UTM. La contraseña no se guarda: solo se guarda el token de la API de Moodle.
+- **Environment Variables:**
+  - Obligatorias: `SESSION_SECRET` (por ejemplo `openssl rand -hex 32`), `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `MOODLE_DB_JWT` y `ADMIN_MOODLE_USERNAME` (tu usuario de la UTM).
+  - Opcionales: `ADMIN_NTFY_TOPIC` (tu tema actual de ntfy; si falta, se genera uno aleatorio), `MOODLE_URL` y `NTFY_SERVER`.
+  - `APP_PASSWORD` ya no se usa. No uses el prefijo `NEXT_PUBLIC_` en ninguna.
+
+### 4. Usuarios e invitaciones
+- La primera vez que entras con la cuenta de `ADMIN_MOODLE_USERNAME`, quedas como administrador sin necesidad de código, y tus recordatorios anteriores pasan a tu cuenta.
+- En **Admin** creas códigos de invitación de un solo uso, con vencimiento opcional. Cada invitado entra con su usuario de la UTM y su código.
+- En **Mi cuenta** cada usuario ve su tema de ntfy, el enlace para suscribirse desde la app y un botón para enviarse una notificación de prueba.
+- La contraseña de la UTM nunca se guarda: solo se guarda el token de la API de Moodle de cada usuario.
 
 ### Desarrollo local
 ```
