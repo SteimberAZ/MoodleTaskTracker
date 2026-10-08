@@ -20,6 +20,7 @@ Multi-user robustness:
     assignment that was submitted becomes submitted, the rest are flagged missing remotely after
     ``MISSING_ROUNDS`` consecutive absent rounds.
 """
+import inspect
 import json
 import re
 import time
@@ -184,12 +185,28 @@ def _apply_web_mutes(storage, supabase: Any, user_id: str, tasks: List[Dict], la
 
 
 def _user_alert(deliver: Callable, user: Dict) -> Callable:
-    """An ``alert`` callable (the ``send_system_alert`` keywords) that reaches every channel of ``user``."""
+    """An ``alert`` callable (the ``send_system_alert`` keywords) that reaches every channel of ``user``.
+
+    "Moodle desconectado" and "Moodle reconectado" share the tag ``moodle-status`` (the newer one replaces
+    the older on the device), so the title keys the retry state and each alert asks to ring again. Both
+    keywords are passed only when the deliverer accepts them.
+    """
+    try:
+        params = inspect.signature(deliver).parameters.values()
+    except (TypeError, ValueError):
+        params = ()
+    any_kw = any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params)
+    names = {p.name for p in params}
 
     def alert(title, message, priority="default", tags="", topic=None, click_url="", **_unused):
+        extra = {}
+        if any_kw or "retry_key" in names:
+            extra["retry_key"] = title
+        if any_kw or "renotify" in names:
+            extra["renotify"] = True
         return deliver(
             user, title, message, url="/", tag="moodle-status", priority=priority, ntfy_tags=tags or "bell",
-            kind="status",
+            kind="status", **extra,
         )
 
     return alert

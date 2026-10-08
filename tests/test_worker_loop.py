@@ -5,6 +5,7 @@ import threading
 
 import pytest
 
+import delivery
 import worker
 from moodle_api import MoodleNetworkError
 from storage import Storage
@@ -362,11 +363,13 @@ def test_the_worker_survives_a_crashing_tick_and_still_flushes_the_history(monke
     monkeypatch.setattr(worker, "Storage", lambda: storage)
     monkeypatch.setattr(worker.SupabaseClient, "for_worker", classmethod(lambda cls: db))
     monkeypatch.setattr(worker.WebPushSender, "from_env", classmethod(lambda cls, sb: OffSender()))
+    rounds = []
+    # A distinct tag per round: delivery backs off a failed key, so reusing one tag would record only one row.
     monkeypatch.setattr(worker, "process_class_reminders",
-                        lambda st, sb, deliver: deliver({"id": UID, "ntfy_topic": ""}, "Clase", "Hoy", kind="class"))
+                        lambda st, sb, deliver: deliver({"id": UID, "ntfy_topic": ""}, "Clase", "Hoy", kind="class",
+                                                        tag=f"class-round-{len(rounds)}"))
     for name in ("check_and_notify_upcoming_classes", "process_due_reminders", "process_push_tests"):
         monkeypatch.setattr(worker, name, lambda *a, **k: 0)
-    rounds = []
 
     def tick(*a, stop_event=None, **k):
         rounds.append(1)
@@ -430,6 +433,7 @@ def _no_health_env(monkeypatch):
     for name in ("HEALTHCHECK_URL", "WORKER_STRICT", "WORKER_VERSION"):
         monkeypatch.delenv(name, raising=False)
     worker._LOGGED_ONCE.clear()
+    delivery.reset_delivery_state()  # module-level retry state must not leak between tests
 
 
 class OnSender:
