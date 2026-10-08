@@ -271,14 +271,18 @@ const count = (value: number | null | undefined) => (Number.isFinite(value) && (
 
 /**
  * Per-channel outcome of one notification. Meaning never relies on color alone: every state has its own
- * text ("No entregada", "Push 0/1", "ntfy ✗"). Push is hidden when the user had no registered device.
+ * text ("No entregada", "Push 0/1", "ntfy ✗"). Push is hidden when the user had no registered device;
+ * `push_total` -1 means the devices could not be read (push failed, shown as "Push ✗").
  */
 export function channelBadges(row: Pick<NotificationLogRow, 'status' | 'push_ok' | 'push_total' | 'ntfy_attempted' | 'ntfy_ok'>): ChannelBadge[] {
   const badges: ChannelBadge[] = [];
   if (row.status === 'failed') badges.push({ key: 'status', text: 'No entregada', tone: 'urgente' });
 
   const total = count(row.push_total);
-  if (total > 0) {
+  if (row.push_total === -1) {
+    // The worker could not read the devices, so push failed without trying any.
+    badges.push({ key: 'push', text: 'Push ✗', srText: 'Push: no se pudieron leer tus dispositivos', tone: 'urgente' });
+  } else if (total > 0) {
     const ok = Math.min(count(row.push_ok), total);
     badges.push({
       key: 'push',

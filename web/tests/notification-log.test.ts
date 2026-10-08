@@ -229,6 +229,10 @@ describe('channelBadges', () => {
   it('hides push when the user had no device and tolerates nulls', () => {
     expect(channelBadges({ status: 'sent', push_ok: null, push_total: null, ntfy_attempted: null, ntfy_ok: null })).toEqual([]);
     expect(channelBadges({ ...base, push_ok: 0, push_total: 0 })).toEqual([]);
+    expect(channelBadges({ ...base, status: 'failed', push_ok: 0, push_total: -1 })).toEqual([
+      { key: 'status', text: 'No entregada', tone: 'urgente' },
+      { key: 'push', text: 'Push ✗', srText: 'Push: no se pudieron leer tus dispositivos', tone: 'urgente' },
+    ]);
   });
 
   it('never reports more devices ok than the total', () => {

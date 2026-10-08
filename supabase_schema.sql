@@ -412,7 +412,8 @@ CREATE POLICY moodle_app_all ON public.moodle_class_schedule
 --     lets a user clear their own rows. Rows older than 90 days are pruned by the worker once a day.
 --     kind:   task | reminder | class | status | test
 --     status: sent (at least one channel accepted it) | failed
---     push_ok / push_total: Web Push devices that accepted / devices tried.
+--     push_ok / push_total: Web Push devices that accepted / devices tried (push_total -1: the
+--     user's devices could not be read, so push failed without trying any).
 --     ntfy_attempted / ntfy_ok: whether the ntfy copy was tried and whether it was accepted.
 -- ==========================================================
 CREATE TABLE IF NOT EXISTS public.moodle_notification_log (

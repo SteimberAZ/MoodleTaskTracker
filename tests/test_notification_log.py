@@ -145,6 +145,20 @@ def test_status_and_channel_counts(subs, results, ntfy_on, ntfy_ok, expected):
     assert (row["status"], row["push_ok"], row["push_total"], row["ntfy_attempted"], row["ntfy_ok"]) == expected
 
 
+@pytest.mark.parametrize("ntfy_on, status", [(True, "sent"), (False, "failed")])
+def test_unreadable_subscriptions_are_recorded_as_push_failed_not_as_no_devices(ntfy_on, status):
+    class BrokenSubsDb(SubsDb):
+        def fetch_push_subscriptions(self, user_id):
+            raise RuntimeError("HTTP 503")
+
+    log, db = _log()
+    deliver = partial(deliver_to_user, supabase=BrokenSubsDb(), sender=Sender(), ntfy=_ntfy(True), history=log)
+    assert deliver(dict(USER, ntfy_enabled=ntfy_on), "T", "B", kind="class") is ntfy_on
+    log.flush()
+    (row,) = db.rows
+    assert (row["status"], row["push_ok"], row["push_total"]) == (status, 0, delivery.PUSH_UNKNOWN)
+
+
 def test_a_user_without_a_topic_has_no_ntfy_attempt_in_the_row():
     log, db = _log()
     _deliverer(log, subs=1)(dict(USER, ntfy_topic=""), "T", "B", kind="task")

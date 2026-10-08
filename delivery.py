@@ -29,6 +29,10 @@ TEST_PAYLOAD = {
     "tag": "test",
 }
 
+# push_total recorded in the history when the user's subscriptions could not be read: the devices
+# were never tried, which is not the same as having none (push_total 0).
+PUSH_UNKNOWN = -1
+
 _last_logged: Dict[str, str] = {}
 
 
@@ -138,12 +142,13 @@ def deliver_to_user(
 
     # 1. Web Push (primary): every subscription the user registered from an installed PWA / browser.
     if sender is not None and getattr(sender, "enabled", False) and supabase is not None and user_id:
+        subs_unreadable = False
         try:
             subs = supabase.fetch_push_subscriptions(user_id)
             _log_changed(f"subs {user_id}", None)
         except Exception as exc:  # noqa: BLE001 - ntfy must still go out
             _log_changed(f"subs {user_id}", f"[Deliver] user {user_id[:8]}: could not read push subscriptions: {exc}")
-            subs = []
+            subs, subs_unreadable = [], True
         payload = {"title": title, "body": body, "url": link, "target": url, "tag": tag}
         counts = {PushResult.OK: 0, PushResult.GONE: 0, PushResult.FAILED: 0}
         for sub in subs:
@@ -156,6 +161,8 @@ def deliver_to_user(
         push_ok, push_total = counts[PushResult.OK], len(subs)
         delivered = push_ok > 0
         text = f"push {counts[PushResult.OK]}/{len(subs)} ok" if subs else "push none"
+        if subs_unreadable:
+            push_total, text = PUSH_UNKNOWN, "push FAILED (subscriptions unreadable)"
         parts.append(text + (f" ({counts[PushResult.GONE]} gone)" if counts[PushResult.GONE] else ""))
     else:
         parts.append("push off")
