@@ -30,6 +30,8 @@
 --         replace. Apply note: run the WHOLE file in the SQL editor (or psql) as
 --         postgres, before deploying the worker/web versions that use it; safe to re-run.
 --   12    grade statistics: moodle_grade_items (worker writes, web reads); safe to re-run.
+--   13    manual exam grades: moodle_manual_grades (web writes and reads); safe to re-run.
+--   14    profile photos: moodle_avatars (web writes and reads); safe to re-run.
 -- ==========================================================
 
 -- 0. Dedicated role
@@ -1039,6 +1041,60 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON public.moodle_grade_items TO moodle_app;
 
 DROP POLICY IF EXISTS moodle_app_all ON public.moodle_grade_items;
 CREATE POLICY moodle_app_all ON public.moodle_grade_items
+    FOR ALL TO moodle_app USING (true) WITH CHECK (true);
+
+-- ==========================================================
+-- 13. Manual exam grades ("Estadisticas").
+--     Teachers do not always record the mid-cycle / end-of-cycle exams in Moodle, so the student can
+--     enter them. One row per (user, course, kind). grade NULL with linked_item_id set means "this exam
+--     is that Moodle grade item"; grade NULL without a link means "this course has no such exam".
+--     A grade with a link replaces that Moodle item while Moodle has no grade for it.
+--     kind: midterm | final
+-- ==========================================================
+CREATE TABLE IF NOT EXISTS public.moodle_manual_grades (
+    user_id        uuid NOT NULL REFERENCES public.moodle_users(id) ON DELETE CASCADE,
+    course_id      integer NOT NULL,
+    kind           text NOT NULL CHECK (kind IN ('midterm', 'final')),
+    grade          double precision CHECK (grade IS NULL OR grade >= 0),
+    max_points     double precision NOT NULL DEFAULT 15 CHECK (max_points > 0 AND max_points <= 100),
+    linked_item_id integer,
+    updated_at     timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id, course_id, kind),
+    CHECK (grade IS NULL OR grade <= max_points)
+);
+
+ALTER TABLE public.moodle_manual_grades ENABLE ROW LEVEL SECURITY;
+
+REVOKE ALL ON public.moodle_manual_grades FROM PUBLIC, anon, authenticated;
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.moodle_manual_grades TO moodle_app;
+
+DROP POLICY IF EXISTS moodle_app_all ON public.moodle_manual_grades;
+CREATE POLICY moodle_app_all ON public.moodle_manual_grades
+    FOR ALL TO moodle_app USING (true) WITH CHECK (true);
+
+-- ==========================================================
+-- 14. Profile photos.
+--     One small image per user, resized in the browser to a square WebP/JPEG and stored as a data URL
+--     (at most ~150 KB of text), so no storage bucket is needed. Read only by the web for its owner.
+-- ==========================================================
+CREATE TABLE IF NOT EXISTS public.moodle_avatars (
+    user_id    uuid PRIMARY KEY REFERENCES public.moodle_users(id) ON DELETE CASCADE,
+    image      text NOT NULL CHECK (
+                   char_length(image) <= 150000
+                   AND image ~ '^data:image/(webp|jpeg|png);base64,[A-Za-z0-9+/=]+$'
+               ),
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+ALTER TABLE public.moodle_avatars ENABLE ROW LEVEL SECURITY;
+
+REVOKE ALL ON public.moodle_avatars FROM PUBLIC, anon, authenticated;
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.moodle_avatars TO moodle_app;
+
+DROP POLICY IF EXISTS moodle_app_all ON public.moodle_avatars;
+CREATE POLICY moodle_app_all ON public.moodle_avatars
     FOR ALL TO moodle_app USING (true) WITH CHECK (true);
 
 -- Ask PostgREST to reload its schema cache so the new tables and columns are served right away.

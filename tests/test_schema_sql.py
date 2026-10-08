@@ -330,6 +330,47 @@ def test_section_12_follows_section_11_and_precedes_the_schema_reload():
 
 
 def test_section_12_needs_no_migration_of_existing_rows():
-    section = _strip_comments(RAW[RAW.index(SECTION_12_HEADER): RAW.index("NOTIFY pgrst, 'reload schema';")])
+    section = _strip_comments(RAW[RAW.index(SECTION_12_HEADER): RAW.index(SECTION_13_HEADER)])
+    for forbidden in ("ADD COLUMN", "ADD CONSTRAINT", "UPDATE public.", "DELETE FROM"):
+        assert forbidden not in section
+
+
+SECTION_13_HEADER = "-- 13. Manual exam grades"
+SECTION_14_HEADER = "-- 14. Profile photos."
+
+
+@pytest.mark.parametrize("table", ["moodle_manual_grades", "moodle_avatars"])
+def test_sections_13_and_14_follow_the_moodle_app_model(table):
+    assert f"ALTER TABLE public.{table} ENABLE ROW LEVEL SECURITY;" in SQL
+    assert f"REVOKE ALL ON public.{table} FROM PUBLIC, anon, authenticated;" in SQL
+    assert f"GRANT SELECT, INSERT, UPDATE, DELETE ON public.{table} TO moodle_app;" in SQL
+    assert f"DROP POLICY IF EXISTS moodle_app_all ON public.{table};" in SQL
+    assert f"CREATE POLICY moodle_app_all ON public.{table}" in SQL
+
+
+def test_manual_grades_are_one_row_per_course_and_exam_kind():
+    match = re.search(r"CREATE TABLE IF NOT EXISTS public\.moodle_manual_grades \((.*?)\n\);", SQL, flags=re.S)
+    assert match, "table moodle_manual_grades is not defined"
+    table = _ws(match.group(1))
+    assert "user_id uuid NOT NULL REFERENCES public.moodle_users(id) ON DELETE CASCADE" in table
+    assert "PRIMARY KEY (user_id, course_id, kind)" in table
+    assert "kind text NOT NULL CHECK (kind IN ('midterm', 'final'))" in table
+    assert "CHECK (grade IS NULL OR grade <= max_points)" in table
+
+
+def test_avatars_are_bounded_data_urls_owned_by_a_user():
+    match = re.search(r"CREATE TABLE IF NOT EXISTS public\.moodle_avatars \((.*?)\n\);", SQL, flags=re.S)
+    assert match, "table moodle_avatars is not defined"
+    table = _ws(match.group(1))
+    assert "user_id uuid PRIMARY KEY REFERENCES public.moodle_users(id) ON DELETE CASCADE" in table
+    assert "char_length(image) <= 150000" in table
+
+
+def test_sections_13_and_14_are_ordered_logged_and_need_no_migration():
+    reload_at = RAW.index("NOTIFY pgrst, 'reload schema';")
+    assert RAW.index(SECTION_12_HEADER) < RAW.index(SECTION_13_HEADER) < RAW.index(SECTION_14_HEADER) < reload_at
+    header = RAW[: RAW.index("-- 0. Dedicated role")]
+    assert "13    manual exam grades" in header and "14    profile photos" in header
+    section = _strip_comments(RAW[RAW.index(SECTION_13_HEADER): reload_at])
     for forbidden in ("ADD COLUMN", "ADD CONSTRAINT", "UPDATE public.", "DELETE FROM"):
         assert forbidden not in section
